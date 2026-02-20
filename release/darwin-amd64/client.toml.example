@@ -1,0 +1,1017 @@
+# ============================================================================
+# AetherTunnel 客户端配置示例
+# 比 frp 更丰富的配置选项，支持各种高级场景
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# 基础客户端配置
+# ----------------------------------------------------------------------------
+[client]
+# 服务器地址和端口
+server_addr = "your-server.com"
+server_port = 7000
+
+# 认证令牌（与服务端一致）
+auth_token = "change-me-to-secure-random-token"
+
+# 用户名（可选，用于多租户场景）
+user = ""
+
+# 客户端唯一标识（自动生成或手动指定）
+client_id = ""
+client_version = "1.0.0"
+
+# 连接池大小
+pool_count = 1
+
+# 服务器名称（用于 TLS 证书验证）
+tls_server_name = "your-server.com"
+
+# 连接协议：tcp, quic, websocket
+protocol = "tcp"
+
+# ----------------------------------------------------------------------------
+# TLS 配置
+# ----------------------------------------------------------------------------
+[tls]
+# 是否启用 TLS
+enabled = false
+
+# 客户端证书和私钥（双向认证）
+cert_file = "client.crt"
+key_file = "client.key"
+
+# CA 证书（验证服务端证书）
+ca_file = "ca.crt"
+
+# TLS 服务器名称
+server_name = "your-server.com"
+
+# 是否验证服务端证书（生产环境建议启用）
+skip_verify = false
+
+# TLS 会话缓存
+enable_session_cache = true
+session_cache_size = 100
+
+# ALPN 协议列表
+alpn_protocols = ["h2", "http/1.1"]
+
+# ----------------------------------------------------------------------------
+# 传输层配置
+# ----------------------------------------------------------------------------
+[transport]
+# TCP 多路复用
+tcp_mux = true
+tcp_mux_keepalive_interval = 60
+
+# TCP Keepalive
+tcp_keepalive = 30
+
+# 启用 Nagle 算法
+enable_nagle = false
+
+# 连接超时（秒）
+dial_timeout = "10"
+
+# 读超时（秒）
+read_timeout = "60"
+
+# 写超时（秒）
+write_timeout = "60"
+
+# 启用零窗口探测
+enable_window_probe = true
+
+# 最小重连间隔（秒）
+min_reconnect_interval = 1
+
+# 最大重连间隔（秒）
+max_reconnect_interval = 60
+
+# ----------------------------------------------------------------------------
+# 重连策略配置
+# ----------------------------------------------------------------------------
+[reconnect]
+# 启用自动重连
+enabled = true
+
+# 最大重连次数（0 = 无限）
+max_attempts = 0
+
+# 重连间隔策略：fixed, exponential, linear
+strategy = "exponential"
+
+# 固定间隔（秒）
+fixed_interval = 5
+
+# 指数退避基础间隔（秒）
+exponential_base = 2
+
+# 指数退避最大间隔（秒）
+exponential_max = 60
+
+# 线性增加间隔（秒）
+linear_increment = 5
+
+# 随机抖动（0-1），避免惊群效应
+jitter = 0.2
+
+# 连接成功后重置重连计数器
+reset_on_success = true
+
+# ----------------------------------------------------------------------------
+# 代理服务器配置（HTTP/SOCKS5）
+# ----------------------------------------------------------------------------
+[proxy]
+# 启用代理
+enabled = false
+
+# 代理类型：http, https, socks5
+proxy_type = "http"
+
+# 代理地址
+proxy_addr = "127.0.0.1:7890"
+
+# 代理认证
+proxy_username = ""
+proxy_password = ""
+
+# 是否通过代理访问本地服务（通常不需要）
+proxy_local = false
+
+# 代理超时（秒）
+proxy_timeout = 30
+
+# ----------------------------------------------------------------------------
+# 代理配置（可以定义多个）
+# ----------------------------------------------------------------------------
+
+# ===== 示例 1: TCP 代理（如 SSH）=====
+[[proxies]]
+name = "ssh"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = 22
+remote_port = 2222
+
+# 加密和压缩
+use_encryption = false
+use_compression = false
+
+# 带宽限制（0 = 无限制）
+bandwidth_limit = "0"
+bandwidth_limit_mode = "client"  # client, server, both
+
+# 连接超时（秒）
+connection_timeout = 10
+
+# 健康检查
+[proxies.health_check]
+type = "tcp"
+interval = "10s"
+timeout = "3s"
+max_failed = 3
+
+# 元数据
+[proxies.metas]
+description = "SSH 访问"
+environment = "production"
+owner = "devops"
+
+# ===== 示例 2: HTTP 代理（如 Web 服务）=====
+[[proxies]]
+name = "web"
+type = "http"
+local_ip = "127.0.0.1"
+local_port = 80
+
+# 域名配置
+custom_domains = ["www.example.com", "api.example.com"]
+subdomain = "myapp"
+
+# 路由配置
+locations = ["/api", "/v1"]
+
+# HTTP 认证
+http_user = ""
+http_pwd = ""
+
+# 主机头重写
+host_header_rewrite = "backend.local"
+
+# 启用 HTTPS
+force_https = false
+
+# 健康检查
+[proxies.health_check]
+type = "http"
+interval = "10s"
+timeout = "3s"
+max_failed = 3
+url_or_path = "/health"
+expected_status = 200
+expected_body = ""
+
+# 请求头修改
+[[proxies.health_check.headers]]
+name = "User-Agent"
+value = "AetherTunnel-HealthCheck/1.0"
+
+# ===== 示例 3: HTTPS 代理（带 TLS 终止）=====
+[[proxies]]
+name = "web-secure"
+type = "https"
+local_ip = "127.0.0.1"
+local_port = 443
+
+custom_domains = ["secure.example.com"]
+
+# TLS 配置（客户端到本地服务的 TLS）
+[proxies.tls]
+enabled = true
+skip_verify = false
+server_name = "backend.local"
+
+# HSTS 配置
+[proxies.hsts]
+enabled = true
+max_age = 31536000
+include_subdomains = true
+
+# ===== 示例 4: 带加密的 TCP 代理（MySQL）=====
+[[proxies]]
+name = "mysql"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = 3306
+remote_port = 3306
+
+use_encryption = true
+use_compression = true
+bandwidth_limit = "10MB"
+
+# 连接池配置
+[proxies.pool]
+max_connections = 100
+idle_timeout = "5m"
+max_lifetime = "30m"
+
+# SQL 白名单（安全特性）
+[proxies.sql_whitelist]
+enabled = false
+allowed_tables = ["users", "products"]
+read_only = true
+
+# ===== 示例 5: STCP 代理（安全 TCP，只有授权用户可访问）=====
+[[proxies]]
+name = "secret-service"
+type = "stcp"
+local_ip = "127.0.0.1"
+local_port = 6379
+
+# 密钥（访问者需要相同的密钥）
+sk = "my-secret-key-123"
+
+# 允许的用户
+allow_users = ["user1", "user2"]
+
+# 访问控制列表
+[proxies.acl]
+enabled = true
+allow_ips = ["192.168.1.0/24"]
+deny_ips = ["10.0.0.0/8"]
+
+# ===== 示例 6: XTCP 代理（P2P 直连）=====
+[[proxies]]
+name = "p2p-service"
+type = "xtcp"
+local_ip = "127.0.0.1"
+local_port = 22
+sk = "my-secret-key-456"
+
+# NAT 穿透配置
+[proxies.nat]
+enabled = true
+stun_servers = ["stun.l.google.com:19302"]
+keepalive_interval = 10
+
+# P2P 失败后降级到中继
+fallback_to_relay = true
+
+# ===== 示例 7: UDP 代理（如 DNS）=====
+[[proxies]]
+name = "dns"
+type = "udp"
+local_ip = "127.0.0.1"
+local_port = 53
+remote_port = 5353
+
+# UDP 超时配置
+udp_timeout = 30  # 秒
+
+# UDP 分片重组
+enable_reassembly = true
+max_reassembly_size = 65535
+
+# ===== 示例 8: 带负载均衡的代理=====
+[[proxies]]
+name = "web-lb"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = 80
+remote_port = 8080
+
+# 负载均衡组
+group = "web-group"
+group_key = "web-group-key"
+
+# 健康检查
+[proxies.health_check]
+type = "http"
+interval = "5s"
+timeout = "2s"
+max_failed = 2
+url_or_path = "/health"
+
+# ===== 示例 9: 高级代理配置（综合示例）=====
+[[proxies]]
+name = "advanced-proxy"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = 8080
+remote_port = 8888
+
+# 传输层配置
+use_encryption = true
+use_compression = false
+bandwidth_limit = "50MB"
+
+# 连接配置
+[proxies.connection]
+max_conns = 1000
+idle_timeout = "10m"
+dial_timeout = "5s"
+read_timeout = "30s"
+write_timeout = "30s"
+
+# 重试策略
+[proxies.retry]
+max_attempts = 3
+retry_delay = "1s"
+retry_on_timeout = true
+
+# 断路器配置
+[proxies.circuit_breaker]
+enabled = true
+failure_threshold = 5
+success_threshold = 2
+timeout = "30s"
+half_open_requests = 1
+
+# 限流配置
+[proxies.rate_limit]
+enabled = true
+requests_per_second = 1000
+burst = 100
+
+# 访问日志
+[proxies.access_log]
+enabled = true
+log_file = "./logs/advanced-proxy.log"
+log_format = "combined"
+
+# 请求/响应处理
+[[proxies.request_transform]]
+type = "add_header"
+name = "X-Forwarded-For"
+value = "{{client_ip}}"
+
+[[proxies.request_transform]]
+type = "rewrite_path"
+from = "/old-path"
+to = "/new-path"
+
+[[proxies.response_transform]]
+type = "add_header"
+name = "X-Response-Time"
+value = "{{response_time}}ms"
+
+# 元数据
+[proxies.metas]
+description = "高级代理示例"
+environment = "production"
+owner = "platform-team"
+tags = ["api", "backend", "v2"]
+version = "2.0.0"
+
+# ===== 示例 10: Unix Socket 代理=====
+[[proxies]]
+name = "docker-socket"
+type = "tcp"
+local_ip = "unix"
+local_port = 0  # Unix socket 不使用端口
+local_socket_path = "/var/run/docker.sock"
+remote_port = 2375
+
+# Socket 权限
+socket_mode = "0660"
+socket_uid = 1000
+socket_gid = 1000
+
+# ===== 示例 11: SFTP 代理=====
+[[proxies]]
+name = "sftp"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = 22
+remote_port = 2222
+
+# SFTP 特定配置
+[proxies.sftp]
+enable_sftp = true
+max_file_size = "1GB"
+allowed_commands = ["get", "put", "ls"]
+chroot = "/home/sftpuser"
+
+# ===== 示例 12: RDP 代理（Windows 远程桌面）=====
+[[proxies]]
+name = "rdp"
+type = "tcp"
+local_ip = "192.168.1.100"
+local_port = 3389
+remote_port = 33890
+
+# RDP 优化
+[proxies.rdp]
+enable_nla = true  # 网络级别身份验证
+enable_rdg = false  # 远程桌面网关
+gateway_url = ""
+
+# ===== 示例 13: WebSocket 代理=====
+[[proxies]]
+name = "ws-proxy"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = 3000
+remote_port = 3000
+
+# WebSocket 特定配置
+[proxies.websocket]
+enabled = true
+allowed_origins = ["*"]
+ping_interval = "30s"
+pong_timeout = "60s"
+max_message_size = "10MB"
+read_buffer_size = "4KB"
+write_buffer_size = "4KB"
+
+# ===== 示例 14: 代理到代理（链式代理）=====
+[[proxies]]
+name = "chain-proxy-1"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = 8001
+remote_port = 8001
+
+# 转发到另一个代理
+[proxies.chain]
+enabled = true
+upstream = "chain-proxy-2"
+upstream_local_port = 8002
+
+[[proxies]]
+name = "chain-proxy-2"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = 8002
+remote_port = 9000
+
+# ===== 示例 15: 静态文件服务=====
+[[proxies]]
+name = "static-files"
+type = "http"
+local_ip = "127.0.0.1"
+local_port = 8081
+custom_domains = ["files.example.com"]
+
+# 静态文件配置
+[proxies.static_files]
+enabled = true
+root = "/var/www/files"
+index = ["index.html", "index.htm"]
+directory_listing = false
+
+# 缓存控制
+cache_control = "public, max-age=3600"
+etag_enabled = true
+last_modified_enabled = true
+
+# 上传限制
+max_upload_size = "100MB"
+allowed_extensions = [".html", ".css", ".js", ".png", ".jpg", ".gif", ".svg"]
+
+# ----------------------------------------------------------------------------
+# 全局代理默认配置
+# ----------------------------------------------------------------------------
+[proxy_defaults]
+# 默认加密
+default_encryption = false
+
+# 默认压缩
+default_compression = false
+
+# 默认带宽限制
+default_bandwidth_limit = "0"
+
+# 默认连接超时
+default_connection_timeout = 10
+
+# 默认读写超时
+default_read_timeout = 60
+default_write_timeout = 60
+
+# 默认健康检查
+[proxy_defaults.health_check]
+type = "tcp"
+interval = "30s"
+timeout = "5s"
+max_failed = 3
+
+# ----------------------------------------------------------------------------
+# 日志配置
+# ----------------------------------------------------------------------------
+[logging]
+# 日志级别：debug, info, warn, error, fatal
+level = "info"
+
+# 日志格式：json, text
+format = "json"
+
+# 日志输出
+output = "/var/log/aethertunnel/client.log"
+
+# 日志轮转
+max_size = "100MB"
+max_age = 30
+max_backups = 10
+compress = true
+
+# 控制台输出
+console_output = true
+
+# 详细日志（记录每个连接的详细信息）
+verbose = false
+
+# 代理级别日志
+log_per_proxy = true
+
+# 敏感信息过滤
+sensitive_fields = ["password", "token", "secret", "sk", "authorization"]
+
+# ----------------------------------------------------------------------------
+# 网络配置
+# ----------------------------------------------------------------------------
+[network]
+# 绑定本地接口
+bind_interface = ""
+
+# 默认网关
+default_gateway = ""
+
+# DNS 服务器
+dns_servers = ["8.8.8.8", "8.8.4.4"]
+
+# 启用 IPv6
+enable_ipv6 = false
+
+# MTU 设置（0 = 自动）
+mtu = 0
+
+# 绑定到特定 IP 地址
+bind_addr = "0.0.0.0"
+
+# ----------------------------------------------------------------------------
+# 缓存配置
+# ----------------------------------------------------------------------------
+[cache]
+# 启用缓存
+enabled = false
+
+# 缓存目录
+cache_dir = "./cache"
+
+# 最大缓存大小（MB）
+max_size = 1024
+
+# 缓存项过期时间（秒）
+ttl = 3600
+
+# 缓存策略
+strategy = "lru"  # lru, lfu, arc
+
+# ----------------------------------------------------------------------------
+# 插件系统
+# ----------------------------------------------------------------------------
+[plugins]
+# 插件目录
+plugin_dir = "./plugins"
+
+# 启用的插件
+enabled_plugins = []
+
+# 插件配置
+[plugins.example]
+option1 = "value1"
+option2 = 123
+
+# ----------------------------------------------------------------------------
+# 性能配置
+# ----------------------------------------------------------------------------
+[performance]
+# 启用内存池
+enable_memory_pool = true
+pool_size = 100  # MB
+
+# 启用 CPU 亲和性
+enable_cpu_affinity = false
+cpu_cores = [0]
+
+# 启用大页内存
+enable_huge_pages = false
+
+# 工作线程数（0 = 自动）
+worker_threads = 0
+
+# ----------------------------------------------------------------------------
+# 统计与监控
+# ----------------------------------------------------------------------------
+[statistics]
+# 启用统计
+enabled = true
+
+# 统计间隔（秒）
+interval = 60
+
+# 统计文件
+stats_file = "./stats.json"
+
+# 实时统计
+realtime = false
+
+# 导出格式（json, prometheus, influxdb）
+export_format = "json"
+
+# Prometheus 配置
+[statistics.prometheus]
+enabled = false
+port = 9091
+path = "/metrics"
+
+# InfluxDB 配置
+[statistics.influxdb]
+enabled = false
+url = "http://influxdb:8086"
+database = "aethertunnel"
+username = ""
+password = ""
+
+# ----------------------------------------------------------------------------
+# 安全配置
+# ----------------------------------------------------------------------------
+[security]
+# IP 白名单（仅允许特定 IP 连接）
+enable_ip_whitelist = false
+allowed_ips = ["192.168.1.0/24"]
+
+# 限制连接数
+max_connections = 1000
+max_connections_per_ip = 10
+
+# 防止慢速攻击
+slow_attack_threshold = 100  # 字节/秒
+
+# 启用连接限速
+rate_limit = 100  # 连接/秒
+
+# 启用指纹验证
+enable_fingerprint = true
+
+# ----------------------------------------------------------------------------
+# 健康检查（客户端自身）
+# ----------------------------------------------------------------------------
+[health_check]
+# 启用健康检查
+enabled = true
+
+# 检查间隔（秒）
+interval = 30
+
+# 服务器健康检查端点
+server_health_url = "/health"
+
+# 本地服务健康检查
+[[health_check.checks]]
+name = "local-ssh"
+type = "tcp"
+addr = "127.0.0.1:22"
+timeout = "3s"
+
+[[health_check.checks]]
+name = "local-web"
+type = "http"
+url = "http://127.0.0.1:80/health"
+timeout = "5s"
+expected_status = 200
+
+# ----------------------------------------------------------------------------
+# 备份与恢复
+# ----------------------------------------------------------------------------
+[backup]
+# 启用配置备份
+enabled = true
+
+# 备份目录
+backup_dir = "./backups"
+
+# 备份间隔（小时）
+interval = 24
+
+# 最大备份数量
+max_backups = 10
+
+# ----------------------------------------------------------------------------
+# 自动更新
+# ----------------------------------------------------------------------------
+[update]
+# 启用自动更新
+enabled = false
+
+# 更新检查间隔（小时）
+check_interval = 24
+
+# 更新服务器地址
+update_server = "https://updates.example.com"
+
+# 自动下载
+auto_download = false
+
+# 自动安装
+auto_install = false
+
+# 预发布版本渠道
+prerelease = false
+
+# ----------------------------------------------------------------------------
+# 故障转移
+# ----------------------------------------------------------------------------
+[failover]
+# 启用故障转移
+enabled = false
+
+# 备用服务器列表
+backup_servers = [
+    { addr = "backup1.example.com:7000", priority = 1 },
+    { addr = "backup2.example.com:7000", priority = 2 },
+]
+
+# 健康检查间隔（秒）
+check_interval = 10
+
+# 自动切换延迟（秒）
+switch_delay = 30
+
+# 切换后通知
+notify_on_switch = false
+
+# ----------------------------------------------------------------------------
+# 通知配置
+# ----------------------------------------------------------------------------
+[notification]
+# 启用通知
+enabled = false
+
+# 通知渠道
+[notification.email]
+enabled = false
+smtp_server = "smtp.gmail.com:587"
+smtp_username = ""
+smtp_password = ""
+from = "aethertunnel@example.com"
+to = ["admin@example.com"]
+
+[notification.telegram]
+enabled = false
+bot_token = ""
+chat_id = ""
+
+[notification.webhook]
+enabled = false
+url = "https://your-webhook.com/notify"
+method = "POST"
+headers = { "Content-Type" = "application/json" }
+
+# 通知事件
+notification_events = ["connected", "disconnected", "proxy_error", "server_unreachable"]
+
+
+# ----------------------------------------------------------------------------
+# VPN 客户端配置（🆕 创新功能）
+# ----------------------------------------------------------------------------
+[vpn]
+# 🆕 是否启用 VPN 客户端（可选）
+# 启用后，客户端可以作为 VPN 客户端连接到 VPN 服务器
+# 默认 false，需要服务端 [vpn] 部分也启用
+enabled = false
+
+# 🆕 VPN 服务器地址（必填如果启用 VPN）
+# ⚠️ 确保与 [client.server_addr] 和 [client.server_port] 一致
+vpn_server_addr = "your-vpn-server.com"
+vpn_server_port = 7100
+
+# 🆕 VPN 认证令牌（必填如果启用 VPN）
+# ⚠️ 建议使用与 [client.auth_token] 不同的令牌
+vpn_auth_token = "your-vpn-auth-token-here"
+
+# 🆕 VPN 隧道名称（可选）
+# 默认 "default"
+vpn_tunnel_name = "default"
+
+# 🆕 VPN 隧道类型（可选）
+# 支持 "tcp", "udp", "webrtc"
+# 默认 "tcp"，需要与服务器配置一致
+vpn_tunnel_type = "tcp"
+
+# 🆕 VPN 本地 IP（可选）
+# 客户端在 VPN 网络中的 IP 地址
+# 如果留空，服务器会自动分配
+vpn_local_ip = ""
+
+# 🆕 VPN 远程 IP（可选）
+# VPN 服务器的 IP 地址
+# 如果留空，使用 vpn_server_addr 解析的 IP
+vpn_remote_ip = ""
+
+# 🆕 VPN 子网掩码（可选）
+# 默认 "255.255.255.0"
+vpn_netmask = "255.255.255.0"
+
+# 🆕 VPN 协议（可选）
+# 支持 "tcp", "udp", "quic"
+# 默认 "tcp"
+vpn_protocol = "tcp"
+
+# 🆕 是否启用数据混淆（可选）
+# 启用后可以防止 DPI 检测和流量分析
+# 默认 false，需要服务器 [obfuscation] 部分也启用
+vpn_obfuscation = false
+
+# 🆕 VPN 混淆类型（可选）
+# 支持: "none", "xor", "aes", "chacha", "stego", "morph"
+# 默认 "stego"，需要与服务器配置一致
+vpn_obfuscation_type = "stego"
+
+# 🆕 VPN MTU（可选）
+# 默认 1500，如果遇到分片问题可以减小
+# mtu = 1500
+
+# 🆕 VPN 路由配置（可选）
+# 客户端路由配置，可以指定哪些流量通过 VPN 路由
+[vpn.routes]
+# 是否启用自定义路由
+enabled = false
+
+# 路由列表
+[[vpn.routes.items]]
+# 目标网络
+network = "10.0.0.0/24"
+# 是否通过 VPN 路由
+via_vpn = true
+# 描述
+description = "内部网络"
+
+[[vpn.routes.items]]
+network = "192.168.1.0/24"
+via_vpn = false
+description = "家庭网络"
+
+# 🆕 VPN 连接策略（可选）
+[vpn.connection]
+# 自动重连
+auto_reconnect = true
+# 最大重连次数（0 = 无限）
+max_reconnect_attempts = 0
+# 重连间隔（秒）
+reconnect_interval = 5
+# 重连超时（秒）
+reconnect_timeout = 30
+
+# 🆕 VPN 保活配置（可选）
+[vpn.keepalive]
+# 启用保活
+enabled = true
+# 保活间隔（秒）
+interval = 30
+# 保活超时（秒）
+timeout = 10
+# 最大保活失败次数
+max_failures = 3
+
+# 🆕 VPN 安全配置（可选）
+[vpn.security]
+# 是否启用证书验证
+verify_cert = true
+# 证书文件路径
+cert_file = ""
+# 私钥文件路径
+key_file = ""
+# CA 证书文件路径
+ca_file = ""
+
+# 🆕 VPN 统计配置（可选）
+[vpn.statistics]
+# 启用统计
+enabled = true
+# 统计间隔（秒）
+interval = 60
+# 显示实时流量
+show_realtime = true
+
+# 🆕 VPN 高级配置（可选）
+[vpn.advanced]
+# 启用压缩
+enable_compression = false
+# 启用 QoS 流量整形
+enable_qos = false
+# 带宽限制（上传/下载）
+bandwidth_limit_up = "0"  # 0 = 无限制
+bandwidth_limit_down = "0"  # 0 = 无限制
+# 启用多路径传输（需要支持 MPTCP 的网络）
+enable_multipath = false
+# 缓冲区大小（KB）
+buffer_size = 64
+
+# ----------------------------------------------------------------------------
+# 混淆配置（与服务器端配合使用）
+# ----------------------------------------------------------------------------
+[obfuscation]
+# 🆕 是否启用客户端混淆（可选）
+# 需要与服务器端 [obfuscation] 配置配合使用
+enabled = false
+
+# 🆕 客户端混淆类型（可选）
+# 支持: "none", "xor", "aes", "chacha", "stego", "morph"
+# 建议与服务端 [obfuscation.default_type] 一致
+default_type = "stego"
+
+# 🆕 允许的混淆类型（可选）
+# 留空表示允许所有支持的类型
+allowed_types = ["stego", "morph", "aes", "chacha", "xor", "none"]
+
+# 🆕 自适应混淆（可选）
+# 根据连接类型自动选择最佳混淆方式
+adaptive_enabled = false
+
+# 🆕 密钥轮换时间（可选）
+# 单位: 分钟，0 表示不轮换
+# 建议设置为 60-1440 分钟（1 小时到 1 天）
+key_rotation = 0
+
+# 🆕 数据包填充（可选）
+# 启用后可以抵抗基于数据包大小的流量分析
+packet_padding = false
+
+# 🆕 流量整形（可选）
+# 启用后可以模仿常见协议的特征
+traffic_morphing = false
+
+# 🆕 混淆强度（可选）
+# 1-10，数字越大混淆效果越强，但性能越低
+strength = 5
+
+# 🆕 随机化数据包大小（可选）
+# 启用后会在一定范围内随机化数据包大小
+randomize_packet_size = false
+# 最小数据包大小（字节）
+min_packet_size = 100
+# 最大数据包大小（字节）
+max_packet_size = 1500
+
+# ----------------------------------------------------------------------------
+# Web 面板客户端配置
+# ----------------------------------------------------------------------------
+[dashboard]
+# Web 面板地址（用于客户端管理界面）
+web_dashboard_url = "http://localhost:7500"
+
+# 客户端管理密钥
+client_management_key = ""
+
+# 启用客户端 Web 界面
+enable_client_web = true
+
+# 客户端 Web 端口
+client_web_port = 7501
+
+# 是否启用 WebSocket 实时监控
+enable_websocket = true

@@ -1,0 +1,1025 @@
+# ============================================================================
+# AetherTunnel 服务端配置 - 标准版
+# 适合大部分用户使用，高级功能已标注
+# ============================================================================
+#
+# 📝 配置说明：
+#    - 带 ★ 的配置项为必填项，第一次使用必须配置
+#    - 带 ⚠️ 的配置项为可选项，可以使用默认值
+#    - 带 🔧 的配置项为高级配置，一般不需要改
+#    - 带 🆕 的配置项为创新功能，按需开启
+#
+# ⚠️ 注意：第一次使用建议只修改 [server] 的 bind_port 和 auth_token
+#
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# 🔰 基础配置（必填！）
+# ----------------------------------------------------------------------------
+[server]
+# ★ 绑定地址（一般不需要改）
+# 默认 "0.0.0.0" 表示监听所有网卡
+# bind_addr = "0.0.0.0"
+
+# ★ 监听端口（建议改为非默认端口，更安全）
+# 默认 7000，建议改为 7001-7999 之间的端口
+# 避免使用常用端口：80, 443, 22, 3306, 5432 等
+bind_port = 7000
+
+# ★ 认证令牌（必填！这是连接的"密码"）
+# ⚠️ 务必使用强随机字符串，至少 16 位，包含大小写字母和数字
+# ❌ 错误示例：password, admin, 123456
+# ✅ 正确示例：a3f9e2c1b8d4e6f5a7b8c9d0e1f2g3h4
+auth_token = "change-this-to-a-secure-random-token-at-least-16-chars"
+
+# ⚠️ 虚拟主机端口（可选，用于域名访问服务）
+# 如果你配置了域名访问内网服务，需要开放这两个端口
+# 默认 HTTP 端口
+# vhost_http_port = 80
+# 默认 HTTPS 端口
+# vhost_https_port = 443
+
+# 🆕 QUIC 协议支持（可选，基于 UDP 的低延迟协议）
+# 实验性功能，需要 UDP 端口
+# quic_enabled = false
+# quic_port = 8443
+
+# 🔧 最大并发连接数（可选，防止资源耗尽）
+# 默认 10000，建议根据服务器配置调整
+# max_connections = 10000
+
+# 🔧 优雅关闭超时时间（可选）
+# 服务关闭前等待现有连接完成的时间（秒）
+# graceful_shutdown_timeout = 30
+
+# 🔧 工作线程数（可选，0 = 自动根据 CPU 核心数设置）
+# worker_threads = 0
+
+
+# ----------------------------------------------------------------------------
+# 🔐 TLS 加密配置（强烈推荐生产环境启用！）
+# ----------------------------------------------------------------------------
+[tls]
+# ⚠️ 是否启用 TLS（强烈建议生产环境开启！）
+# 开启后所有连接都会被加密，更安全
+# 默认 false，生产环境建议 true
+enabled = false
+
+# 🆕 证书和私钥文件路径（启用 TLS 时必填）
+# ⚠️ 文件路径必须是绝对路径或相对路径
+# ⚠️ 可以使用 Let's Encrypt 免费证书（见下方 [cert_manager] 配置）
+# cert_file = "/path/to/server.crt"
+# key_file = "/path/to/server.key"
+
+# ⚠️ CA 证书（用于双向 TLS 认证）
+# ⚠️ 如果要求客户端证书（client_auth = true），需要配置此项
+# ca_file = "/path/to/ca.crt"
+
+# ⚠️ 是否要求客户端证书（双向认证）
+# ⚠️ 启用后客户端必须提供有效证书才能连接，更安全但配置更复杂
+# 默认 false，建议生产环境考虑启用
+# client_auth = false
+
+# ⚠️ 最低 TLS 版本（可选）
+# TLS1.2 或 TLS1.3，建议使用 TLS1.3（默认）
+# TLS1.3 性能更好，安全性更高
+min_version = "TLS1.3"
+
+# 🆕 支持的加密套件（可选）
+# 留空使用 Go 默认的安全加密套件，一般不需要手动配置
+# cipher_suites = []
+
+# 🆕 会话票据密钥（可选，用于会话恢复）
+# session_ticket_key = ""
+
+# 🆕 OCSP 装订（可选，提高 TLS 握手性能）
+# ocsp_stapling = true
+# ocsp_response_file = "ocsp.der"
+
+
+# ----------------------------------------------------------------------------
+# 🔐 VPN 虚拟专用网络配置（🆕 创新功能）
+# ----------------------------------------------------------------------------
+[vpn]
+# 🆕 是否启用 VPN 功能（可选）
+# 启用后，客户端和服务端之间可以建立虚拟专用网络
+# 默认 false，启用后需要配置下面的参数
+enabled = false
+
+# 🆕 VPN 绑定地址（可选）
+# 默认 "0.0.0.0" 表示监听所有网卡
+# bind_addr = "0.0.0.0"
+
+# 🆕 VPN 监听端口（可选）
+# 默认 7100，建议改为 7101-7199 之间的端口
+# ⚠️ 确保此端口在防火墙中开放
+port = 7100
+
+# 🆕 VPN 本地 IP（可选）
+# 服务端的虚拟 IP 地址
+# ⚠️ 建议使用私有 IP 地址段，如 10.0.0.1
+local_ip = "10.0.0.1"
+
+# 🆕 VPN 远程 IP（可选）
+# 客户端分配的起始 IP 地址
+# ⚠️ 建议使用私有 IP 地址段，如 10.0.0.2
+remote_ip = "10.0.0.2"
+
+# 🆕 VPN 子网掩码（可选）
+# 默认 255.255.255.0，表示支持 254 个客户端
+netmask = "255.255.255.0"
+
+# 🆕 VPN 协议（可选）
+# 支持 "tcp", "udp", "webrtc"
+# 默认 "tcp"，WebRTC 需要额外配置
+protocol = "tcp"
+
+# 🆕 是否启用数据混淆（可选）
+# 启用后可以防止 DPI 检测和流量分析
+# 默认 false，启用后需要配置 [obfuscation] 部分
+obfuscation = false
+
+# 🆕 VPN 认证令牌（必填如果启用 VPN）
+# ⚠️ 如果启用 VPN，必须设置此参数
+# 建议使用和 server.auth_token 不同的令牌
+# vpn_auth_token = "your-vpn-auth-token-here"
+
+# 🆕 VPN 最大对等节点数（可选）
+# 默认 254，与子网掩码匹配
+# max_peers = 254
+
+# 🆕 VPN MTU（可选）
+# 默认 1500，如果遇到分片问题可以减小
+# mtu = 1500
+
+# 🆕 启用性能优化（可选）
+# 默认 false，启用后可以提高高并发场景下的性能
+# enable_performance = false
+
+# 🆕 最大连接池大小（可选）
+# 默认 1000，建议设置为最大并发连接数
+# max_pool_size = 1000
+
+# 🆕 启用数据压缩（可选）
+# 默认 false，启用后可以减少带宽使用
+# enable_compression = false
+
+# 🆕 启用 QoS 流量整形（可选）
+# 默认 false，启用后可以优化流量控制
+# enable_qos = false
+
+# 🆕 带宽限制（可选）
+# 格式: "100MB" 或 "1Gbps"，0 = 无限制
+# bandwidth_limit = "0"
+
+# 🆕 支持的协议列表（可选）
+# 支持: "tcp", "udp", "sctp", "websocket", "http", "https", "ssh", "dns"
+# 默认 ["tcp", "udp"]
+# supported_protocols = ["tcp", "udp", "sctp", "websocket", "http"]
+
+# 🆕 启用HTTP转发（可选）
+# 默认 false，启用后可以通过HTTP协议转发VPN数据
+# enable_http_forward = false
+
+# 🆕 启用SCTP转发（可选）
+# 默认 false，启用后可以通过SCTP协议转发VPN数据
+# enable_sctp_forward = false
+
+# 🆕 启用WebSocket转发（可选）
+# 默认 false，启用后可以通过WebSocket协议转发VPN数据
+# enable_ws_forward = false
+
+# 🆕 协议超时（可选）
+# 默认 "30s"，支持 "10s", "30s", "1m", "5m"
+# protocol_timeout = "30s"
+
+# 🆕 协议最大消息大小（可选）
+# 默认 65535，单位字节，最大 10485760 (10MB)
+# protocol_max_size = 65535
+
+
+# ----------------------------------------------------------------------------
+# 🎭 数据混淆和防侦测配置（🆕 创新功能）
+# ----------------------------------------------------------------------------
+[obfuscation]
+# 🆕 是否启用数据混淆（可选）
+# 启用后可以有效防止 DPI 检测和流量分析
+# 默认 false，启用后 [vpn] 的 obfuscation 也需要设置为 true
+enabled = false
+
+# 🆕 默认混淆类型（可选）
+# 支持: "none", "xor", "aes", "chacha", "stego", "morph"
+# 默认 "stego"
+# 不同协议的特点:
+# - none: 不混淆，明文传输
+# - xor: 简单 XOR 加密，性能最好
+# - aes: AES 加密，安全性最高
+# - chacha: ChaCha 加密，移动设备性能最好
+# - stego: 隐写术，隐藏在 HTTP 协议中
+# - morph: 流量整形，模仿其他协议
+default_type = "stego"
+
+# 🆕 允许的混淆类型列表（可选）
+# 留空表示允许所有支持的类型
+# 建议只列出你认为安全的类型
+# allowed_types = ["stego", "morph", "aes"]
+
+# 🆕 是否启用自适应混淆（可选）
+# 启用后根据连接类型自动选择最佳混淆方式
+# 默认 false，需要 [vpn.obfuscation] 和 [obfuscation.enabled] 都启用
+adaptive_enabled = false
+
+# 🆕 密钥轮换时间（可选）
+# 单位: 分钟，0 表示不轮换
+# 建议设置为 60-1440 分钟（1 小时到 1 天）
+# key_rotation = 60
+
+# 🆕 是否启用数据包填充（可选）
+# 启用后可以抵抗基于数据包大小的流量分析
+# 默认 false，会增加带宽使用
+# packet_padding = false
+
+# 🆕 是否启用流量整形（可选）
+# 启用后可以模仿常见协议的特征
+# 默认 false，需要 [obfuscation.adaptive_enabled] 启用
+# traffic_morphing = false
+
+
+# ----------------------------------------------------------------------------
+# 🆕 现代加密配置（高级安全特性）
+# ----------------------------------------------------------------------------
+[advanced_crypto]
+# ⚠️ 启用 Ed25519 签名认证（比 RSA 更快更安全）
+# 实验性功能，默认启用
+# enable_ed25519 = true
+
+# ⚠️ 启用 ChaCha20-Poly1305 AEAD 加密（比 AES-GCM 更快）
+# 实验性功能，默认启用
+# enable_chacha20_poly1305 = true
+
+# 🆕 密钥派生函数类型（可选）
+# 可选：argon2id, bcrypt, scrypt
+# argon2id 是最新的，抗 GPU/ASIC 攻击，推荐使用
+kdf_type = "argon2id"
+
+# 🆕 Argon2id 参数（可选，用于密码派生）
+# 这些参数影响密钥派生的安全性和性能
+# 一般来说，内存和时间越大越安全，但性能开销越大
+# argon2id_time = 3        # 迭代次数，默认 3
+# argon2id_memory = 65536  # 内存大小（KB），默认 64MB
+# argon2id_threads = 4     # 并发线程数，默认 4
+# argon2id_keylen = 32     # 派生密钥长度（字节），默认 32
+
+# 🆕 密钥轮换周期（可选，单位：小时）
+# 默认 168 小时 = 7 天，建议不要太短影响性能
+# key_rotation_interval = 168
+
+
+# ----------------------------------------------------------------------------
+# 🔒 安全与访问控制（强烈建议配置）
+# ----------------------------------------------------------------------------
+[security]
+# ⚠️ 启用 IP 白名单（可选，只允许这些 IP 访问）
+# 默认 false，启用后需要配置 allowed_ips
+# ⚠️ 支持 CIDR 格式，如 "192.168.1.0/24", "10.0.0.0/8"
+# enable_ip_whitelist = false
+# allowed_ips = ["192.168.1.0/24", "10.0.0.0/8"]
+
+# ⚠️ 启用 IP 黑名单（可选，禁止这些 IP 访问）
+# 默认 false
+# enable_ip_blacklist = false
+# blocked_ips = ["1.1.1.1", "2.2.2.2"]
+
+# 🆕 启用地理位置过滤（可选，按国家/地区限制访问）
+# 默认 false，启用后需要配置
+# 国家代码：ISO 3166-1 alpha-2（CN, US, JP, RU, GB 等）
+# enable_geo_blocking = false
+# blocked_countries = ["CN", "RU"]
+# allowed_countries = []
+
+# 🔧 每个客户端最大连接数（可选，防止单个客户端占用过多资源）
+# 默认 10，建议根据服务器配置调整
+# max_connections_per_client = 10
+
+# 🔧 每个客户端最大代理数（可选）
+# 默认 50，建议根据服务器配置调整
+# max_proxies_per_client = 50
+
+# ⚠️ 心跳超时时间（可选）
+# 默认 90 秒，客户端多久没有心跳就断开连接
+# 心跳超时太短可能误断网，太长可能检测不到掉线
+heartbeat_timeout = 90
+
+# ⚠️ 连接超时时间（可选）
+# 默认 10 秒，客户端连接建立的超时时间
+# connection_timeout = 10
+
+# ⚠️ 读超时时间（可选）
+# 默认 60 秒，读取数据的超时时间
+# read_timeout = 60
+
+# ⚠️ 写超时时间（可选）
+# 默认 60 秒，写入数据的超时时间
+# write_timeout = 60
+
+# ⚠️ 启用审计日志（推荐启用，记录所有操作和连接）
+# 默认 false，建议生产环境启用
+# enable_audit_log = false
+
+# ⚠️ 审计日志文件路径（启用审计日志时必填）
+# 建议使用绝对路径，确保有写入权限
+# audit_log_file = "/var/log/aethertunnel/audit.log"
+
+# ⚠️ 审计日志最大大小（可选）
+# 默认 "100MB"
+# audit_log_max_size = "100MB"
+
+# ⚠️ 审计日志保留天数（可选）
+# 默认 30 天
+# audit_log_max_age = 30
+
+# ⚠️ 审计日志最大备份数量（可选）
+# 默认 10 个
+# audit_log_max_backups = 10
+
+# ⚠️ 速率限制（可选，防止暴力破解和 DDoS）
+# 默认 100，每秒最大连接数
+# rate_limit = 100
+
+# ⚠️ 最大失败尝试次数（可选）
+# 默认 5，连续失败多少次后封禁
+# max_failed_attempts = 5
+
+# ⚠️ 自动封禁时长（可选）
+# 默认 "5m" = 5 分钟，可以设置为 "10m", "1h", "1d" 等
+# block_duration = "5m"
+
+# 🆕 启用连接指纹验证（可选，识别重复连接）
+# 默认 false
+# enable_fingerprint = true
+
+# 🆕 启用请求签名验证（可选）
+# 默认 false
+# enable_signature = true
+
+# 🆕 防重放攻击时间窗口（可选，单位：秒）
+# 默认 300 秒 = 5 分钟
+# 消息时间戳超过这个时间的会被拒绝
+# anti_replay_window = 300
+
+
+# ----------------------------------------------------------------------------
+# 📝 日志配置（可选）
+# ----------------------------------------------------------------------------
+[logging]
+# ⚠️ 日志级别（可选）
+# 可选：debug, info, warn, error, fatal
+# 默认 info，debug = 最详细，error = 只显示错误
+# 排查问题时建议用 debug，生产环境建议用 info 或 warn
+level = "info"
+
+# ⚠️ 日志格式（可选）
+# 可选：json, text
+# 默认 json，text = 易读，json = 机器友好
+format = "json"
+
+# ⚠️ 日志输出（可选）
+# 可选：stdout, file, both
+# 默认 both，输出到控制台和文件
+output = "both"
+
+# ⚠️ 日志文件路径（输出到文件时必填）
+# log_file = "/var/log/aethertunnel/server.log"
+
+# ⚠️ 日志轮转最大大小（可选）
+# 默认 "100MB"，日志文件达到这个大小时会创建新文件
+# max_size = "100MB"
+
+# ⚠️ 日志保留天数（可选）
+# 默认 30 天，超过这个天数的日志会被删除
+# max_age = 30
+
+# ⚠️ 日志最大备份数量（可选）
+# 默认 10 个，最多保留 10 个历史日志文件
+# max_backups = 10
+
+# ⚠️ 是否压缩旧日志（可选）
+# 默认 true，压缩可以节省磁盘空间
+# compress = true
+
+# ⚠️ 是否输出到控制台（可选）
+# 默认 true
+# console_output = true
+
+
+# ----------------------------------------------------------------------------
+# 🚀 传输层配置（可选，一般不需要改）
+# ----------------------------------------------------------------------------
+[transport]
+# ⚠️ TCP 多路复用（可选，提高性能）
+# 默认 true，建议保持开启
+# tcp_mux = true
+
+# ⚠️ TCP 多路复用心跳间隔（可选）
+# 默认 60 秒
+# tcp_mux_keepalive_interval = 60
+
+# ⚠️ TCP Keepalive（可选，保持连接活跃）
+# 默认 30 秒
+# tcp_keepalive = 30
+
+# ⚠️ 最大连接池大小（可选）
+# 默认 5，建议根据服务器配置调整
+# max_pool_count = 5
+
+# ⚠️ 最小空闲连接数（可选）
+# 默认 2
+# min_pool_size = 2
+
+# ⚠️ 连接池最大空闲时间（可选）
+# 默认 300 秒 = 5 分钟
+# pool_max_idle_time = 300
+
+# ⚠️ 启用连接池健康检查（可选）
+# 默认 true
+# pool_health_check = true
+
+# ⚠️ 连接池健康检查间隔（可选）
+# 默认 30 秒
+# pool_health_check_interval = 30
+
+# ⚠️ 启用 Nagle 算法（可选）
+# 默认 false，延迟敏感场景建议保持 false
+# enable_nagle = false
+
+# ⚠️ 启用 TCP Fast Open（可选）
+# 默认 false，需要系统支持
+# enable_fast_open = true
+
+# ⚠️ 启用 SO_REUSEPORT（可选）
+# 默认 false，多进程监听相同端口
+# enable_reuse_port = true
+
+
+# ----------------------------------------------------------------------------
+# 📊 负载均衡配置（可选）
+# ----------------------------------------------------------------------------
+[load_balancer]
+# ⚠️ 启用负载均衡（可选，多服务器场景）
+# 默认 false
+enabled = false
+
+# ⚠️ 负载均衡算法（可选）
+# 可选：round_robin, least_conn, ip_hash, random, weighted
+# 默认 least_conn，根据连接数最少的服务器分配
+algorithm = "least_conn"
+
+# ⚠️ 健康检查间隔（可选）
+# 默认 10 秒，检查后端服务器是否健康
+# health_check_interval = 10
+
+# ⚠️ 健康检查超时（可选）
+# 默认 3 秒
+# health_check_timeout = 3
+
+# ⚠️ 最大失败次数后下线节点（可选）
+# 默认 3，连续失败 3 次后暂时移除该节点
+# max_failures = 3
+
+# ⚠️ 后端节点列表（启用负载均衡时必填）
+# 每个节点需要一个 name 和 addr
+# weight = 权重，权重越大分配越多流量
+# max_conns = 最大连接数
+[[load_balancer.backends]]
+# name = "backend-1"
+# addr = "192.168.1.10:7000"
+# weight = 100
+# max_conns = 1000
+
+[[load_balancer.backends]]
+# name = "backend-2"
+# addr = "192.168.1.11:7000"
+# weight = 100
+# max_conns = 1000
+
+
+# ----------------------------------------------------------------------------
+# 📈 监控与指标（可选）
+# ----------------------------------------------------------------------------
+[monitoring]
+# ⚠️ 启用 Prometheus 指标（可选，方便监控）
+# 默认 false，启用后可以访问 /metrics 获取指标
+# prometheus_enabled = false
+
+# ⚠️ Prometheus 端口（可选）
+# 默认 9090，避免与端口冲突
+# prometheus_port = 9090
+
+# ⚠️ Prometheus 路径（可选）
+# 默认 "/metrics"
+# prometheus_path = "/metrics"
+
+# 🆕 启用 OpenTelemetry 追踪（可选，分布式追踪）
+# 默认 false
+# otel_enabled = false
+
+# 🆕 OpenTelemetry 端点（可选）
+# 默认 "http://jaeger:4318"
+# otel_endpoint = "http://jaeger:4318"
+
+# 🆕 OpenTelemetry 采样率（可选）
+# 默认 0.1 = 10%，不要设置为 1.0 = 100%，性能开销大
+# otel_sample_rate = 0.1
+
+# ⚠️ 启用性能分析（可选，性能调试）
+# 默认 false，启用后可以访问 /debug/pprof
+# pprof_enabled = false
+
+# ⚠️ 性能分析端口（可选）
+# 默认 6060
+# pprof_port = 6060
+
+# ⚠️ 启用实时连接统计（可选）
+# 默认 true
+# connection_stats = true
+
+# ⚠️ 统计间隔（可选）
+# 默认 60 秒
+# stats_interval = 60
+
+# ⚠️ 自定义指标导出（可选）
+# 默认 influxdb，可选 prometheus
+# custom_metrics_exporter = "influxdb"
+
+# ⚠️ 自定义指标端点（可选）
+# 默认 "http://influxdb:8086"
+# custom_metrics_endpoint = "http://influxdb:8086"
+
+
+# ----------------------------------------------------------------------------
+# 💾 数据库存储（可选，用于持久化配置和状态）
+# ----------------------------------------------------------------------------
+[database]
+# ⚠️ 数据库类型（可选）
+# 可选：none, mysql, postgresql, sqlite, redis
+# 默认 none，建议生产环境使用 mysql/postgresql
+type = "none"
+
+# ⚠️ 数据库连接配置（非 none 时必填）
+# host = "localhost"
+# port = 3306
+# username = "aethertunnel"
+# password = ""
+# database = "aethertunnel"
+
+# ⚠️ Redis 配置（type = redis 时使用）
+# redis_addr = "localhost:6379"
+# redis_password = ""
+# redis_db = 0
+
+# ⚠️ 连接池配置（可选）
+# max_open_conns = 100
+# max_idle_conns = 10
+# conn_max_lifetime = "1h"
+
+
+# ----------------------------------------------------------------------------
+# 🔌 插件系统（可选）
+# ----------------------------------------------------------------------------
+[plugins]
+# ⚠️ 插件目录（可选）
+# 默认 "./plugins"
+# plugin_dir = "./plugins"
+
+# ⚠️ 启用的插件列表（可选）
+# 默认空列表，不启用任何插件
+# enabled_plugins = []
+
+# ⚠️ 插件配置（可选）
+# 每个插件一个 section，[plugins.插件名]
+# [plugins.example]
+# option1 = "value1"
+# option2 = 123
+
+
+# ----------------------------------------------------------------------------
+# 🌐 Web 管理面板（可选，推荐开启）
+# ----------------------------------------------------------------------------
+[dashboard]
+# ⚠️ 启用管理面板（可选）
+# 默认 true，建议保持开启
+enabled = true
+
+# ⚠️ 监听端口（可选）
+# 默认 7500，避免与上面端口冲突
+port = 7500
+
+# ⚠️ 绑定地址（可选）
+# 默认 "127.0.0.1" = 只监听本地（更安全）
+# 如果要从外网访问，改为 "0.0.0.0"（但建议配合反向代理）
+# bind_addr = "127.0.0.1"
+
+# ⚠️ 认证凭据（必填！建议使用强密码）
+# 默认 admin/admin，生产环境务必修改！
+username = "admin"
+password = "admin"
+
+# ⚠️ 资源文件目录（可选）
+# 默认 "./assets"
+# assets_dir = "./assets"
+
+# ⚠️ 启用主题切换（可选）
+# 默认 true，可以切换明/暗主题
+# enable_themes = true
+
+# ⚠️ 默认主题（可选）
+# 默认 "dark"，可选：light, dark, auto
+# default_theme = "dark"
+
+# ⚠️ 启用 WebSocket 实时更新（可选）
+# 默认 true
+# enable_websocket = true
+
+# ⚠️ 会话超时时间（可选）
+# 默认 3600 秒 = 1 小时
+# session_timeout = 3600
+
+# ⚠️ 会话最大并发数（可选）
+# 默认 5，同一账号最多同时登录 5 次
+# max_concurrent_sessions = 5
+
+# ⚠️ 启用 API 密钥认证（可选）
+# 默认 false，启用后可以用 API 密钥访问 API
+# enable_api_key = false
+
+# ⚠️ API 密钥列表（启用 API 密钥时使用）
+# 默认 []
+# api_keys = ["key1", "key2"]
+
+
+# ----------------------------------------------------------------------------
+# 🔗 代理配置
+# ----------------------------------------------------------------------------
+[proxy]
+# ⚠️ 绑定地址（可选）
+# 默认 "0.0.0.0"
+bind_addr = "0.0.0.0"
+
+# ⚠️ 允许的端口范围（可选）
+# 默认 "8000-9000"
+# allow_ports = "8000-9000"
+
+# ⚠️ 禁止的端口（可选，安全考虑）
+# 默认 "22,3389,445,139,135,137,138" = 远程桌面、文件共享等危险端口
+# deny_ports = "22,3389,445,139,135,137,138"
+
+# ⚠️ 启用端口复用（可选）
+# 默认 false
+# enable_port_reuse = false
+
+# ⚠️ 默认代理配置继承（可选）
+# 默认 false
+# default_encryption = false
+# default_compression = false
+# default_bandwidth_limit = "0"
+
+
+# ----------------------------------------------------------------------------
+# 🌐 HTTP/HTTPS 特定配置
+# ----------------------------------------------------------------------------
+[http]
+# ⚠️ 启用 HTTPS 强制重定向（可选）
+# 默认 false
+# force_https = false
+
+# ⚠️ 启用 HSTS（HTTP 严格传输安全）（可选）
+# 默认 true
+# enable_hsts = true
+# hsts_max_age = 31536000
+# hsts_include_subdomains = true
+
+
+# ----------------------------------------------------------------------------
+# 🔄 会话管理（可选）
+# ----------------------------------------------------------------------------
+[session]
+# ⚠️ Session 存储类型（可选）
+# 可选：memory, redis, database
+# 默认 memory
+# store_type = "memory"
+
+# ⚠️ Session 过期时间（可选）
+# 默认 86400 秒 = 24 小时
+# expiry = 86400
+
+# ⚠️ Session 最大会话数（可选）
+# 默认 10000
+# max_sessions = 10000
+
+# ⚠️ Session 清理间隔（可选）
+# 默认 3600 秒 = 1 小时
+# cleanup_interval = 3600
+
+# ⚠️ Redis 配置（store_type = redis 时使用）
+# redis_addr = "localhost:6379"
+# redis_password = ""
+# redis_db = 1
+# redis_prefix = "aethertunnel:session:"
+
+
+# ----------------------------------------------------------------------------
+# 🌐 高级网络配置（可选）
+# ----------------------------------------------------------------------------
+[network]
+# ⚠️ 启用 SO_REUSEADDR（可选）
+# 默认 true
+# enable_reuse_addr = true
+
+# ⚠️ 启用 SO_KEEPALIVE（可选）
+# 默认 true
+# enable_keepalive = true
+
+# ⚠️ TCP 用户超时（可选）
+# 默认 60000 毫秒 = 60 秒
+# tcp_user_timeout = 60000
+
+# ⚠️ 接收缓冲区大小（可选）
+# 默认 65536 字节 = 64KB
+# recv_buffer_size = 65536
+
+# ⚠️ 发送缓冲区大小（可选）
+# 默认 65536 字节 = 64KB
+# send_buffer_size = 65536
+
+# ⚠️ 启用 TCP_DEFER_ACCEPT（可选）
+# 默认 true
+# enable_defer_accept = true
+
+# ⚠️ TCP 快速打开队列大小（可选）
+# 默认 1024
+# fast_open_queue = 1024
+
+# ⚠️ 启用内核零拷贝（可选）
+# 默认 true
+# enable_zero_copy = true
+
+
+# ----------------------------------------------------------------------------
+# 💾 备份与恢复（可选）
+# ----------------------------------------------------------------------------
+[backup]
+# ⚠️ 启用自动备份（可选）
+# 默认 false
+enabled = false
+
+# ⚠️ 备份间隔（可选）
+# 默认 24 小时
+# interval = 24
+
+# ⚠️ 备份目录（可选）
+# 默认 "./backups"
+# backup_dir = "./backups"
+
+# ⚠️ 最大备份数量（可选）
+# 默认 30
+# max_backups = 30
+
+# ⚠️ 压缩备份（可选）
+# 默认 true
+# compress = true
+
+# ⚠️ 备份保留天数（可选）
+# 默认 90 天
+# retention_days = 90
+
+
+# ----------------------------------------------------------------------------
+# 🔄 故障转移配置（可选）
+# ----------------------------------------------------------------------------
+[failover]
+# ⚠️ 启用故障转移（可选）
+# 默认 false
+enabled = false
+
+# ⚠️ 主服务器地址（必填）
+# primary_addr = "192.168.1.10:7000"
+
+# ⚠️ 备用服务器列表（可选）
+# secondary_addrs = ["192.168.1.11:7000", "192.168.1.12:7000"]
+
+# ⚠️ 心跳检查间隔（可选）
+# 默认 5 秒
+# heartbeat_interval = 5
+
+# ⚠️ 超时判定阈值（可选）
+# 默认 15 秒
+# timeout_threshold = 15
+
+# ⚠️ 自动切换延迟（可选）
+# 默认 30 秒，避免频繁切换
+# switch_delay = 30
+
+
+# ----------------------------------------------------------------------------
+# 🔔 通知与告警（可选）
+# ----------------------------------------------------------------------------
+[notification]
+# ⚠️ 启用通知（可选）
+# 默认 false
+enabled = false
+
+# ⚠️ 邮件通知（可选）
+[notification.email]
+enabled = false
+smtp_server = "smtp.gmail.com:587"
+smtp_username = ""
+smtp_password = ""
+from = "aethertunnel@example.com"
+to = ["admin@example.com"]
+
+# ⚠️ Slack 通知（可选）
+[notification.slack]
+enabled = false
+webhook_url = "https://hooks.slack.com/services/xxx"
+channel = "#alerts"
+username = "AetherTunnel"
+
+# ⚠️ Telegram 通知（可选）
+[notification.telegram]
+enabled = false
+bot_token = ""
+chat_id = ""
+
+# ⚠️ Webhook 通知（可选）
+[notification.webhook]
+enabled = false
+url = "https://your-webhook.com/notify"
+method = "POST"
+headers = { "Content-Type" = "application/json" }
+
+# ⚠️ 告警规则（可选）
+[[notification.rules]]
+name = "connection_failure"
+enabled = true
+threshold = 10
+window = "1m"
+severity = "warning"
+
+[[notification.rules]]
+name = "high_memory_usage"
+enabled = true
+threshold = 90  # 百分比
+window = "5m"
+severity = "critical"
+
+[[notification.rules]]
+name = "disk_space_low"
+enabled = true
+threshold = 10  # 百分比
+window = "1h"
+severity = "warning"
+
+
+# ----------------------------------------------------------------------------
+# 🚀 性能优化（可选）
+# ----------------------------------------------------------------------------
+[performance]
+# ⚠️ 启用连接复用（可选）
+# 默认 true
+# enable_connection_reuse = true
+
+# ⚠️ 最大复用次数（可选）
+# 默认 100
+# max_reuse_count = 100
+
+# ⚠️ 启用数据批量发送（可选）
+# 默认 true
+# enable_batch_send = true
+
+# ⚠️ 批量大小（可选）
+# 默认 8192 字节 = 8KB
+# batch_size = 8192
+
+# ⚠️ 批量超时（可选）
+# 默认 10 毫秒
+# batch_timeout = 10
+
+# ⚠️ 启用内存池（可选）
+# 默认 true
+# enable_memory_pool = true
+
+# ⚠️ 内存池大小（可选）
+# 默认 100 MB
+# pool_size = 100
+
+# ⚠️ 启用 CPU 亲和性（可选）
+# 默认 false，绑定到特定 CPU 核心
+# enable_cpu_affinity = false
+# cpu_cores = [0, 1]
+
+# ⚠️ 启用大页内存（可选）
+# 默认 false
+# enable_huge_pages = false
+
+
+# ----------------------------------------------------------------------------
+# 📜 证书管理（自动签发 Let's Encrypt 证书）
+# ----------------------------------------------------------------------------
+[cert_manager]
+# ⚠️ 启用自动证书管理（可选）
+# 默认 false
+enabled = false
+
+# ⚠️ Let's Encrypt 邮箱（必填）
+# email = "admin@example.com"
+
+# ⚠️ 证书缓存目录（可选）
+# 默认 "./certs"
+# cache_dir = "./certs"
+
+# ⚠️ 证书颁发机构（可选）
+# 可选：letsencrypt, zerossl
+# 默认 letsencrypt
+ca = "letsencrypt"
+
+# ⚠️ DNS 挑战提供者（用于通配符证书）
+# 默认 cloudflare
+# dns_provider = "cloudflare"
+
+# ⚠️ Cloudflare 配置（dns_provider = cloudflare 时使用）
+# cloudflare_api_token = ""
+# cloudflare_zone_id = ""
+
+# ⚠️ 证书自动续期（可选）
+# 默认 30 天 = 提前 30 天续期
+# renew_before = 30
+
+
+# ----------------------------------------------------------------------------
+# ✅ 审计与合规（可选）
+# ----------------------------------------------------------------------------
+[compliance]
+# ⚠️ 启用 GDPR 数据保护（可选）
+# 默认 true
+# enable_gdpr = true
+
+# ⚠️ 数据保留策略（可选）
+# 默认 90 天
+# data_retention_days = 90
+
+# ⚠️ 启用访问日志分析（可选）
+# 默认 false
+# enable_log_analysis = false
+
+# ⚠️ 异常检测阈值（可选）
+# 默认 0.8
+# anomaly_threshold = 0.8
+
+# ⚠️ 合规报告生成（可选）
+# 默认 false
+# generate_reports = false
+
+# ⚠️ 报告生成间隔（可选）
+# 默认 "weekly"
+# report_interval = "weekly"
+
+# ⚠️ 报告收件人（可选）
+# 默认 []
+# report_recipients = ["admin@example.com"]
+
+
+# ============================================================================
+# 💡 配置小贴士
+# ============================================================================
+#
+# 🎯 第一次使用？
+#    1. 只需要修改 [server] 的 bind_port 和 auth_token
+#    2. 其他都用默认值就可以运行了！
+#
+# 🔒 想要更安全？
+#    1. 开启 [tls] 的 enabled = true
+#    2. 配置证书文件（cert_file, key_file）
+#    3. 修改 [dashboard] 的 username 和 password
+#    4. 开启 [security] 的 enable_audit_log = true
+#
+# 📊 想要监控？
+#    1. [dashboard] 默认已开启，访问 http://localhost:7500
+#    2. 默认用户名：admin，密码：admin（记得改！）
+#
+# 🌐 想要域名访问？
+#    1. 配置 [server] 的 vhost_http_port 和 vhost_https_port
+#    2. 在 [proxy] 里配置 custom_domains
+#    3. 需要把域名 A 记录指向你的服务器 IP
+#
+# 🆕 想试试高级功能？
+#    1. 查看 server-toml-innovative-addon.example
+#    2. 文档：docs/INNOVATIVE_FEATURES.md
+#    3. 功能非常丰富，包括：WebRTC P2P、AI 智能路由、DHT 等
+#
+# ❓ 遇到问题？
+#    1. 查看 [logging] 的日志文件
+#    2. 启用 [logging] 的 level = "debug" 查看详细信息
+#    3. 检查端口是否被占用
+#    4. 检查防火墙规则
+#
+# ============================================================================
