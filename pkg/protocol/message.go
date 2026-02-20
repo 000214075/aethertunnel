@@ -1,245 +1,112 @@
 package protocol
 
 import (
-	"encoding/json"
-	"errors"
-	"io"
-	"net"
+    "encoding/binary"
+    "errors"
+    "fmt"
+    "io"
 )
 
-// 消息类型常量
+// MessageType 消息类型
+type MessageType uint32
+
 const (
-	TypeLogin          = 'L'  // 登录
-	TypeLoginResp      = 'R'  // 登录响应
-	TypeNewProxy       = 'P'  // 新代理
-	TypeNewProxyResp   = 'Q'  // 新代理响应
-	TypeCloseProxy     = 'C'  // 关闭代理
-	TypeNewWorkConn    = 'W'  // 新工作连接
-	TypeReqWorkConn    = 'O'  // 请求工作连接
-	TypeStartWorkConn  = 'S'  // 启动工作连接
-	TypePing           = 'H'  // 心跳
-	TypePong           = 'O'  // 心跳响应
-	TypeUDPPacket      = 'U'  // UDP数据包
+    MessageTypeAuth    MessageType = 1 // 认证
+    MessageTypeHeartbeat MessageType = 2 // 心跳
+    MessageTypeProxy    MessageType = 3 // 代理数据
+    MessageTypeData    MessageType = 4 // 数据传输
+    MessageTypeError    MessageType = 5 // 错误
 )
 
-var (
-	ErrInvalidMessage     = errors.New("invalid message")
-	ErrUnknownMessageType = errors.New("unknown message type")
-)
-
-// Message 消息接口
-type Message interface {
-	GetType() byte
+// Message 消息结构
+type Message struct {
+    Type    MessageType
+    Payload []byte
 }
 
-// Login 登录消息
-type Login struct {
-	Version      string            `json:"version"`
-	Hostname     string            `json:"hostname"`
-	OS           string            `json:"os"`
-	Arch         string            `json:"arch"`
-	User         string            `json:"user"`
-	Token        string            `json:"token"`
-	Timestamp    int64             `json:"timestamp"`
-	RunID        string            `json:"run_id"`
-	ClientID     string            `json:"client_id"`
-	PoolCount    int               `json:"pool_count"`
-	Metas        map[string]string `json:"metas"`
-	Signature    []byte            `json:"signature"`  // Ed25519 签名
-	PublicKey    []byte            `json:"public_key"` // Ed25519 公钥
+// WriteMessage 写入消息
+func WriteMessage(conn io.Writer, msg *Message) error {
+    // 写入消息类型（4 字节，大端）
+    if err := binary.Write(conn, binary.BigEndian, msg.Type); err != nil {
+        return fmt.Errorf("failed to write message type: %w", err)
+    }
+
+    // 写入消息长度（4 字节，大端）
+    payloadLen := uint32(len(msg.Payload))
+    if err := binary.Write(conn, binary.BigEndian, payloadLen); err != nil {
+        return fmt.Errorf("failed to write message length: %w", err)
+    }
+
+    // 写入消息内容
+    if _, err := conn.Write(msg.Payload); err != nil {
+        return fmt.Errorf("failed to write message payload: %w", err)
+    }
+
+    return nil
 }
 
-func (m *Login) GetType() byte { return TypeLogin }
+// ReadMessage 读取消息
+func ReadMessage(conn io.Reader) (*Message, error) {
+    // 读取消息类型
+    var msgType MessageType
+    if err := binary.Read(conn, binary.BigEndian, &msgType); err != nil {
+        return nil, fmt.Errorf("failed to read message type: %w", err)
+    }
 
-// LoginResp 登录响应
-type LoginResp struct {
-	Version     string `json:"version"`
-	RunID       string `json:"run_id"`
-	ServerTime  int64  `json:"server_time"`
-	Error       string `json:"error,omitempty"`
-	Nonce       []byte `json:"nonce"` // 用于后续签名
+    // 读取消息长度
+    var payloadLen uint32
+    if err := binary.Read(conn, binary.BigEndian, &payloadLen); err != nil {
+        return nil, fmt.Errorf("failed to read message length: %w", err)
+    }
+
+    // 验证消息长度
+    if payloadLen > 10*1024*1024 { // 限制 10MB
+        return nil, errors.New("message payload too large")
+    }
+    if payloadLen == 0 {
+        return nil, errors.New("message payload is empty")
+    }
+
+    // 读取消息内容
+    payload := make([]byte, payloadLen)
+    if _, err := io.ReadFull(conn, payload); err != nil {
+        return nil, fmt.Errorf("failed to read message payload: %w", err)
+    }
+
+    return &Message{
+        Type:    msgType,
+        Payload: payload,
+    }, nil
 }
 
-func (m *LoginResp) GetType() byte { return TypeLoginResp }
-
-// NewProxy 新代理消息
-type NewProxy struct {
-	ProxyName          string            `json:"proxy_name"`
-	ProxyType          string            `json:"proxy_type"`
-	UseEncryption      bool              `json:"use_encryption"`
-	UseCompression     bool              `json:"use_compression"`
-	BandwidthLimit     string            `json:"bandwidth_limit"`
-	BandwidthLimitMode string            `json:"bandwidth_limit_mode"`
-	Group              string            `json:"group"`
-	GroupKey           string            `json:"group_key"`
-	Metas              map[string]string `json:"metas"`
-
-	// TCP/UDP 特定字段
-	RemotePort int `json:"remote_port,omitempty"`
-
-	// HTTP/HTTPS 特定字段
-	CustomDomains     []string          `json:"custom_domains,omitempty"`
-	SubDomain         string            `json:"subdomain,omitempty"`
-	Locations         []string          `json:"locations,omitempty"`
-	HTTPUser          string            `json:"http_user,omitempty"`
-	HTTPPwd           string            `json:"http_pwd,omitempty"`
-	HostHeaderRewrite string            `json:"host_header_rewrite,omitempty"`
-
-	// STCP/XTCP 特定字段
-	SK         string   `json:"sk,omitempty"`
-	AllowUsers []string `json:"allow_users,omitempty"`
+// NewAuthMessage 创建认证消息
+func NewAuthMessage(token string) *Message {
+    return &Message{
+        Type:    MessageTypeAuth,
+        Payload: []byte(token),
+    }
 }
 
-func (m *NewProxy) GetType() byte { return TypeNewProxy }
-
-// NewProxyResp 新代理响应
-type NewProxyResp struct {
-	ProxyName  string `json:"proxy_name"`
-	RemoteAddr string `json:"remote_addr"`
-	Error      string `json:"error,omitempty"`
+// NewProxyMessage 创建代理消息
+func NewProxyMessage(data []byte) *Message {
+    return &Message{
+        Type:    MessageTypeProxy,
+        Payload: data,
+    }
 }
 
-func (m *NewProxyResp) GetType() byte { return TypeNewProxyResp }
-
-// CloseProxy 关闭代理消息
-type CloseProxy struct {
-	ProxyName string `json:"proxy_name"`
+// NewHeartbeatMessage 创建心跳消息
+func NewHeartbeatMessage() *Message {
+    return &Message{
+        Type:    MessageTypeHeartbeat,
+        Payload: []byte{},
+    }
 }
 
-func (m *CloseProxy) GetType() byte { return TypeCloseProxy }
-
-// NewWorkConn 新工作连接消息
-type NewWorkConn struct {
-	RunID        string `json:"run_id"`
-	Token        string `json:"token"`
-	Timestamp    int64  `json:"timestamp"`
-	Signature    []byte `json:"signature"` // 每个工作连接的签名
-}
-
-func (m *NewWorkConn) GetType() byte { return TypeNewWorkConn }
-
-// StartWorkConn 启动工作连接消息
-type StartWorkConn struct {
-	ProxyName string `json:"proxy_name"`
-	SrcAddr   string `json:"src_addr,omitempty"`
-	SrcPort   uint16 `json:"src_port,omitempty"`
-	DstAddr   string `json:"dst_addr,omitempty"`
-	DstPort   uint16 `json:"dst_port,omitempty"`
-	Error     string `json:"error,omitempty"`
-}
-
-func (m *StartWorkConn) GetType() byte { return TypeStartWorkConn }
-
-// Ping 心跳消息
-type Ping struct {
-	Timestamp int64  `json:"timestamp"`
-	Signature []byte `json:"signature"` // HMAC 签名
-}
-
-func (m *Ping) GetType() byte { return TypePing }
-
-// Pong 心跳响应
-type Pong struct {
-	ServerTime int64  `json:"server_time"`
-	Signature  []byte `json:"signature"`
-	Error      string `json:"error,omitempty"`
-}
-
-func (m *Pong) GetType() byte { return TypePong }
-
-// UDPPacket UDP 数据包
-type UDPPacket struct {
-	Content    string       `json:"content"`
-	LocalAddr  *net.UDPAddr `json:"local_addr,omitempty"`
-	RemoteAddr *net.UDPAddr `json:"remote_addr,omitempty"`
-}
-
-func (m *UDPPacket) GetType() byte { return TypeUDPPacket }
-
-// WriteMsg 写入消息
-func WriteMsg(conn io.Writer, msg Message) error {
-	// 序列化消息体
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return err
-	}
-
-	// 消息格式: [类型(1字节)][长度(4字节)][数据体]
-	buf := make([]byte, 1+4+len(data))
-	buf[0] = msg.GetType()
-	// 写入长度（小端）
-	for i := 0; i < 4; i++ {
-		buf[1+i] = byte(len(data) >> (8 * i))
-	}
-	copy(buf[5:], data)
-
-	_, err = conn.Write(buf)
-	return err
-}
-
-// ReadMsg 读取消息
-func ReadMsg(conn io.Reader) (Message, error) {
-	// 读取类型和长度
-	header := make([]byte, 5)
-	if _, err := io.ReadFull(conn, header); err != nil {
-		return nil, err
-	}
-
-	msgType := header[0]
-	length := int(uint32(header[1]) | uint32(header[2])<<8 | uint32(header[3])<<16 | uint32(header[4])<<24)
-
-	// 读取数据体
-	if length > 10*1024*1024 { // 限制最大10MB
-		return nil, ErrInvalidMessage
-	}
-	data := make([]byte, length)
-	if _, err := io.ReadFull(conn, data); err != nil {
-		return nil, err
-	}
-
-	// 根据类型反序列化
-	var msg Message
-	switch msgType {
-	case TypeLogin:
-		msg = &Login{}
-	case TypeLoginResp:
-		msg = &LoginResp{}
-	case TypeNewProxy:
-		msg = &NewProxy{}
-	case TypeNewProxyResp:
-		msg = &NewProxyResp{}
-	case TypeCloseProxy:
-		msg = &CloseProxy{}
-	case TypeNewWorkConn:
-		msg = &NewWorkConn{}
-	case TypeStartWorkConn:
-		msg = &StartWorkConn{}
-	case TypePing:
-		msg = &Ping{}
-	case TypePong:
-		msg = &Pong{}
-	case TypeUDPPacket:
-		msg = &UDPPacket{}
-	default:
-		return nil, ErrUnknownMessageType
-	}
-
-	if err := json.Unmarshal(data, msg); err != nil {
-		return nil, err
-	}
-
-	return msg, nil
-}
-
-// ReadMsgInto 读取消息到指定结构
-func ReadMsgInto(conn io.Reader, msg Message) error {
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	received, err := ReadMsg(conn)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(data, received)
+// NewErrorMessage 创建错误消息
+func NewErrorMessage(err string) *Message {
+    return &Message{
+        Type:    MessageTypeError,
+        Payload: []byte(err),
+    }
 }
