@@ -1,0 +1,113 @@
+# AetherTunnel 跨平台编译 Dockerfile
+# 用于在容器中编译所有平台的二进制文件
+
+FROM golang:1.21-alpine AS builder
+
+# 安装必要的工具
+RUN apk add --no-cache git make upx xz
+
+# 设置工作目录
+WORKDIR /build
+
+# 复制源代码
+COPY . .
+
+# 设置 Go 模块代理（可选，用于国内加速）
+ENV GOPROXY=https://goproxy.cn,direct
+ENV GO111MODULE=on
+
+# 创建输出目录
+RUN mkdir -p /output
+
+# 定义所有要编译的平台
+ENV PLATFORMS="\
+    linux/amd64 \
+    linux/arm64 \
+    linux/arm/v7 \
+    linux/mips64 \
+    linux/mips64le \
+    linux/ppc64le \
+    linux/s390x \
+    windows/amd64 \
+    windows/arm64 \
+    darwin/amd64 \
+    darwin/arm64 \
+    freebsd/amd64 \
+    freebsd/arm64 \
+    linux/386"
+
+# 版本信息
+ARG VERSION=v0.1.0
+ARG BUILD_TIME
+ARG GIT_COMMIT
+
+# 编译函数
+# 由于 Dockerfile 不支持循环，我们使用脚本
+RUN echo '#!/bin/sh' > /build/build-all.sh && \
+    echo 'set -e' >> /build/build-all.sh && \
+    echo 'VERSION=${VERSION:-v0.1.0}' >> /build/build-all.sh && \
+    echo 'BUILD_TIME=${BUILD_TIME:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}' >> /build/build-all.sh && \
+    echo 'GIT_COMMIT=${GIT_COMMIT:-$(git rev-parse --short HEAD || echo "unknown")}' >> /build/build-all.sh && \
+    echo 'LDFLAGS="-s -w -X main.Version=$VERSION -X main.BuildTime=$BUILD_TIME -X main.GitCommit=$GIT_COMMIT"' >> /build/build-all.sh && \
+    echo '' >> /build/build-all.sh && \
+    echo 'mkdir -p /output' >> /build/build-all.sh && \
+    echo '' >> /build/build-all.sh && \
+    echo '# Linux amd64' >> /build/build-all.sh && \
+    echo 'GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o /output/aethertunnel-server-linux-amd64 ./server' && \
+    echo 'GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o /output/aethertunnel-client-linux-amd64 ./client' && \
+    echo '' >> /build/build-all.sh && \
+    echo '# Linux arm64' >> /build/build-all.sh && \
+    echo 'GOOS=linux GOARCH=arm64 go build -ldflags "$LDFLAGS" -o /output/aethertunnel-server-linux-arm64 ./server' && \
+    echo 'GOOS=linux GOARCH=arm64 go build -ldflags "$LDFLAGS" -o /output/aethertunnel-client-linux-arm64 ./client' && \
+    echo '' >> /build/build-all.sh && \
+    echo '# Linux arm v7' >> /build/build-all.sh && \
+    echo 'GOOS=linux GOARCH=arm GOARM=7 go build -ldflags "$LDFLAGS" -o /output/aethertunnel-server-linux-armv7 ./server' && \
+    echo 'GOOS=linux GOARCH=arm GOARM=7 go build -ldflags "$LDFLAGS" -o /output/aethertunnel-client-linux-armv7 ./client' && \
+    echo '' >> /build/build-all.sh && \
+    echo '# Windows amd64' >> /build/build-all.sh && \
+    echo 'GOOS=windows GOARCH=amd64 go build -ldflags "$LDFLAGS" -o /output/aethertunnel-server-windows-amd64.exe ./server' && \
+    echo 'GOOS=windows GOARCH=amd64 go build -ldflags "$LDFLAGS" -o /output/aethertunnel-client-windows-amd64.exe ./client' && \
+    echo '' >> /build/build-all.sh && \
+    echo '# Windows arm64' >> /build/build-all.sh && \
+    echo 'GOOS=windows GOARCH=arm64 go build -ldflags "$LDFLAGS" -o /output/aethertunnel-server-windows-arm64.exe ./server' && \
+    echo 'GOOS=windows GOARCH=arm64 go build -ldflags "$LDFLAGS" -o /output/aethertunnel-client-windows-arm64.exe ./client' && \
+    echo '' >> /build/build-all.sh && \
+    echo '# macOS amd64' >> /build/build-all.sh && \
+    echo 'GOOS=darwin GOARCH=amd64 go build -ldflags "$LDFLAGS" -o /output/aethertunnel-server-darwin-amd64 ./server' && \
+    echo 'GOOS=darwin GOARCH=amd64 go build -ldflags "$LDFLAGS" -o /output/aethertunnel-client-darwin-amd64 ./client' && \
+    echo '' >> /build/build-all.sh && \
+    echo '# macOS arm64' >> /build/build-all.sh && \
+    echo 'GOOS=darwin GOARCH=arm64 go build -ldflags "$LDFLAGS" -o /output/aethertunnel-server-darwin-arm64 ./server' && \
+    echo 'GOOS=darwin GOARCH=arm64 go build -ldflags "$LDFLAGS" -o /output/aethertunnel-client-darwin-arm64 ./client' && \
+    echo '' >> /build/build-all.sh && \
+    echo '# FreeBSD amd64' >> /build/build-all.sh && \
+    echo 'GOOS=freebsd GOARCH=amd64 go build -ldflags "$LDFLAGS" -o /output/aethertunnel-server-freebsd-amd64 ./server' && \
+    echo 'GOOS=freebsd GOARCH=amd64 go build -ldflags "$LDFLAGS" -o /output/aethertunnel-client-freebsd-amd64 ./client' && \
+    echo '' >> /build/build-all.sh && \
+    echo '# 压缩二进制文件' >> /build/build-all.sh && \
+    echo 'cd /output' >> /build/build-all.sh && \
+    echo 'for f in *; do' >> /build/build-all.sh && \
+    echo '  gzip -9 -c "$f" > "$f.gz"' >> /build/build-all.sh && \
+    echo '  xz -9 -c "$f" > "$f.xz"' >> /build/build-all.sh && \
+    echo 'done' >> /build/build-all.sh && \
+    echo '' >> /build/build-all.sh && \
+    echo '# 生成 SHA256 校验和' >> /build/build-all.sh && \
+    echo 'sha256sum * > SHA256SUMS.txt' >> /build/build-all.sh && \
+    echo '' >> /build/build-all.sh && \
+    echo '# 显示结果' >> /build/build-all.sh && \
+    echo 'ls -lh' >> /build/build-all.sh && \
+    echo 'echo "构建完成！"' >> /build/build-all.sh && \
+    chmod +x /build/build-all.sh
+
+# 构建所有平台
+RUN sh /build/build-all.sh
+
+# 验证输出
+RUN ls -lh /output/ && \
+    echo "=== SHA256SUMS.txt ===" && \
+    cat /output/SHA256SUMS.txt
+
+# 最终镜像（仅用于发布，不包含源代码）
+FROM scratch
+
+COPY --from=builder /output/ /

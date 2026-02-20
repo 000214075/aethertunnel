@@ -1,0 +1,888 @@
+# ============================================================================
+# 🌐 AetherTunnel Web 管理面板 - 完整配置
+# 功能丰富、安全可控的网页后台管理界面
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Web 管理面板基础配置
+# ----------------------------------------------------------------------------
+[dashboard]
+# 是否启用 Web 管理面板
+enabled = true
+
+# 监听端口
+port = 7500
+
+# 绑定地址
+# 127.0.0.1 - 仅本地访问（推荐）
+# 0.0.0.0 - 所有接口（需要额外安全措施）
+bind_addr = "127.0.0.1"
+
+# 访问路径（如果使用反向代理）
+# 例如：/aethertunnel 或 /admin
+base_path = ""
+
+# ----------------------------------------------------------------------------
+# 认证配置
+# ----------------------------------------------------------------------------
+[dashboard.auth]
+# 是否启用认证（强烈建议启用！）
+enabled = true
+
+# 认证方式：basic, jwt, ldap, oauth2, saml, api_key
+mode = "basic"
+
+# Session 配置
+[dashboard.auth.session]
+# Session 存储方式：memory, redis, database
+store_type = "memory"
+
+# Session 过期时间（秒）
+# 3600 = 1小时，86400 = 24小时，604800 = 7天
+timeout = 3600
+
+# Session 最大并发数（同一账号最多同时登录数）
+max_concurrent_sessions = 5
+
+# Session 刷新间隔（秒）
+# 超过此时间未活动则自动登出
+idle_timeout = 1800
+
+# Remember Me 功能
+[dashboard.auth.remember_me]
+enabled = true
+duration = "30d"  # 30天
+
+# 密码强度要求
+[dashboard.auth.password_policy]
+# 最小密码长度
+min_length = 8
+
+# 是否包含大写字母
+require_uppercase = true
+
+# 是否包含小写字母
+require_lowercase = true
+
+# 是否包含数字
+require_digit = true
+
+# 是否包含特殊字符
+require_special_char = true
+
+# 禁止使用的弱密码列表
+forbidden_passwords = ["password", "123456", "admin", "qwerty"]
+
+# 密码过期策略
+[dashboard.auth.password_policy.expiration]
+enabled = false
+max_age_days = 90
+warn_before_days = 7
+
+# 多因素认证（2FA）
+[dashboard.auth.mfa]
+# 是否启用 2FA
+enabled = false
+
+# MFA 类型：totp, sms, email
+type = "totp"
+
+# TOTP 配置（如 Google Authenticator）
+[dashboard.auth.mfa.totp]
+issuer = "AetherTunnel"
+algorithm = "sha256"
+digits = 6
+period = 30
+
+# 短信 2FA 配置
+[dashboard.auth.mfa.sms]
+enabled = false
+sms_provider = "aliyun"  # aliyun, tencent, twilio
+api_key = ""
+api_secret = ""
+template_code = ""
+
+# 邮件 2FA 配置
+[dashboard.auth.mfa.email]
+enabled = false
+smtp_server = "smtp.gmail.com:587"
+smtp_username = ""
+smtp_password = ""
+from_address = "noreply@example.com"
+subject = "AetherTunnel 验证码"
+
+# 速率限制（防止暴力破解）
+[dashboard.auth.rate_limit]
+# 是否启用速率限制
+enabled = true
+
+# 每分钟最大登录尝试次数
+max_attempts_per_minute = 5
+
+# 每小时最大登录尝试次数
+max_attempts_per_hour = 20
+
+# IP 级别速率限制
+[dashboard.auth.rate_limit.ip]
+# 每分钟最大尝试次数（单个 IP）
+max_attempts_per_minute = 10
+
+# 封禁持续时间（秒）
+block_duration = 300
+
+# 账号级别速率限制
+[dashboard.auth.rate_limit.account]
+# 错误次数上限
+max_failed_attempts = 5
+
+# 账号锁定时间（秒）
+lockout_duration = 900
+
+# IP 白名单（仅允许这些 IP 访问）
+[dashboard.auth.ip_whitelist]
+enabled = false
+allowed_ips = [
+    "127.0.0.1",
+    "192.168.1.0/24",
+    "10.0.0.0/8"
+]
+
+# IP 黑名单（禁止这些 IP 访问）
+[dashboard.auth.ip_blacklist]
+enabled = false
+blocked_ips = [
+    "1.1.1.1",
+    "2.2.2.2"
+]
+
+# 地理位置限制
+[dashboard.auth.geo_restrictions]
+enabled = false
+allowed_countries = ["CN", "US", "JP"]
+blocked_countries = ["RU"]
+
+# ----------------------------------------------------------------------------
+# 用户管理
+# ----------------------------------------------------------------------------
+[dashboard.users]
+# 默认管理员账号
+[[dashboard.users.admins]]
+username = "admin"
+# 密码可以是明文或哈希值（bcrypt）
+# 生产环境建议使用 bcrypt 哈希
+password = "$2a$10$..."  # bcrypt 哈希
+email = "admin@example.com"
+role = "superadmin"
+
+# 是否允许此账号登录
+enabled = true
+
+# 创建时间
+created_at = "2024-01-01T00:00:00Z"
+
+# 最后登录时间
+last_login = ""
+
+# 备用管理员账号
+[[dashboard.users.admins]]
+username = "root"
+password = "$2a$10$..."
+email = "root@example.com"
+role = "admin"
+enabled = true
+
+# 普通用户账号
+[[dashboard.users.users]]
+username = "operator"
+password = "$2a$10$..."
+email = "operator@example.com"
+role = "operator"
+
+# 用户权限
+[dashboard.users.users.permissions]
+# 可以查看代理
+can_view_proxies = true
+
+# 可以创建代理
+can_create_proxies = true
+
+# 可以编辑代理
+can_edit_proxies = true
+
+# 可以删除代理
+can_delete_proxies = false
+
+# 可以查看日志
+can_view_logs = true
+
+# 可以导出日志
+can_export_logs = false
+
+# 可以修改配置
+can_edit_config = false
+
+# 可以重启服务
+can_restart_server = false
+
+# 角色权限定义
+[dashboard.users.roles]
+# 超级管理员（所有权限）
+[dashboard.users.roles.superadmin]
+can_view_proxies = true
+can_create_proxies = true
+can_edit_proxies = true
+can_delete_proxies = true
+can_view_logs = true
+can_export_logs = true
+can_edit_config = true
+can_restart_server = true
+can_manage_users = true
+
+# 普通管理员
+[dashboard.users.roles.admin]
+can_view_proxies = true
+can_create_proxies = true
+can_edit_proxies = true
+can_delete_proxies = true
+can_view_logs = true
+can_export_logs = true
+can_edit_config = true
+can_restart_server = true
+can_manage_users = false
+
+# 操作员
+[dashboard.users.roles.operator]
+can_view_proxies = true
+can_create_proxies = true
+can_edit_proxies = true
+can_delete_proxies = false
+can_view_logs = true
+can_export_logs = false
+can_edit_config = false
+can_restart_server = false
+
+# 只读用户
+[dashboard.users.roles.viewer]
+can_view_proxies = true
+can_create_proxies = false
+can_edit_proxies = false
+can_delete_proxies = false
+can_view_logs = true
+can_export_logs = false
+can_edit_config = false
+can_restart_server = false
+
+# ----------------------------------------------------------------------------
+# 外部认证集成
+# ----------------------------------------------------------------------------
+[dashboard.auth.ldap]
+# 是否启用 LDAP 认证
+enabled = false
+
+# LDAP 服务器地址
+server_url = "ldap://ldap.example.com:389"
+
+# 基础 DN
+base_dn = "dc=example,dc=com"
+
+# 用户 DN 模板
+user_dn_template = "uid=%s,ou=users,dc=example,dc=com"
+
+# 搜索过滤器
+search_filter = "(uid=%s)"
+
+# 绑定 DN（如果需要）
+bind_dn = "cn=admin,dc=example,dc=com"
+bind_password = ""
+
+# 属性映射
+[dashboard.auth.ldap.attributes]
+username = "uid"
+email = "mail"
+display_name = "cn"
+
+# OAuth2 认证
+[dashboard.auth.oauth2]
+enabled = false
+
+# OAuth2 提供商：github, google, gitlab, azuread, keycloak
+provider = "github"
+
+# GitHub OAuth2
+[dashboard.auth.oauth2.github]
+client_id = ""
+client_secret = ""
+callback_url = "http://localhost:7500/oauth2/callback"
+scopes = ["user:email", "read:org"]
+
+# Google OAuth2
+[dashboard.auth.oauth2.google]
+client_id = ""
+client_secret = ""
+callback_url = "http://localhost:7500/oauth2/callback"
+scopes = ["openid", "profile", "email"]
+
+# GitLab OAuth2
+[dashboard.auth.oauth2.gitlab]
+client_id = ""
+client_secret = ""
+callback_url = "http://localhost:7500/oauth2/callback"
+scopes = ["read_user", "api"]
+
+# Azure AD OAuth2
+[dashboard.auth.oauth2.azuread]
+client_id = ""
+client_secret = ""
+tenant_id = ""
+callback_url = "http://localhost:7500/oauth2/callback"
+scopes = ["user.read"]
+
+# SAML 认证
+[dashboard.auth.saml]
+enabled = false
+
+# SAML IDP 元数据 URL
+idp_metadata_url = "https://idp.example.com/saml/metadata"
+
+# SAML 回调 URL
+callback_url = "http://localhost:7500/saml/callback"
+
+# SP 实体 ID
+entity_id = "https://aethertunnel.example.com"
+
+# 证书文件
+certificate_file = "/path/to/cert.pem"
+key_file = "/path/to/key.pem"
+
+# ----------------------------------------------------------------------------
+# TLS/SSL 配置
+# ----------------------------------------------------------------------------
+[dashboard.tls]
+# 是否启用 HTTPS
+enabled = false
+
+# 证书文件路径
+cert_file = "/path/to/dashboard.crt"
+
+# 私钥文件路径
+key_file = "/path/to/dashboard.key"
+
+# CA 证书（如果使用客户端证书认证）
+ca_file = ""
+
+# 强制 HTTPS（自动重定向 HTTP 到 HTTPS）
+force_https = false
+
+# TLS 版本
+min_version = "TLS1.2"
+
+# HSTS 配置
+[dashboard.tls.hsts]
+enabled = true
+max_age = 31536000
+include_subdomains = true
+preload = true
+
+# ----------------------------------------------------------------------------
+# WebSocket 实时更新
+# ----------------------------------------------------------------------------
+[dashboard.websocket]
+# 是否启用 WebSocket
+enabled = true
+
+# WebSocket 路径
+path = "/ws"
+
+# 心跳间隔（秒）
+ping_interval = 30
+
+# 心跳超时（秒）
+pong_timeout = 60
+
+# 消息大小限制（字节）
+max_message_size = 1048576  # 1MB
+
+# 读写缓冲区大小（字节）
+read_buffer_size = 4096
+write_buffer_size = 4096
+
+# 允许的来源（CORS）
+allowed_origins = ["http://localhost:7500", "https://aethertunnel.example.com"]
+
+# 是否允许跨域
+allow_cross_origin = false
+
+# ----------------------------------------------------------------------------
+# 界面配置
+# ----------------------------------------------------------------------------
+[dashboard.ui]
+# 主题配置
+[dashboard.ui.theme]
+# 默认主题：light, dark, auto（跟随系统）
+default_theme = "dark"
+
+# 是否允许用户切换主题
+allow_theme_switch = true
+
+# 支持的主题列表
+available_themes = ["light", "dark", "midnight", "ocean", "forest"]
+
+# 品牌配置
+[dashboard.ui.branding]
+# 应用名称
+app_name = "AetherTunnel"
+
+# Logo URL（可以是本地路径或网络 URL）
+logo_url = "/static/logo.png"
+
+# Favicon URL
+favicon_url = "/static/favicon.ico"
+
+# 页面标题
+page_title = "AetherTunnel 管理面板"
+
+# 页脚文本
+footer_text = "Powered by AetherTunnel"
+
+# 布局配置
+[dashboard.ui.layout]
+# 侧边栏位置：left, right, top, bottom
+sidebar_position = "left"
+
+# 侧边栏宽度（像素）
+sidebar_width = 250
+
+# 是否折叠侧边栏
+sidebar_collapsed = false
+
+# 是否显示面包屑
+show_breadcrumbs = true
+
+# 默认页面
+default_page = "overview"
+
+# 语言配置
+[dashboard.ui.i18n]
+# 默认语言
+default_language = "zh-CN"
+
+# 支持的语言列表
+available_languages = [
+    "zh-CN",  # 简体中文
+    "zh-TW",  # 繁体中文
+    "en-US",  # 英语
+    "ja-JP",  # 日语
+    "ko-KR"   # 韩语
+]
+
+# 自动检测语言
+auto_detect = true
+
+# 数据表格配置
+[dashboard.ui.data_table]
+# 默认每页显示数量
+default_page_size = 20
+
+# 每页显示数量选项
+page_size_options = [10, 20, 50, 100]
+
+# 是否允许自定义列
+allow_column_customize = true
+
+# 排序配置
+allow_sorting = true
+default_sort_column = "name"
+default_sort_order = "asc"
+
+# 图表配置
+[dashboard.ui.charts]
+# 默认图表类型：line, bar, pie, area
+default_chart_type = "line"
+
+# 图表刷新间隔（秒）
+refresh_interval = 5
+
+# 图表主题
+chart_theme = "default"
+
+# 是否显示数据点
+show_data_points = true
+
+# 是否显示图例
+show_legend = true
+
+# 通知配置
+[dashboard.ui.notifications]
+# 是否启用通知
+enabled = true
+
+# 通知显示位置：top-right, top-left, bottom-right, bottom-left
+position = "top-right"
+
+# 默认持续时间（毫秒）
+default_duration = 5000
+
+# 是否允许关闭
+allow_dismiss = true
+
+# 声音通知
+sound_enabled = false
+
+# 帮助和文档配置
+[dashboard.ui.help]
+# 显示帮助按钮
+show_help_button = true
+
+# 帮助文档 URL
+documentation_url = "https://docs.aethertunnel.io"
+
+# 视频教程 URL
+video_tutorial_url = "https://youtube.com/aethertunnel"
+
+# 反馈 URL
+feedback_url = "https://github.com/aethertunnel/aethertunnel/issues"
+
+# ----------------------------------------------------------------------------
+# API 配置
+# ----------------------------------------------------------------------------
+[dashboard.api]
+# 是否启用 REST API
+enabled = true
+
+# API 基础路径
+base_path = "/api/v1"
+
+# API 速率限制
+[dashboard.api.rate_limit]
+enabled = true
+requests_per_minute = 60
+requests_per_hour = 1000
+
+# API 认证
+[dashboard.api.auth]
+# 认证方式：jwt, api_key, session
+mode = "jwt"
+
+# JWT 配置
+[dashboard.api.auth.jwt]
+# JWT 密钥（必须保密！）
+secret = "your-jwt-secret-key-here"
+
+# Token 过期时间（秒）
+expiration = 3600
+
+# Token 签名算法：HS256, HS384, HS512
+algorithm = "HS256"
+
+# 是否刷新 Token
+enable_refresh = true
+refresh_expiration = 604800  # 7天
+
+# API 密钥配置
+[dashboard.api.auth.api_key]
+# 是否启用 API 密钥
+enabled = false
+
+# API 密钥列表
+[[dashboard.api.auth.api_key.keys]]
+name = "Production Key"
+key = "sk_prod_xxxxx"
+# 过期时间（空表示永不过期）
+expires_at = ""
+# 权限
+permissions = ["read", "write"]
+
+[[dashboard.api.auth.api_key.keys]]
+name = "Development Key"
+key = "sk_dev_xxxxx"
+expires_at = "2024-12-31T23:59:59Z"
+permissions = ["read"]
+
+# CORS 配置
+[dashboard.api.cors]
+enabled = true
+allowed_origins = ["*"]
+allowed_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+allowed_headers = ["Content-Type", "Authorization"]
+exposed_headers = []
+allow_credentials = false
+max_age = 86400
+
+# API 版本控制
+[dashboard.api.versioning]
+# 当前版本
+current_version = "v1"
+
+# 支持的版本
+supported_versions = ["v1"]
+
+# 是否支持旧版本
+deprecated_versions = []
+
+# API 文档
+[dashboard.api.documentation]
+enabled = true
+# 文档路径
+path = "/docs"
+# 文档类型：swagger, openapi
+type = "swagger"
+
+# ----------------------------------------------------------------------------
+# 日志配置
+# ----------------------------------------------------------------------------
+[dashboard.logging]
+# 日志级别：debug, info, warn, error, fatal
+level = "info"
+
+# 日志格式：json, text
+format = "json"
+
+# 日志输出：stdout, file, both
+output = "both"
+
+# 日志文件路径
+log_file = "/var/log/aethertunnel/dashboard.log"
+
+# 日志轮转
+[dashboard.logging.rotation]
+max_size = "100MB"
+max_age = 30
+max_backups = 10
+compress = true
+
+# 审计日志
+[dashboard.logging.audit]
+# 是否启用审计日志
+enabled = true
+
+# 审计日志文件
+audit_log_file = "/var/log/aethertunnel/audit.log"
+
+# 记录的操作
+[dashboard.logging.audit.operations]
+login = true
+logout = true
+create_proxy = true
+delete_proxy = true
+edit_config = true
+restart_server = true
+view_logs = true
+
+# ----------------------------------------------------------------------------
+# 性能配置
+# ----------------------------------------------------------------------------
+[dashboard.performance]
+# 启用缓存
+cache_enabled = true
+
+# 缓存大小（MB）
+cache_size = 100
+
+# 缓存过期时间（秒）
+cache_ttl = 300
+
+# 启用压缩
+compress_enabled = true
+compress_level = 6
+
+# 启用 Gzip
+gzip_enabled = true
+
+# 最小压缩大小（字节）
+min_compress_size = 1024
+
+# 连接池配置
+[dashboard.performance.connection_pool]
+max_idle_connections = 100
+max_open_connections = 1000
+idle_timeout = "90s"
+max_lifetime = "24h"
+
+# 数据库查询超时
+query_timeout = "30s"
+
+# ----------------------------------------------------------------------------
+# 监控和健康检查
+# ----------------------------------------------------------------------------
+[dashboard.monitoring]
+# 健康检查端点
+health_check_path = "/health"
+
+# 是否暴露 metrics
+metrics_enabled = true
+
+# Metrics 端点
+metrics_path = "/metrics"
+
+# Prometheus 格式
+metrics_format = "prometheus"
+
+# 性能监控
+[dashboard.monitoring.profiling]
+enabled = false
+
+# pprof 端点
+pprof_path = "/debug/pprof"
+
+# 内存分析
+memory_profile = true
+
+# CPU 分析
+cpu_profile = true
+
+# goroutine 分析
+goroutine_profile = true
+
+# ----------------------------------------------------------------------------
+# 备份和恢复
+# ----------------------------------------------------------------------------
+[dashboard.backup]
+# 是否启用自动备份
+enabled = false
+
+# 备份间隔（小时）
+interval = 24
+
+# 备份目录
+backup_dir = "./backups"
+
+# 备份保留天数
+retention_days = 30
+
+# 压缩备份
+compress = true
+
+# 备份通知
+[dashboard.backup.notification]
+enabled = false
+email_to = ["admin@example.com"]
+email_subject = "AetherTunnel 备份完成"
+
+# ----------------------------------------------------------------------------
+# 安全头配置
+# ----------------------------------------------------------------------------
+[dashboard.security_headers]
+# X-Frame-Options
+[dashboard.security_headers.x_frame_options]
+enabled = true
+value = "DENY"  # DENY, SAMEORIGIN, ALLOW-FROM
+
+# X-Content-Type-Options
+[dashboard.security_headers.x_content_type_options]
+enabled = true
+
+# X-XSS-Protection
+[dashboard.security_headers.x_xss_protection]
+enabled = true
+value = "1; mode=block"
+
+# Content-Security-Policy
+[dashboard.security_headers.content_security_policy]
+enabled = true
+policy = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:;"
+
+# Strict-Transport-Security
+[dashboard.security_headers.strict_transport_security]
+enabled = true
+max_age = 31536000
+include_subdomains = true
+
+# Referrer-Policy
+[dashboard.security_headers.referrer_policy]
+enabled = true
+policy = "strict-origin-when-cross-origin"
+
+# Permissions-Policy
+[dashboard.security_headers.permissions_policy]
+enabled = true
+policy = "geolocation=(), camera=(), microphone=()"
+
+# ----------------------------------------------------------------------------
+# 集成配置
+# ----------------------------------------------------------------------------
+[dashboard.integrations]
+# Prometheus 集成
+[dashboard.integrations.prometheus]
+enabled = false
+pushgateway_url = "http://pushgateway:9091"
+
+# Grafana 集成
+[dashboard.integrations.grafana]
+enabled = false
+dashboard_url = "http://grafana:3000"
+api_key = ""
+
+# Slack 集成
+[dashboard.integrations.slack]
+enabled = false
+webhook_url = "https://hooks.slack.com/services/xxx"
+channel = "#aethertunnel-alerts"
+username = "AetherTunnel Bot"
+icon_emoji = ":robot_face:"
+
+# Telegram 集成
+[dashboard.integrations.telegram]
+enabled = false
+bot_token = ""
+chat_id = ""
+
+# 邮件集成
+[dashboard.integrations.email]
+enabled = false
+smtp_server = "smtp.gmail.com:587"
+smtp_username = ""
+smtp_password = ""
+from_address = "aethertunnel@example.com"
+to_addresses = ["admin@example.com"]
+
+# ----------------------------------------------------------------------------
+# 高级配置
+# ----------------------------------------------------------------------------
+[dashboard.advanced]
+# 调试模式（生产环境请关闭！）
+debug_mode = false
+
+# 维护模式
+[dashboard.advanced.maintenance]
+enabled = false
+message = "系统维护中，请稍后访问"
+start_time = "2024-01-01T00:00:00Z"
+end_time = "2024-01-01T02:00:00Z"
+
+# 功能开关
+[dashboard.advanced.feature_flags]
+# 实时日志查看
+realtime_logs = true
+
+# 代理热重载
+hot_reload_proxies = true
+
+# 配置编辑器
+config_editor = true
+
+# 系统信息显示
+system_info = true
+
+# 网络拓扑图
+network_topology = true
+
+# 流量分析
+traffic_analysis = true
+
+# 性能监控
+performance_monitoring = true
+
+# 自定义页面
+[dashboard.advanced.custom_pages]
+enabled = false
+pages_dir = "./custom_pages"
+
+# 插件系统
+[dashboard.advanced.plugins]
+enabled = false
+plugins_dir = "./dashboard_plugins"
+
+# ============================================================================
+# 🎉 Web 管理面板配置完成！
+# 根据需求灵活配置，打造专属管理界面
+# ============================================================================

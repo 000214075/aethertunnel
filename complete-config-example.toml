@@ -1,0 +1,512 @@
+# AetherTunnel 创新功能完整配置示例
+
+## 服务端配置
+
+[server]
+bind_addr = "0.0.0.0"
+bind_port = 7000
+vhost_http_port = 80
+vhost_https_port = 443
+auth_token = "your-secure-token-change-me"
+
+[tls]
+enabled = true
+cert_file = "server.crt"
+key_file = "server.key"
+ca_file = "ca.crt"
+client_auth = true
+min_version = "TLS1.3"
+
+[security]
+enable_ip_whitelist = true
+allowed_ips = ["192.168.1.0/24", "10.0.0.0/8"]
+max_connections_per_client = 10
+heartbeat_timeout = 90
+connection_timeout = 10
+enable_audit_log = true
+audit_log_file = "/var/log/aethertunnel/audit.log"
+rate_limit = 100
+block_duration = "5m"
+
+[transport]
+tcp_mux = true
+tcp_mux_keepalive_interval = 60
+tcp_keepalive = 30
+max_pool_count = 5
+
+[dashboard]
+enabled = true
+port = 7500
+username = "admin"
+password = "secure-password-change-me"
+assets_dir = "./assets"
+
+[proxy]
+bind_addr = "0.0.0.0"
+allow_ports = "8000-9000"
+
+# === 创新功能配置 ===
+
+## 流量伪装配置
+[obfuscation]
+enabled = true
+type = "tls"  # tls, http, http2, xor
+target_host = "www.google.com"  # 伪装目标
+obfuscate_key = "random-obfuscation-key-here"
+fake_path = "/index.html"  # HTTP 伪装路径
+
+## 自适应协议配置
+[adaptive]
+enabled = true
+mode = "balanced"  # latency, bandwidth, reliability, balanced, game
+switch_cooldown = "30s"
+monitor_interval = "2s"
+threshold = 10.0
+
+[supported_protocols]
+tcp = true
+udp = true
+quic = true
+websocket = true
+kcp = false
+
+## 可视化配置
+[visualization]
+enabled = true
+addr = "0.0.0.0:7501"
+username = "admin"
+password = "secure-password"
+snapshot_interval = "5s"
+max_history = 100
+max_event_buffer = 50
+
+## 智能路由配置
+[routing]
+enabled = true
+
+[[routing.rules]]
+name = "web-servers"
+strategy = "latency"  # latency, bandwidth, reliability, cost, roundrobin, leastconn
+enabled = true
+priority = 10
+
+[[routing.rules.targets]]
+id = "server-1"
+address = "10.0.1.1"
+port = 80
+weight = 100
+
+[[routing.rules.targets]]
+id = "server-2"
+address = "10.0.1.2"
+port = 80
+weight = 100
+
+[[routing.rules.conditions]]
+source_ip = "192.168.1.0/24"
+time_range = "09:00-18:00"
+
+[routing.health_check]
+interval = "10s"
+timeout = "5s"
+healthy_threshold = 3
+unhealthy_threshold = 3
+
+## IPv6 配置
+[ipv6]
+enabled = true
+preferred_family = 6  # 4 for IPv4, 6 for IPv6, 0 for both
+nat64 = false
+nat46 = false
+
+[ipv6.discovery]
+auto_discover = true
+prefer_global = true
+allow_link_local = false
+
+[stun]
+servers = ["stun.l.google.com:19302", "stun1.l.google.com:19302"]
+timeout = "5s"
+
+## 客户端配置
+
+[client]
+server_addr = "your-server.com"
+server_port = 7000
+auth_token = "your-secure-token-change-me"
+user = "client1"
+client_id = ""
+pool_count = 5
+
+[tls]
+enabled = true
+cert_file = "client.crt"
+key_file = "client.key"
+ca_file = "ca.crt"
+tls_server_name = "your-server.com"
+
+[transport]
+tcp_mux = true
+tcp_mux_keepalive_interval = 60
+
+# === 创新功能配置 ===
+
+## 流量伪装配置（客户端）
+[obfuscation]
+enabled = true
+type = "tls"
+target_host = "www.google.com"
+obfuscate_key = "same-key-as-server"
+
+## 自适应协议配置（客户端）
+[adaptive]
+enabled = true
+mode = "balanced"
+switch_cooldown = "30s"
+
+[supported_protocols]
+tcp = true
+udp = true
+quic = true
+websocket = true
+kcp = false
+
+## IPv6 配置（客户端）
+[ipv6]
+enabled = true
+preferred_family = 6
+
+## 代理配置示例
+
+### TCP 代理（SSH）
+[[proxies]]
+name = "ssh"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = 22
+remote_port = 2222
+use_encryption = false
+use_compression = false
+
+### HTTP 代理（Web 服务）
+[[proxies]]
+name = "web"
+type = "http"
+local_ip = "127.0.0.1"
+local_port = 80
+custom_domains = ["www.example.com"]
+http_user = ""
+http_pwd = ""
+host_header_rewrite = ""
+
+[proxies.health_check]
+type = "http"
+interval = "10s"
+timeout = "3s"
+max_failed = 3
+url_or_path = "/health"
+
+### 游戏模式代理
+[[proxies]]
+name = "game"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = 25565
+remote_port = 25565
+use_encryption = false
+
+[proxies.game_mode]
+enabled = true
+udp_optimize = true
+min_latency = true
+packet_loss_recovery = true
+
+### 带宽限制代理
+[[proxies]]
+name = "download"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = 8080
+remote_port = 8080
+use_encryption = false
+use_compression = true
+bandwidth_limit = "10MB"
+bandwidth_limit_mode = "client"
+
+### 带流量伪装的代理
+[[proxies]]
+name = "secret-tunnel"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = 3306
+remote_port = 3306
+use_encryption = true
+
+[proxies.obfuscation]
+enabled = true
+type = "http"
+fake_host = "www.youtube.com"
+fake_path = "/watch"
+
+### STCP 安全代理
+[[proxies]]
+name = "database"
+type = "stcp"
+local_ip = "127.0.0.1"
+local_port = 5432
+sk = "super-secret-key"
+allow_users = ["trusted-client1", "trusted-client2"]
+
+### 负载均衡代理
+[[proxies]]
+name = "web-lb"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = 80
+remote_port = 8080
+group = "web-group"
+group_key = "web-group-key"
+
+## 监控和告警配置
+
+[monitoring]
+enabled = true
+metrics_port = 9090
+prometheus_enabled = true
+opentelemetry_enabled = false
+
+[monitoring.alerts]
+enabled = true
+high_latency_threshold = "100ms"
+high_packet_loss_threshold = 0.01
+connection_failure_threshold = 5
+
+[[monitoring.alerts.rules]]
+name = "high_latency"
+condition = "latency > 100ms"
+severity = "warning"
+notification = "slack"
+
+[[monitoring.alerts.rules]]
+name = "connection_failure"
+condition = "connection_failures > 5"
+severity = "critical"
+notification = "email"
+
+## 日志配置
+
+[logging]
+level = "info"
+file = "/var/log/aethertunnel/client.log"
+max_size = "100MB"
+max_age = "7d"
+max_backups = 10
+compress = true
+
+[logging.formats]
+timestamp = "2006-01-02T15:04:05.000Z07:00"
+caller = false
+stacktrace = "error"
+
+[logging.outputs]
+console = true
+file = true
+syslog = false
+
+## 高级配置
+
+[advanced]
+# 性能调优
+buffer_size = 32768
+read_buffer_size = 16384
+write_buffer_size = 16384
+
+# 连接池
+max_idle_conns = 100
+max_idle_conns_per_host = 10
+idle_conn_timeout = "90s"
+
+# 心跳
+heartbeat_interval = "30s"
+heartbeat_timeout = "90s"
+
+# 重连
+max_reconnect_attempts = 5
+reconnect_delay = "5s"
+reconnect_backoff = "exponential"
+
+[experimental]
+# 实验性功能
+# 警告：这些功能可能不稳定
+
+# AI 流量预测
+ai_traffic_prediction = false
+ai_model_path = ""
+
+# WebRTC P2P
+webrtc_enabled = false
+webrtc_stun_servers = ["stun.l.google.com:19302"]
+webrtc_turn_servers = []
+
+# DHT 网络
+dht_enabled = false
+dht_bootstrap_nodes = []
+
+# 量子抗性加密
+pq_encryption = false
+pq_algorithm = "kyber1024"
+
+# 区块链认证
+blockchain_auth = false
+blockchain_network = "ethereum"
+smart_contract_address = ""
+
+## 插件配置
+
+[[plugins]]
+name = "http2https"
+type = "https2https"
+local_addr = "127.0.0.1"
+local_port = 80
+crt_path = "server.crt"
+key_path = "server.key"
+host_header_rewrite = "backend.local"
+
+[[plugins]]
+name = "static_file"
+type = "static_file"
+local_dir = "/var/www"
+http_user = "admin"
+http_pwd = "admin"
+
+## 环境变量（可选）
+
+# AETHERTUNNEL_SERVER_ADDR = "your-server.com"
+# AETHERTUNNEL_SERVER_PORT = "7000"
+# AETHERTUNNEL_AUTH_TOKEN = "your-token"
+# AETHERTUNNEL_LOG_LEVEL = "debug"
+# AETHERTUNNEL_CONFIG_DIR = "/etc/aethertunnel"
+
+## 使用说明
+
+### 1. 基础使用
+```bash
+# 启动服务端
+./aethertunnel-server server.toml
+
+# 启动客户端
+./aethertunnel-client client.toml
+```
+
+### 2. 启用所有创新功能
+确保配置文件中所有创新功能的 `enabled = true`
+
+### 3. 访问仪表板
+- 主仪表板: http://server:7500
+- 可视化界面: http://server:7501
+
+### 4. 监控指标
+- Prometheus: http://server:9090/metrics
+- 实时指标: http://server:7501/api/metrics
+
+### 5. 查看日志
+```bash
+tail -f /var/log/aethertunnel/client.log
+tail -f /var/log/aethertunnel/audit.log
+```
+
+## 故障排查
+
+### 问题 1: 流量伪装不工作
+- 检查 obfuscation.enabled = true
+- 确保 obfuscate_key 与服务器一致
+- 检查 target_host 是否可访问
+
+### 问题 2: 协议自适应不切换
+- 检查 adaptive.enabled = true
+- 确认支持多种协议
+- 检查 switch_cooldown 设置
+
+### 问题 3: 可视化界面无数据
+- 检查 visualization.enabled = true
+- 确认端口未被占用
+- 查看日志是否有错误
+
+### 问题 4: IPv6 连接失败
+- 检查 ipv6.enabled = true
+- 确认系统支持 IPv6
+- 检查 preferred_family 设置
+
+## 性能调优建议
+
+### 低延迟场景（游戏）
+```toml
+[adaptive]
+mode = "game"
+
+[ipv6]
+preferred_family = 6
+```
+
+### 高吞吐场景（文件传输）
+```toml
+[adaptive]
+mode = "bandwidth"
+
+[proxies.obfuscation]
+use_compression = true
+```
+
+### 高可靠性场景（关键服务）
+```toml
+[adaptive]
+mode = "reliability"
+
+[routing]
+strategy = "reliability"
+
+[proxies.health_check]
+interval = "5s"
+max_failed = 2
+```
+
+## 安全最佳实践
+
+### 1. 使用强认证
+```toml
+[server]
+auth_token = "use-openssl-rand-hex-32"
+
+[tls]
+enabled = true
+client_auth = true
+```
+
+### 2. 启用流量伪装
+```toml
+[obfuscation]
+enabled = true
+type = "tls"
+obfuscate_key = "use-random-key"
+```
+
+### 3. 限制访问
+```toml
+[security]
+enable_ip_whitelist = true
+allowed_ips = ["your-cidr-here"]
+max_connections_per_client = 5
+```
+
+### 4. 启用审计
+```toml
+[security]
+enable_audit_log = true
+audit_log_file = "/var/log/aethertunnel/audit.log"
+```
+
+---
+
+**配置文件版本**: v2.0
+**最后更新**: 2024-01-20
+**兼容性**: AetherTunnel v2.0+

@@ -1,0 +1,145 @@
+# AetherTunnel 项目文件
+
+# === 忽略文件 ===
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# === 编译输出 ===
+dist/
+build/
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# === Go 相关 ===
+# 编译二进制文件
+aethertunnel-server
+aethertunnel-client
+aethertunnel-*
+
+# Go 工作空间文件
+go.work
+
+# === 依赖缓存 ===
+vendor/
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# === 日志文件 ===
+*.log
+logs/
+*.log.*
+
+# === 测试覆盖 ===
+coverage.out
+coverage.html
+*.coverprofile
+*.test
+
+# === 打包文件 ===
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.rar
+*.7z
+
+# === 临时文件 ===
+tmp/
+temp/
+*.tmp
+*.temp
+
+# === 操作系统 ===
+.AppleDouble
+.LSOverride
+
+# === 证书和密钥 ===
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+*.p12
+*.pfx
+
+# === 配置文件（实际使用） ===
+# 注意：不要提交包含敏感信息的配置文件
+# 建议使用 .example 文件作为模板
+server.toml
+client.toml
+
+# === AI 助记日志 ===
+# 不要上传开发过程中的 AI 助记日志
+*.ai-log
+*.assistant-log
+*.conversation-log
+
+# === 测试和调试 ===
+debug
+debug.*
+core
+core.*
+*.core
+
+# === 环境变量 ===
+.env
+.env.local
+.env.*.local
+
+# === 备份文件 ===
+*.bak
+*.backup
+*~
+
+# === 文档生成 ===
+docs/_build/
+docs/site/
+
+# === 节点 ===
+node_modules/
+pnpm-lock.yaml
+yarn.lock
+package-lock.json
+
+# === Snapcraft ===
+*.snap
+.snap/
+
+# === Homebrew Formula ===
+*.rb
+
+# === Vagrant ===
+.vagrant/
+
+# === Terraform ===
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# === 部署工具 ===
+deploy/
+deployment/
+
+# === 其他 ===
+*.pid
+*.seed
+*.sql
+*.sqlite
+*.sqlite3
