@@ -2,263 +2,162 @@ name: Release AetherTunnel
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main ]
   tags:
     - 'v*'
-  release:
-    types: [published]
-
-env:
-  GO_VERSION: '1.21'
-  PROJECT_NAME: 'aethertunnel'
+  workflow_dispatch:
 
 jobs:
-  # 测试工作流（跳过，因为这是演示项目）
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    if: false()  # 跳过测试
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-
-  # 静态分析工作流（跳过）
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    if: false()  # 跳过静态分析
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-
-  # 构建所有平台
   build:
-    name: Build for ${{ matrix.os }} ${{ matrix.arch }}
+    name: Build ${{ matrix.os }} ${{ matrix.arch }}
     runs-on: ubuntu-latest
     
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Linux
-          - os: linux
-            arch: amd64
-            goos: linux
-            goarch: amd64
-          - os: linux
-            arch: arm64
-            goos: linux
-            goarch: arm64
-          - os: linux
-            arch: arm-v7
-            goos: linux
-            goarch: arm
-            goarm: '7'
-          - os: linux
+        os:
+          - linux
+          - windows
+          - darwin
+          - freebsd
+        arch:
+          - amd64
+          - arm64
+          - 386
+          - arm
+          - ppc64le
+          - s390x
+          - mips64
+          - mips64le
+        exclude:
+          - os: windows
             arch: 386
-            goos: linux
-            goarch: 386
-          - os: linux
+          - os: windows
+            arch: arm
+          - os: windows
             arch: ppc64le
-            goos: linux
-            goarch: ppc64le
-          - os: linux
+          - os: windows
             arch: s390x
-            goos: linux
-            goarch: s390x
-          - os: linux
+          - os: windows
             arch: mips64
-            goos: linux
-            goarch: mips64
-          - os: linux
+          - os: windows
             arch: mips64le
-            goos: linux
-            goarch: mips64le
-          
-          # Windows
-          - os: windows
-            arch: amd64
-            goos: windows
-            goarch: amd64
-          - os: windows
-            arch: arm64
-            goos: windows
-            goarch: arm64
-          
-          # macOS
           - os: darwin
-            arch: amd64
-            goos: darwin
-            goarch: amd64
+            arch: 386
           - os: darwin
-            arch: arm64
-            goos: darwin
-            goarch: arm64
-          
-          # FreeBSD
+            arch: arm
+          - os: darwin
+            arch: ppc64le
+          - os: darwin
+            arch: s390x
+          - os: darwin
+            arch: mips64
+          - os: darwin
+            arch: mips64le
           - os: freebsd
-            arch: amd64
-            goos: freebsd
-            goarch: amd64
+            arch: 386
           - os: freebsd
-            arch: arm64
-            goos: freebsd
-            goarch: arm64
+            arch: arm
+          - os: freebsd
+            arch: ppc64le
+          - os: freebsd
+            arch: s390x
+          - os: freebsd
+            arch: mips64
+          - os: freebsd
+            arch: mips64le
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: ${{ env.GO_VERSION }}
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
 
-    - name: Download dependencies
-      run: go mod download || true
+      - name: Download dependencies
+        run: go mod download || true
 
-    - name: Build Server
-      env:
-        GOOS: ${{ matrix.goos }}
-        GOARCH: ${{ matrix.goarch }}
-        GOARM: ${{ matrix.goarm || '' }}
-        CGO_ENABLED: 0
-        LDFLAGS: -s -w -X main.Version=${{ github.ref_name }} -X main.BuildTime=${{ github.event.head_commit.timestamp }} -X main.GitCommit=${{ github.sha }}
-      run: |
-        OUTPUT_NAME="${{ env.PROJECT_NAME }}-server-${{ matrix.goos }}-${{ matrix.goarch }}"
-        if [ "${{ matrix.goos }}" = "windows" ]; then
-          OUTPUT_NAME="${OUTPUT_NAME}.exe"
-        fi
-        go build -ldflags "$LDFLAGS" -o "dist/${OUTPUT_NAME}" ./server
+      - name: Build Server
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          GOARM: '7'
+          CGO_ENABLED: '0'
+        run: |
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            go build -o dist/aethertunnel-server-${{ matrix.os }}-${{ matrix.arch }}.exe ./server
+          else
+            go build -o dist/aethertunnel-server-${{ matrix.os }}-${{ matrix.arch }} ./server
+          fi
 
-    - name: Build Client
-      env:
-        GOOS: ${{ matrix.goos }}
-        GOARCH: ${{ matrix.goarch }}
-        GOARM: ${{ matrix.goarm || '' }}
-        CGO_ENABLED: 0
-        LDFLAGS: -s -w -X main.Version=${{ github.ref_name }} -X main.BuildTime=${{ github.event.head_commit.timestamp }} -X main.GitCommit=${{ github.sha }}
-      run: |
-        OUTPUT_NAME="${{ env.PROJECT_NAME }}-client-${{ matrix.goos }}-${{ matrix.goarch }}"
-        if [ "${{ matrix.goos }}" = "windows" ]; then
-          OUTPUT_NAME="${OUTPUT_NAME}.exe"
-        fi
-        go build -ldflags "$LDFLAGS" -o "dist/${OUTPUT_NAME}" ./client
+      - name: Build Client
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          GOARM: '7'
+          CGO_ENABLED: '0'
+        run: |
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            go build -o dist/aethertunnel-client-${{ matrix.os }}-${{ matrix.arch }}.exe ./client
+          else
+            go build -o dist/aethertunnel-client-${{ matrix.os }}-${{ matrix.arch }} ./client
+          fi
 
-    - name: Compress binaries
-      run: |
-        cd dist
-        for f in *; do
-          gzip -9 -c "$f" > "$f.gz"
-          xz -9 -c "$f" > "$f.xz"
-        done
+      - name: Compress artifacts
+        run: |
+          cd dist
+          for f in *; do
+            gzip -9 -c "$f" > "$f.gz"
+            xz -9 -c "$f" > "$f.xz"
+          done
 
-    - name: Upload binaries (Server)
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.PROJECT_NAME }}-server-${{ matrix.goos }}-${{ matrix.goarch }}
-        path: |
-          dist/aethertunnel-server*
-          dist/aethertunnel-server*.gz
-          dist/aethertunnel-server*.xz
-        retention-days: 90
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
 
-    - name: Upload binaries (Client)
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.PROJECT_NAME }}-client-${{ matrix.goos }}-${{ matrix.goarch }}
-        path: |
-          dist/aethertunnel-client*
-          dist/aethertunnel-client*.gz
-          dist/aethertunnel-client*.xz
-        retention-days: 90
-
-  # 生成校验和
-  checksums:
-    name: Generate Checksums
-    needs: [build]
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: dist
-
-    - name: Generate SHA256SUMS
-      run: |
-        cd dist
-        sha256sum * > SHA256SUMS.txt 2>/dev/null || touch SHA256SUMS.txt
-        if [ -s SHA256SUMS.txt ]; then
-          cat SHA256SUMS.txt
-        else
-          echo "# SHA256SUMS" > SHA256SUMS.txt
-        fi
-
-    - name: Upload checksums
-      uses: actions/upload-artifact@v4
-      with:
-        name: checksums
-        path: dist/SHA256SUMS.txt
-        retention-days: 90
-
-  # 创建 Release
-  release:
+  create-release:
     name: Create Release
-    needs: [build, checksums]
+    needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') && github.event_name != 'pull_request'
+    if: startsWith(github.ref, 'refs/tags/v')
     
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: dist
-
-    - name: Display structure
-      run: ls -R dist
-
-    - name: Create Release Notes
-      id: create_release_notes
-      uses: actions/github-script@v6
-      with:
-        script: |
-          const fs = require('fs');
-          
-          const template = `## 🎉 AetherTunnel ${{ github.ref_name }} Release
-
-          ### 📦 下载
-
-          请根据你的系统选择对应的二进制文件：
-
-          ### 🔒 安全
-
-          - 所有文件都有对应的 SHA256 校验和
-          - 下载后请验证文件完整性：\`sha256sum -c SHA256SUMS.txt\`
-
-          ### 📝 版本信息
-
-          - 版本：${{ github.ref_name }}
-          - 构建时间：${{ github.event.head_commit.timestamp }}
-          - Git 提交：\`${{ github.sha }}\`
-          `;
-
-          console.log(template);
-
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          dist/*.gz
-          dist/*.xz
-          dist/SHA256SUMS.txt
-        body: ${{ steps.create_release_notes.outputs.result }}
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref }}
+          name: ${{ github.ref }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            *.gz
+            *.xz
+          body: |
+            ## AetherTunnel ${{ github.ref }} Release
+            
+            ### Downloads
+            
+            Please select the binary for your platform.
+            
+            ### Installation
+            
+            1. Download the binary for your platform
+            2. Extract the archive
+            3. Run: `./aethertunnel-server -c server.toml.example`
+            4. Run: `./aethertunnel-client -c client.toml.example`
+            
+            ### Documentation
+            
+            - [README](https://github.com/000214075/aethertunnel/blob/main/README.md)
+            - [Quick Start](https://github.com/000214075/aethertunnel/blob/main/QUICK_START.md)
+            - [Usage Guide](https://github.com/000214075/aethertunnel/blob/main/docs/USAGE.md)
+            
+            ### Changelog
+            
+            See [CHANGELOG.md](https://github.com/000214075/aethertunnel/blob/main/CHANGELOG.md) for details.
