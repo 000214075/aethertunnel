@@ -1,266 +1,245 @@
-package main
+package server
 
 import (
-	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"fmt"
-	"net"
-	"sync"
-	"time"
+    "encoding/json"
+    "fmt"
+    "log"
+    "net"
+    "os"
+    "sync"
+    "time"
 
-	"github.com/aethertunnel/aethertunnel/pkg/util"
+    "github.com/aethertunnel/aethertunnel/pkg/config"
+    "github.com/aethertunnel/aethertunnel/pkg/crypto"
+    "github.com/aethertunnel/aethertunnel/pkg/protocol"
 )
 
-// ControlManager 控制连接管理器
+// ControlConnection 控制连接
+type ControlConnection struct {
+    conn           net.Conn
+    remoteAddr     string
+    authenticated  bool
+    mu              sync.RWMutex
+}
+
+func NewControlConnection(conn net.Conn) *ControlConnection {
+    return &ControlConnection{
+        conn:          conn,
+        remoteAddr:     conn.RemoteAddr().String(),
+        authenticated: false,
+    }
+}
+
+// ControlManager 控制管理器
 type ControlManager struct {
-	ctx         context.Context
-	auth        *util.LoginAuth
-	limiter     *util.ConnectionLimiter
-	blocker     *util.IPBlocker
-	audit       *util.AuditLogger
-	sessions    *util.SessionManager
-	controls    map[string]*Control // runID -> Control
-	mu          sync.RWMutex
+    connections map[string]*ControlConnection
+    config       *config.Config
+    encryption   *crypto.Encryption
+    mu           sync.RWMutex
 }
 
-// Control 控制连接
-type Control struct {
-	runID      string
-	clientID   string
-	user       string
-	conn       net.Conn
-	isTLS      bool
-	clientIP   string
-	publicKey  []byte
-	loginTime  time.Time
-	lastPing   time.Time
-	proxies    map[string]*Proxy
-	mu         sync.RWMutex
-	ctx        context.Context
-	cancel     context.CancelFunc
+func NewControlManager(cfg *config.Config, encryption *crypto.Encryption) *ControlManager {
+    return &ControlManager{
+        connections: make(map[string]*ControlConnection),
+        config:       cfg,
+        encryption:   encryption,
+    }
 }
 
-// NewControlManager 创建控制管理器
-func NewControlManager(
-	ctx context.Context,
-	auth *util.LoginAuth,
-	limiter *util.ConnectionLimiter,
-	blocker *util.IPBlocker,
-	audit *util.AuditLogger,
-	sessions *util.SessionManager,
-) *ControlManager {
-	return &ControlManager{
-		ctx:       ctx,
-		auth:      auth,
-		limiter:   limiter,
-		blocker:   blocker,
-		audit:     audit,
-		sessions:  sessions,
-		controls:  make(map[string]*Control),
-	}
+// HandleConnection 处理新的控制连接
+func (cm *ControlManager) HandleConnection(conn net.Conn) {
+    connID := conn.RemoteAddr().String()
+
+    cm.mu.Lock()
+    defer cm.mu.Unlock()
+
+    // 超过最大连接数
+    maxConnections := 100
+    if len(cm.connections) >= maxConnections {
+        log.Printf("Too many connections, rejecting: %s", connID)
+        errMsg := protocol.NewErrorMessage("too many connections")
+        if err := protocol.WriteMessage(conn, errMsg); err != nil {
+            log.Printf("Failed to write error message: %v", err)
+        }
+        conn.Close()
+        return
+    }
+
+    // 添加到连接池
+    connObj := NewControlConnection(conn)
+    cm.connections[connID] = connObj
+
+    log.Printf("New control connection: %s (total: %d)", connID, len(cm.connections))
+
+    // 启动连接处理
+    go cm.handleConnection(connObj)
 }
 
-// HandleLogin 处理登录
-func (m *ControlManager) HandleLogin(conn net.Conn, msg *LoginMessage, isTLS, clientIP string) {
-	// 验证登录
-	err := m.auth.VerifyLogin(msg.Token, msg.Timestamp, []byte{})
-	if err != nil {
-		m.audit.LogLogin("", "", clientIP, msg.User, false, err.Error())
-		m.sendLoginError(conn, err)
-		conn.Close()
+// handleConnection 处理连接
+func (cm *ControlManager) handleConnection(conn *ControlConnection) {
+    defer conn.conn.Close()
 
-		// 封禁失败的尝试
-		if m.blocker != nil {
-			m.blocker.Block(clientIP, 5*time.Minute)
-		}
-		return
-	}
+    // 读取第一个消息（应该是认证）
+    msg, err := protocol.ReadMessage(conn.conn)
+    if err != nil {
+        log.Printf("Failed to read message: %v", err)
+        return
+    }
 
-	// 生成或使用提供的 runID
-	runID := msg.RunID
-	if runID == "" {
-		runID = generateRunID()
-	}
+    log.Printf("Received message type: %d from %s", msg.Type, conn.remoteAddr)
 
-	// 检查并替换现有控制
-	m.mu.Lock()
-	oldCtl, exists := m.controls[runID]
-	if exists {
-		oldCtl.Close()
-		delete(m.controls, runID)
-	}
-	m.mu.Unlock()
+    switch msg.Type {
+    case protocol.MessageTypeAuth:
+        // 处理认证
+        cm.handleAuth(conn, msg.Payload)
 
-	// 创建新的控制连接
-	ctx, cancel := context.WithCancel(m.ctx)
-	ctl := &Control{
-		runID:     runID,
-		clientID:  msg.ClientID,
-		user:      msg.User,
-		conn:      conn,
-		isTLS:     isTLS,
-		clientIP:  clientIP,
-		publicKey: []byte{},
-		loginTime: time.Now(),
-		lastPing:  time.Now(),
-		proxies:   make(map[string]*Proxy),
-		ctx:       ctx,
-		cancel:    cancel,
-	}
+    case protocol.MessageTypeHeartbeat:
+        // 心跳消息
+        cm.handleHeartbeat(conn)
 
-	// 添加到管理器
-	m.mu.Lock()
-	m.controls[runID] = ctl
-	m.mu.Unlock()
+    case protocol.MessageTypeProxy, protocol.MessageTypeData:
+        // 数据消息（不应该出现在控制连接中）
+        log.Printf("Unexpected data message on control connection: %s", conn.remoteAddr)
+        errMsg := protocol.NewErrorMessage("unexpected message type")
+        if err := protocol.WriteMessage(conn.conn, errMsg); err != nil {
+            log.Printf("Failed to write error message: %v", err)
+        }
 
-	// 添加到会话管理
-	m.sessions.AddSession(runID, &util.Session{
-		ClientID:  msg.ClientID,
-		RunID:     runID,
-		User:      msg.User,
-		IP:        clientIP,
-		PublicKey: []byte{},
-	})
-
-	// 记录审计日志
-	m.audit.LogLogin(msg.ClientID, runID, clientIP, msg.User, true, "")
-
-	// 发送登录成功响应
-	m.sendLoginSuccess(conn, runID)
-
-	// 启动控制循环
-	go ctl.run()
-
-	fmt.Printf("Client [%s] logged in from %s, runID: %s\n", msg.User, clientIP, runID)
+    default:
+        log.Printf("Unknown message type: %d", msg.Type)
+    }
 }
 
-func (m *ControlManager) sendLoginSuccess(conn net.Conn, runID string) {
-	resp := fmt.Sprintf("LOGIN_OK:%s:%d\n", runID, time.Now().Unix())
-	conn.Write([]byte(resp))
+// handleAuth 处理认证
+func (cm *ControlManager) handleAuth(conn *ControlConnection, payload []byte) {
+    token := string(payload)
+
+    log.Printf("Auth attempt from %s: %s", conn.remoteAddr, maskToken(token))
+
+    // 验证令牌
+    if token != cm.config.Server.AuthToken {
+        log.Printf("Invalid auth token: %s", token)
+        
+        // 发送认证失败消息
+        errMsg := protocol.NewErrorMessage("invalid auth token")
+        if err := protocol.WriteMessage(conn.conn, errMsg); err != nil {
+            log.Printf("Failed to write error message: %v", err)
+        }
+        return
+    }
+
+    // 标记为已认证
+    conn.authenticated = true
+    log.Printf("Client %s authenticated successfully", conn.remoteAddr)
+
+    // 发送认证成功消息
+    successMsg := protocol.NewAuthMessage("OK")
+    if err := protocol.WriteMessage(conn.conn, successMsg); err != nil {
+        log.Printf("Failed to write auth success message: %v", err)
+        return
+    }
 }
 
-func (m *ControlManager) sendLoginError(conn net.Conn, err error) {
-	resp := fmt.Sprintf("LOGIN_ERROR:%s\n", err.Error())
-	conn.Write([]byte(resp))
+// handleHeartbeat 处理心跳
+func (cm *ControlManager) handleHeartbeat(conn *ControlConnection) {
+    if !conn.authenticated {
+        log.Printf("Heartbeat from unauthenticated client: %s", conn.remoteAddr)
+        return
+    }
+
+    log.Printf("Heartbeat from %s", conn.remoteAddr)
 }
 
-// GetControl 获取控制连接
-func (m *ControlManager) GetControl(runID string) (*Control, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	ctl, ok := m.controls[runID]
-	return ctl, ok
+// GetConnection 获取连接
+func (cm *ControlManager) GetConnection(id string) (*ControlConnection, bool) {
+    cm.mu.RLock()
+    defer cm.mu.RUnlock()
+
+    conn, exists := cm.connections[id]
+    return conn, exists
 }
 
-// RemoveControl 移除控制连接
-func (m *ControlManager) RemoveControl(runID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// RemoveConnection 移除连接
+func (cm *ControlManager) RemoveConnection(id string) error {
+    cm.mu.Lock()
+    defer cm.mu.Unlock()
 
-	if ctl, ok := m.controls[runID]; ok {
-		delete(m.controls, runID)
-		m.sessions.RemoveSession(runID)
-		m.limiter.Decrement(ctl.clientID)
-	}
+    conn, exists := cm.connections[id]
+    if !exists {
+        return fmt.Errorf("connection %s not found", id)
+    }
+
+    // 关闭连接
+    conn.conn.Close()
+
+    // 删除
+    delete(cm.connections, id)
+
+    log.Printf("Removed connection: %s (remaining: %d)", id, len(cm.connections))
+
+    return nil
 }
 
-// Close 关闭所有控制连接
-func (m *ControlManager) Close() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// Broadcast 向所有客户端广播消息
+func (cm *ControlManager) Broadcast(msg *protocol.Message) error {
+    cm.mu.RLock()
+    defer cm.mu.RUnlock()
 
-	for _, ctl := range m.controls {
-		ctl.Close()
-	}
-	m.controls = make(map[string]*Control)
+    var errs []error
+
+    for id, conn := range cm.connections {
+        if !conn.authenticated {
+            continue
+        }
+
+        if err := protocol.WriteMessage(conn.conn, msg); err != nil {
+            log.Printf("Failed to broadcast to %s: %v", id, err)
+            errs = append(errs, err)
+        }
+    }
+
+    if len(errs) > 0 {
+        return fmt.Errorf("failed to broadcast to %d/%d clients", len(errs), len(cm.connections))
+    }
+
+    return nil
 }
 
-// Control 方法
+// GetStats 获取连接统计
+func (cm *ControlManager) GetStats() map[string]interface{} {
+    cm.mu.RLock()
+    defer cm.mu.RUnlock()
 
-func (c *Control) run() {
-	// 启动心跳检测
-	go c.heartbeatChecker()
+    total := len(cm.connections)
+    authenticated := 0
 
-	// 消息处理循环
-	buf := make([]byte, 4096)
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		default:
-			n, err := c.conn.Read(buf)
-			if err != nil {
-				fmt.Printf("Control connection error for %s: %v\n", c.runID, err)
-				c.Close()
-				return
-			}
+    for _, conn := range cm.connections {
+        if conn.authenticated {
+            authenticated++
+        }
+    }
 
-			c.handleMessage(buf[:n])
-		}
-	}
+    return map[string]interface{}{
+        "total":         total,
+        "authenticated": authenticated,
+        "unauthenticated": total - authenticated,
+    }
 }
 
-func (c *Control) handleMessage(data []byte) {
-	// 简化的消息处理
-	// 实际实现应该解析协议消息
+// ListConnections 列出所有连接
+func (cm *ControlManager) ListConnections() []map[string]interface{} {
+    cm.mu.RLock()
+    defer cm.mu.RUnlock()
 
-	// 检查心跳
-	if len(data) > 4 && string(data[:4]) == "PING" {
-		c.lastPing = time.Now()
-		c.conn.Write([]byte("PONG\n"))
-		return
-	}
+    list := make([]map[string]interface{}, 0, len(cm.connections))
 
-	// 处理代理创建等消息
-	fmt.Printf("Received message from %s: %s\n", c.runID, string(data))
-}
+    for id, conn := range cm.connections {
+        list = append(list, map[string]interface{}{
+            "id":            id,
+            "remote_addr":   conn.remoteAddr,
+            "authenticated": conn.authenticated,
+        })
+    }
 
-func (c *Control) heartbeatChecker() {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		case <-ticker.C:
-			if time.Since(c.lastPing) > 90*time.Second {
-				fmt.Printf("Heartbeat timeout for %s\n", c.runID)
-				c.Close()
-				return
-			}
-		}
-	}
-}
-
-func (c *Control) Close() {
-	c.cancel()
-	c.conn.Close()
-}
-
-func (c *Control) GetProxy(name string) (*Proxy, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	pxy, ok := c.proxies[name]
-	return pxy, ok
-}
-
-func (c *Control) AddProxy(name string, pxy *Proxy) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.proxies[name] = pxy
-}
-
-func (c *Control) RemoveProxy(name string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.proxies, name)
-}
-
-// GenerateRunID 生成 runID
-func generateRunID() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+    return list
 }
