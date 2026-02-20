@@ -7,12 +7,15 @@ import (
     "net"
     "os"
     "os/signal"
+    "sync"
     "syscall"
     "time"
 
     "github.com/aethertunnel/aethertunnel/pkg/config"
     "github.com/aethertunnel/aethertunnel/pkg/crypto"
+    "github.com/aethertunnel/aethertunnel/pkg/obfuscation"
     "github.com/aethertunnel/aethertunnel/pkg/protocol"
+    "github.com/aethertunnel/aethertunnel/pkg/vpn"
 )
 
 var (
@@ -43,6 +46,26 @@ func main() {
 
     // 创建加密器
     encryption := crypto.NewEncryption(cfg.Server.AuthToken)
+
+    // 创建混淆器
+    var obfuscator *obfuscation.Obfuscation
+    if cfg.Obfuscation.Enabled {
+        obfuscator = obfuscation.NewObfuscation(encryption)
+        log.Printf("Obfuscation enabled with default type: %s", cfg.Obfuscation.DefaultType)
+    }
+
+    // 创建VPN管理器
+    var vpnManager *vpn.VPN
+    if cfg.VPN.Enabled {
+        vpnEncryption := crypto.NewEncryption(cfg.VPN.AuthToken)
+        vpnManager = vpn.NewVPN(cfg, vpnEncryption)
+        go func() {
+            if err := vpnManager.Start(); err != nil {
+                log.Printf("Failed to start VPN: %v", err)
+            }
+        }()
+        log.Printf("VPN enabled on port %d", cfg.VPN.Port)
+    }
 
     // 创建监听器
     listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", cfg.Server.BindAddr, cfg.Server.BindPort))

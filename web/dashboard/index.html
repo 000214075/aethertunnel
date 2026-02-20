@@ -906,6 +906,10 @@
                     <span class="sidebar-nav-icon">🖥️</span>
                     <span class="sidebar-nav-text" data-i18n="server_config">服务器配置</span>
                 </li>
+                <li class="sidebar-nav-item" onclick="showSection('config')">
+                    <span class="sidebar-nav-icon">⚙️</span>
+                    <span class="sidebar-nav-text" data-i18n="config_management">配置管理</span>
+                </li>
                 
                 <li class="sidebar-section">
                     <div class="sidebar-section-title" data-i18n="advanced_settings">高级设置</div>
@@ -942,9 +946,17 @@
                     <span class="sidebar-nav-icon">🔬</span>
                     <span class="sidebar-nav-text" data-i18n="quantum_encryption">量子加密</span>
                 </li>
+                <li class="sidebar-nav-item" onclick="showSection('vpn')">
+                    <span class="sidebar-nav-icon">🔐</span>
+                    <span class="sidebar-nav-text" data-i18n="vpn_network">VPN 管理</span>
+                </li>
                 
                 <li class="sidebar-section">
                     <div class="sidebar-section-title" data-i18n="system">系统</div>
+                </li>
+                <li class="sidebar-nav-item" onclick="showSection('config')">
+                    <span class="sidebar-nav-icon">⚙️</span>
+                    <span class="sidebar-nav-text" data-i18n="config_management">配置管理</span>
                 </li>
                 <li class="sidebar-nav-item" onclick="showSection('logs')">
                     <span class="sidebar-nav-icon">📝</span>
@@ -1110,6 +1122,320 @@
                 </div>
             </div>
 
+            <!-- VPN管理页面 -->
+            <div id="vpn-section" class="hidden">
+                <div class="main-header">
+                    <h1 class="main-title" data-i18n="vpn_network">VPN 管理</h1>
+                    <div class="main-actions">
+                        <button class="btn btn-primary" onclick="createVPN()" data-i18n="create_vpn">创建VPN隧道</button>
+                        <button class="btn btn-secondary" onclick="startAllVPNs()" data-i18n="start_all">启动所有</button>
+                        <button class="btn btn-secondary" onclick="stopAllVPNs()" data-i18n="stop_all">停止所有</button>
+                    </div>
+                </div>
+
+                <!-- VPN状态概览 -->
+                <div class="status-grid">
+                    <div class="status-card">
+                        <div class="status-card-header">
+                            <span class="status-card-title" data-i18n="vpn_tunnels">VPN隧道数</span>
+                            <div class="status-indicator online"></div>
+                        </div>
+                        <div class="status-card-value" id="vpn-tunnels-count">0</div>
+                        <div class="status-card-label" data-i18n="active_tunnels">活跃隧道</div>
+                    </div>
+
+                    <div class="status-card">
+                        <div class="status-card-header">
+                            <span class="status-card-title" data-i18n="vpn_clients">VPN客户端数</span>
+                            <div class="status-indicator online"></div>
+                        </div>
+                        <div class="status-card-value" id="vpn-clients-count">0</div>
+                        <div class="status-card-label" data-i18n="connected_clients">已连接客户端</div>
+                    </div>
+
+                    <div class="status-card">
+                        <div class="status-card-header">
+                            <span class="status-card-title" data-i18n="vpn_traffic">VPN流量</span>
+                            <div class="status-indicator warning"></div>
+                        </div>
+                        <div class="status-card-value" id="vpn-traffic">0 MB/s</div>
+                        <div class="status-card-label" data-i18n="vpn_bandwidth">VPN带宽使用</div>
+                    </div>
+
+                    <div class="status-card">
+                        <div class="status-card-header">
+                            <span class="status-card-title" data-i18n="obfuscation">混淆状态</span>
+                            <div class="status-indicator" id="obfuscation-indicator"></div>
+                        </div>
+                        <div class="status-card-value" id="obfuscation-status">未启用</div>
+                        <div class="status-card-label" data-i18n="obfuscation_type">混淆类型</div>
+                    </div>
+                </div>
+
+                <!-- VPN隧道列表 -->
+                <div class="card">
+                    <div class="config-category-header">
+                        <h3 class="config-category-title">
+                            <span>🔐</span>
+                            <span data-i18n="vpn_tunnel_list">VPN隧道列表</span>
+                        </h3>
+                    </div>
+                    <div id="vpn-list-container">
+                        <!-- VPN隧道列表将通过 JS 动态加载 -->
+                    </div>
+                </div>
+
+                <!-- 在线客户端列表 -->
+                <div class="card">
+                    <div class="config-category-header">
+                        <h3 class="config-category-title">
+                            <span>💻</span>
+                            <span data-i18n="vpn_clients">VPN客户端</span>
+                        </h3>
+                    </div>
+                    <div id="vpn-clients-container">
+                        <!-- 客户端列表将通过 JS 动态加载 -->
+                    </div>
+                </div>
+
+                <!-- 混淆配置 -->
+                <div class="card">
+                    <div class="config-category-header">
+                        <h3 class="config-category-title">
+                            <span>🎭</span>
+                            <span data-i18n="obfuscation_config">混淆配置</span>
+                        </h3>
+                    </div>
+                    <div class="config-category-body">
+                        <div class="config-item">
+                            <div class="config-item-header">
+                                <div>
+                                    <div class="config-item-title">
+                                        <span data-i18n="enable_obfuscation">启用混淆</span>
+                                    </div>
+                                    <div class="config-item-description" data-i18n="enable_obfuscation_desc">
+                                        启用数据混淆以防止DPI检测和流量分析
+                                    </div>
+                                </div>
+                                <div class="config-item-actions">
+                                    <div class="config-toggle" id="obfuscation-toggle" onclick="toggleObfuscation()"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="config-item">
+                            <div class="config-item-header">
+                                <div>
+                                    <div class="config-item-title">
+                                        <span data-i18n="obfuscation_type">混淆类型</span>
+                                    </div>
+                                    <div class="config-item-description" data-i18n="obfuscation_type_desc">
+                                        选择数据混淆的方式
+                                    </div>
+                                </div>
+                                <div class="config-item-actions">
+                                    <select class="form-input" style="width: 200px;" id="obfuscation-type">
+                                        <option value="none" data-i18n="obf_none">无</option>
+                                        <option value="xor" data-i18n="obf_xor">XOR加密</option>
+                                        <option value="aes" data-i18n="obf_aes">AES加密</option>
+                                        <option value="chacha" data-i18n="obf_chacha">ChaCha加密</option>
+                                        <option value="stego" data-i18n="obf_stego">隐写术</option>
+                                        <option value="morph" data-i18n="obf_morph">流量整形</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="config-item">
+                            <div class="config-item-header">
+                                <div>
+                                    <div class="config-item-title">
+                                        <span data-i18n="adaptive_obfuscation">自适应混淆</span>
+                                    </div>
+                                    <div class="config-item-description" data-i18n="adaptive_obfuscation_desc">
+                                        根据连接类型自动选择最佳混淆方式
+                                    </div>
+                                </div>
+                                <div class="config-item-actions">
+                                    <div class="config-toggle" id="adaptive-toggle" onclick="toggleAdaptive()"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-group" style="margin-top: 20px;">
+                            <button class="btn btn-primary" onclick="saveObfuscationConfig()" data-i18n="save_config">保存配置</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 配置管理页面 -->
+            <div id="config-section" class="hidden">
+                <div class="main-header">
+                    <h1 class="main-title" data-i18n="config_management">配置管理</h1>
+                    <div class="main-actions">
+                        <button class="btn btn-primary" onclick="loadConfigFile()" data-i18n="load_config">加载配置</button>
+                        <button class="btn btn-secondary" onclick="saveConfigFile()" data-i18n="save_config">保存配置</button>
+                        <button class="btn btn-secondary" onclick="formatConfig()" data-i18n="format_config">格式化</button>
+                        <button class="btn btn-secondary" onclick="validateConfig()" data-i18n="validate_config">验证</button>
+                        <select id="config-type-select" onchange="changeConfigType()" style="padding: 10px; border-radius: 8px; border: 2px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary);">
+                            <option value="server" data-i18n="server_config">服务端配置</option>
+                            <option value="client" data-i18n="client_config">客户端配置</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- 配置编辑器 -->
+                <div class="card">
+                    <div class="config-category-header">
+                        <h3 class="config-category-title">
+                            <span>📝</span>
+                            <span id="config-editor-title" data-i18n="config_editor">配置编辑器</span>
+                        </h3>
+                        <div class="config-category-toggle" onclick="toggleConfigEditor()">⚙️</div>
+                    </div>
+                    <div class="config-category-body">
+                        <div class="form-group">
+                            <label class="form-label" data-i18n="config_file_path">配置文件路径</label>
+                            <input type="text" id="config-file-path" class="form-input" placeholder="/etc/aethertunnel/server.toml" value="/etc/aethertunnel/server.toml">
+                            <p class="form-hint" data-i18n="config_file_path_hint">输入配置文件的完整路径，或点击"加载配置"选择文件</p>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label class="form-label" data-i18n="config_content">配置内容</label>
+                            <textarea id="config-editor" class="form-input" style="height: 500px; font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace; font-size: 13px; line-height: 1.5; resize: vertical;" placeholder="在这里输入或粘贴配置内容..."></textarea>
+                            <p class="form-hint" data-i18n="config_content_hint">编辑配置内容，支持语法高亮和自动补全</p>
+                        </div>
+
+                        <div class="form-group" style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <span id="config-status" style="font-size: 14px; color: var(--text-secondary);" data-i18n="config_status">就绪</span>
+                                <span id="config-validation-result" style="margin-left: 15px; font-size: 14px;"></span>
+                            </div>
+                            <div>
+                                <button class="btn btn-primary" onclick="saveConfigFile()" data-i18n="save_config">保存配置</button>
+                                <button class="btn btn-secondary" onclick="reloadConfig()" data-i18n="reload_config">重载配置</button>
+                                <button class="btn btn-secondary" onclick="backupConfig()" data-i18n="backup_config">备份配置</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 配置模板 -->
+                <div class="card">
+                    <div class="config-category-header">
+                        <h3 class="config-category-title">
+                            <span>📋</span>
+                            <span data-i18n="config_templates">配置模板</span>
+                        </h3>
+                    </div>
+                    <div class="config-category-body">
+                        <div class="config-grid" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));">
+                            <div class="config-item" style="cursor: pointer; padding: 20px; border: 2px solid var(--border-color); border-radius: 12px; transition: var(--transition);" onclick="loadTemplate('server-basic')">
+                                <div style="font-weight: 700; margin-bottom: 10px; color: var(--text-primary);" data-i18n="server_basic_template">服务端基础配置</div>
+                                <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 10px;" data-i18n="server_basic_desc">标准VPN服务端配置，适合大多数场景</div>
+                                <div style="font-size: 12px; color: var(--success-color);" data-i18n="recommended">推荐</div>
+                            </div>
+                            
+                            <div class="config-item" style="cursor: pointer; padding: 20px; border: 2px solid var(--border-color); border-radius: 12px; transition: var(--transition);" onclick="loadTemplate('client-basic')">
+                                <div style="font-weight: 700; margin-bottom: 10px; color: var(--text-primary);" data-i18n="client_basic_template">客户端基础配置</div>
+                                <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 10px;" data-i18n="client_basic_desc">标准VPN客户端配置，快速连接VPN</div>
+                                <div style="font-size: 12px; color: var(--success-color);" data-i18n="recommended">推荐</div>
+                            </div>
+                            
+                            <div class="config-item" style="cursor: pointer; padding: 20px; border: 2px solid var(--border-color); border-radius: 12px; transition: var(--transition);" onclick="loadTemplate('server-advanced')">
+                                <div style="font-weight: 700; margin-bottom: 10px; color: var(--text-primary);" data-i18n="server_advanced_template">服务端高级配置</div>
+                                <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 10px;" data-i18n="server_advanced_desc">高级VPN服务端配置，包含性能优化</div>
+                                <div style="font-size: 12px; color: var(--warning-color);" data-i18n="advanced">高级</div>
+                            </div>
+                            
+                            <div class="config-item" style="cursor: pointer; padding: 20px; border: 2px solid var(--border-color); border-radius: 12px; transition: var(--transition);" onclick="loadTemplate('client-advanced')">
+                                <div style="font-weight: 700; margin-bottom: 10px; color: var(--text-primary);" data-i18n="client_advanced_template">客户端高级配置</div>
+                                <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 10px;" data-i18n="client_advanced_desc">高级VPN客户端配置，包含混淆设置</div>
+                                <div style="font-size: 12px; color: var(--warning-color);" data-i18n="advanced">高级</div>
+                            </div>
+                            
+                            <div class="config-item" style="cursor: pointer; padding: 20px; border: 2px solid var(--border-color); border-radius: 12px; transition: var(--transition);" onclick="loadTemplate('security-hardened')">
+                                <div style="font-weight: 700; margin-bottom: 10px; color: var(--text-primary);" data-i18n="security_hardened_template">安全加固配置</div>
+                                <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 10px;" data-i18n="security_hardened_desc">高安全性配置，适合企业环境</div>
+                                <div style="font-size: 12px; color: var(--danger-color);" data-i18n="security">安全</div>
+                            </div>
+                            
+                            <div class="config-item" style="cursor: pointer; padding: 20px; border: 2px solid var(--border-color); border-radius: 12px; transition: var(--transition);" onclick="loadTemplate('performance-optimized')">
+                                <div style="font-weight: 700; margin-bottom: 10px; color: var(--text-primary);" data-i18n="performance_optimized_template">性能优化配置</div>
+                                <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 10px;" data-i18n="performance_optimized_desc">高性能配置，适合大流量场景</div>
+                                <div style="font-size: 12px; color: var(--primary-color);" data-i18n="performance">性能</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 配置历史 -->
+                <div class="card">
+                    <div class="config-category-header">
+                        <h3 class="config-category-title">
+                            <span>📜</span>
+                            <span data-i18n="config_history">配置历史</span>
+                        </h3>
+                        <button class="btn btn-secondary" onclick="clearConfigHistory()" data-i18n="clear_history">清除历史</button>
+                    </div>
+                    <div class="config-category-body">
+                        <div id="config-history-list">
+                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 15px; background: var(--bg-secondary); border-radius: 8px; margin-bottom: 10px;">
+                                <div>
+                                    <div style="font-weight: 700; margin-bottom: 5px;">server.toml</div>
+                                    <div style="font-size: 12px; color: var(--text-secondary);">2026-02-21 04:30:15 - 修改VPN端口</div>
+                                </div>
+                                <div>
+                                    <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="restoreConfig('server.toml')" data-i18n="restore">恢复</button>
+                                    <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="viewConfigDiff('server.toml')" data-i18n="diff">对比</button>
+                                </div>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 15px; background: var(--bg-secondary); border-radius: 8px; margin-bottom: 10px;">
+                                <div>
+                                    <div style="font-weight: 700; margin-bottom: 5px;">client.toml</div>
+                                    <div style="font-size: 12px; color: var(--text-secondary);">2026-02-21 04:25:10 - 添加混淆配置</div>
+                                </div>
+                                <div>
+                                    <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="restoreConfig('client.toml')" data-i18n="restore">恢复</button>
+                                    <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="viewConfigDiff('client.toml')" data-i18n="diff">对比</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 批量操作 -->
+                <div class="card">
+                    <div class="config-category-header">
+                        <h3 class="config-category-title">
+                            <span>⚡</span>
+                            <span data-i18n="batch_operations">批量操作</span>
+                        </h3>
+                    </div>
+                    <div class="config-category-body">
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px;">
+                            <div class="form-group">
+                                <button class="btn btn-primary btn-large" onclick="batchUpdateConfig()" data-i18n="batch_update">批量更新配置</button>
+                                <p class="form-hint" data-i18n="batch_update_desc">批量更新多个配置参数</p>
+                            </div>
+                            <div class="form-group">
+                                <button class="btn btn-secondary btn-large" onclick="exportAllConfigs()" data-i18n="export_configs">导出所有配置</button>
+                                <p class="form-hint" data-i18n="export_configs_desc">导出所有配置文件为ZIP</p>
+                            </div>
+                            <div class="form-group">
+                                <button class="btn btn-secondary btn-large" onclick="importConfigs()" data-i18n="import_configs">导入配置文件</button>
+                                <p class="form-hint" data-i18n="import_configs_desc">从备份或ZIP导入配置</p>
+                            </div>
+                            <div class="form-group">
+                                <button class="btn btn-secondary btn-large" onclick="resetAllConfigs()" data-i18n="reset_configs">重置所有配置</button>
+                                <p class="form-hint" data-i18n="reset_configs_desc">重置为默认配置</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- 其他页面将通过 JS 动态显示 -->
         </div>
     </div>
@@ -1260,7 +1586,40 @@
                 strong: 'Strong',
                 online: 'Online',
                 offline: 'Offline',
-                normal: 'Normal'
+                normal: 'Normal',
+                // VPN相关翻译
+                vpn_network: 'VPN 管理',
+                create_vpn: '创建VPN隧道',
+                start_all: '启动所有',
+                stop_all: '停止所有',
+                vpn_tunnels: 'VPN隧道数',
+                active_tunnels: '活跃隧道',
+                vpn_clients: 'VPN客户端数',
+                connected_clients: '已连接客户端',
+                vpn_traffic: 'VPN流量',
+                vpn_bandwidth: 'VPN带宽使用',
+                obfuscation: '混淆状态',
+                obfuscation_type: '混淆类型',
+                vpn_tunnel_list: 'VPN隧道列表',
+                vpn_clients_list: 'VPN客户端',
+                running: '运行中',
+                start: '启动',
+                stop: '停止',
+                edit: '编辑',
+                delete: '删除',
+                disconnect: '断开',
+                obfuscation_config: '混淆配置',
+                enable_obfuscation: '启用混淆',
+                enable_obfuscation_desc: '启用数据混淆以防止DPI检测和流量分析',
+                adaptive_obfuscation: '自适应混淆',
+                adaptive_obfuscation_desc: '根据连接类型自动选择最佳混淆方式',
+                save_config: '保存配置',
+                obf_none: '无',
+                obf_xor: 'XOR加密',
+                obf_aes: 'AES加密',
+                obf_chacha: 'ChaCha加密',
+                obf_stego: '隐写术',
+                obf_morph: '流量整形'
             }
         };
 
@@ -1629,9 +1988,1129 @@
             loadClientsList();
         }
 
+        // VPN管理函数
+        function loadVPNList() {
+            const vpnContainer = document.getElementById('vpn-list-container');
+            vpnContainer.innerHTML = `
+                <div style="display: grid; gap: 10px;">
+                    <div style="background: var(--bg-secondary); padding: 20px; border-radius: 12px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                            <div style="font-weight: 700;">默认隧道</div>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" data-i18n="start">启动</button>
+                                <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" data-i18n="stop">停止</button>
+                                <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" data-i18n="edit">编辑</button>
+                                <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" data-i18n="delete">删除</button>
+                            </div>
+                        </div>
+                        <div style="font-size: 13px; color: var(--text-secondary);">
+                            <div>ID: tunnel_default</div>
+                            <div>IP: 10.0.0.1/24</div>
+                            <div>协议: TCP</div>
+                            <div>状态: <span style="color: var(--success-color);" data-i18n="running">运行中</span></div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            // 更新VPN计数
+            document.getElementById('vpn-tunnels-count').textContent = 1;
+        }
+
+        function loadVPNClients() {
+            const clientsContainer = document.getElementById('vpn-clients-container');
+            clientsContainer.innerHTML = `
+                <div style="display: grid; gap: 10px;">
+                    <div style="background: var(--bg-secondary); padding: 20px; border-radius: 12px; display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <div style="font-weight: 700; margin-bottom: 5px;">Client-1</div>
+                            <div style="font-size: 13px; color: var(--text-secondary);">IP: 10.0.0.2</div>
+                            <div style="font-size: 13px; color: var(--text-secondary);">MAC: 00:11:22:33:44:55</div>
+                            <div style="font-size: 12px; color: var(--text-secondary);">连接时间: 2小时30分</div>
+                            <div style="font-size: 12px; color: var(--text-secondary);">发送: 12.5 MB, 接收: 8.3 MB</div>
+                            <div style="font-size: 12px; color: var(--text-secondary);">延迟: 25ms</div>
+                        </div>
+                        <div>
+                            <div style="color: var(--success-color); font-size: 12px; margin-bottom: 10px;" data-i18n="online">在线</div>
+                            <button class="btn btn-secondary" style="padding: 8px 16px; font-size: 13px;" data-i18n="disconnect">断开</button>
+                        </div>
+                    </div>
+                    <div style="background: var(--bg-secondary); padding: 20px; border-radius: 12px; display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <div style="font-weight: 700; margin-bottom: 5px;">Client-2</div>
+                            <div style="font-size: 13px; color: var(--text-secondary);">IP: 10.0.0.3</div>
+                            <div style="font-size: 13px; color: var(--text-secondary);">MAC: 00:11:22:33:44:66</div>
+                            <div style="font-size: 12px; color: var(--text-secondary);">连接时间: 1小时45分</div>
+                            <div style="font-size: 12px; color: var(--text-secondary);">发送: 5.2 MB, 接收: 3.1 MB</div>
+                            <div style="font-size: 12px; color: var(--text-secondary);">延迟: 42ms</div>
+                        </div>
+                        <div>
+                            <div style="color: var(--success-color); font-size: 12px; margin-bottom: 10px;" data-i18n="online">在线</div>
+                            <button class="btn btn-secondary" style="padding: 8px 16px; font-size: 13px;" data-i18n="disconnect">断开</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            // 更新客户端计数
+            document.getElementById('vpn-clients-count').textContent = 2;
+        }
+
+        function createVPN() {
+            // 创建VPN隧道对话框
+            const name = prompt('请输入隧道名称:');
+            if (!name) return;
+            
+            const localIP = prompt('请输入本地IP (如 10.0.0.1):', '10.0.0.1');
+            if (!localIP) return;
+            
+            const remoteIP = prompt('请输入远程IP (如 10.0.0.2):', '10.0.0.2');
+            if (!remoteIP) return;
+            
+            // 模拟创建VPN隧道
+            alert('VPN隧道 "' + name + '" 创建成功！');
+            loadVPNList();
+        }
+
+        function startAllVPNs() {
+            alert('正在启动所有VPN隧道...');
+            loadVPNList();
+            loadVPNClients();
+        }
+
+        function stopAllVPNs() {
+            if (confirm('确定要停止所有VPN隧道吗？')) {
+                alert('正在停止所有VPN隧道...');
+                document.getElementById('vpn-tunnels-count').textContent = 0;
+                document.getElementById('vpn-clients-count').textContent = 0;
+                document.getElementById('vpn-list-container').innerHTML = '<p style="padding: 20px; text-align: center; color: var(--text-secondary);">没有活跃的VPN隧道</p>';
+                document.getElementById('vpn-clients-container').innerHTML = '<p style="padding: 20px; text-align: center; color: var(--text-secondary);">没有在线的客户端</p>';
+            }
+        }
+
+        function toggleObfuscation() {
+            const toggle = document.getElementById('obfuscation-toggle');
+            toggle.classList.toggle('active');
+            
+            const indicator = document.getElementById('obfuscation-indicator');
+            const status = document.getElementById('obfuscation-status');
+            
+            if (toggle.classList.contains('active')) {
+                indicator.classList.add('online');
+                status.textContent = '已启用';
+            } else {
+                indicator.classList.remove('online');
+                status.textContent = '未启用';
+            }
+        }
+
+        function toggleAdaptive() {
+            const toggle = document.getElementById('adaptive-toggle');
+            toggle.classList.toggle('active');
+        }
+
+        function saveObfuscationConfig() {
+            const type = document.getElementById('obfuscation-type').value;
+            const enabled = document.getElementById('obfuscation-toggle').classList.contains('active');
+            const adaptive = document.getElementById('adaptive-toggle').classList.contains('active');
+            
+            // 显示加载状态
+            document.getElementById('loading-overlay').classList.add('show');
+            
+            // 模拟保存配置
+            setTimeout(() => {
+                document.getElementById('loading-overlay').classList.remove('show');
+                alert('混淆配置已保存！');
+                
+                // 更新混淆状态
+                if (enabled) {
+                    document.getElementById('obfuscation-status').textContent = type.toUpperCase();
+                    document.getElementById('obfuscation-indicator').classList.add('online');
+                } else {
+                    document.getElementById('obfuscation-status').textContent = '未启用';
+                    document.getElementById('obfuscation-indicator').classList.remove('online');
+                }
+            }, 1000);
+        }
+
         function saveServerConfig() {
             saveAll();
         }
+
+        // 配置管理函数
+        let currentConfigType = 'server';
+        let configHistory = [];
+
+        function loadConfigFile() {
+            const filePath = document.getElementById('config-file-path').value;
+            if (!filePath) {
+                alert('请先输入配置文件路径！');
+                return;
+            }
+
+            // 显示加载状态
+            document.getElementById('loading-overlay').classList.add('show');
+            document.getElementById('config-status').textContent = '正在加载配置...';
+
+            // 模拟加载配置文件
+            setTimeout(() => {
+                // 这里应该调用实际的API来加载配置文件
+                const mockConfig = getMockConfig(currentConfigType);
+                document.getElementById('config-editor').value = mockConfig;
+                
+                document.getElementById('loading-overlay').classList.remove('show');
+                document.getElementById('config-status').textContent = '配置加载成功';
+                
+                // 添加到历史记录
+                addToConfigHistory(filePath, 'load');
+                
+                // 验证配置
+                validateConfig();
+            }, 1000);
+        }
+
+        function saveConfigFile() {
+            const filePath = document.getElementById('config-file-path').value;
+            const configContent = document.getElementById('config-editor').value;
+            
+            if (!filePath) {
+                alert('请先输入配置文件路径！');
+                return;
+            }
+
+            if (!configContent.trim()) {
+                alert('配置内容不能为空！');
+                return;
+            }
+
+            // 显示保存状态
+            document.getElementById('loading-overlay').classList.add('show');
+            document.getElementById('config-status').textContent = '正在保存配置...';
+
+            // 模拟保存配置文件
+            setTimeout(() => {
+                // 这里应该调用实际的API来保存配置文件
+                document.getElementById('loading-overlay').classList.remove('show');
+                document.getElementById('config-status').textContent = '配置保存成功';
+                
+                // 添加到历史记录
+                addToConfigHistory(filePath, 'save');
+                
+                // 显示成功消息
+                showNotification('配置保存成功！', 'success');
+            }, 1000);
+        }
+
+        function formatConfig() {
+            const editor = document.getElementById('config-editor');
+            const configContent = editor.value;
+            
+            if (!configContent.trim()) {
+                alert('没有可格式化的配置内容！');
+                return;
+            }
+
+            // 模拟格式化配置
+            document.getElementById('loading-overlay').classList.add('show');
+            
+            setTimeout(() => {
+                try {
+                    // 简单的TOML格式化
+                    const formatted = formatToml(configContent);
+                    editor.value = formatted;
+                    
+                    document.getElementById('loading-overlay').classList.remove('show');
+                    document.getElementById('config-status').textContent = '配置格式化完成';
+                    showNotification('配置格式化完成！', 'success');
+                } catch (error) {
+                    document.getElementById('loading-overlay').classList.remove('show');
+                    document.getElementById('config-status').textContent = '格式化失败';
+                    showNotification('格式化失败：' + error.message, 'error');
+                }
+            }, 500);
+        }
+
+        function validateConfig() {
+            const editor = document.getElementById('config-editor');
+            const configContent = editor.value;
+            const validationResult = document.getElementById('config-validation-result');
+            
+            if (!configContent.trim()) {
+                validationResult.innerHTML = '<span style="color: var(--warning-color);" data-i18n="config_empty">配置为空</span>';
+                return;
+            }
+
+            // 模拟配置验证
+            try {
+                // 简单的TOML语法验证
+                if (isValidToml(configContent)) {
+                    validationResult.innerHTML = '<span style="color: var(--success-color);" data-i18n="config_valid">配置有效</span>';
+                    document.getElementById('config-status').textContent = '配置验证通过';
+                } else {
+                    validationResult.innerHTML = '<span style="color: var(--danger-color);" data-i18n="config_invalid">配置无效</span>';
+                    document.getElementById('config-status').textContent = '配置验证失败';
+                }
+            } catch (error) {
+                validationResult.innerHTML = '<span style="color: var(--danger-color);" data-i18n="config_error">配置错误</span>';
+                document.getElementById('config-status').textContent = '配置验证出错：' + error.message;
+            }
+        }
+
+        function changeConfigType() {
+            const select = document.getElementById('config-type-select');
+            currentConfigType = select.value;
+            
+            // 更新编辑器标题
+            const title = document.getElementById('config-editor-title');
+            if (currentConfigType === 'server') {
+                title.textContent = '服务端配置';
+            } else {
+                title.textContent = '客户端配置';
+            }
+            
+            // 更新文件路径
+            const filePathInput = document.getElementById('config-file-path');
+            if (currentConfigType === 'server') {
+                filePathInput.value = '/etc/aethertunnel/server.toml';
+            } else {
+                filePathInput.value = '/etc/aethertunnel/client.toml';
+            }
+            
+            // 清空编辑器
+            document.getElementById('config-editor').value = '';
+            document.getElementById('config-validation-result').innerHTML = '';
+            document.getElementById('config-status').textContent = '就绪';
+        }
+
+        function loadTemplate(templateType) {
+            let template = '';
+            
+            switch (templateType) {
+                case 'server-basic':
+                    template = getServerBasicTemplate();
+                    break;
+                case 'client-basic':
+                    template = getClientBasicTemplate();
+                    break;
+                case 'server-advanced':
+                    template = getServerAdvancedTemplate();
+                    break;
+                case 'client-advanced':
+                    template = getClientAdvancedTemplate();
+                    break;
+                case 'security-hardened':
+                    template = getSecurityHardenedTemplate();
+                    break;
+                case 'performance-optimized':
+                    template = getPerformanceOptimizedTemplate();
+                    break;
+                default:
+                    alert('未知的配置模板！');
+                    return;
+            }
+            
+            document.getElementById('config-editor').value = template;
+            document.getElementById('config-status').textContent = '模板加载成功';
+            validateConfig();
+            showNotification('配置模板加载成功！', 'success');
+        }
+
+        function reloadConfig() {
+            const filePath = document.getElementById('config-file-path').value;
+            if (filePath) {
+                loadConfigFile();
+            }
+        }
+
+        function backupConfig() {
+            const filePath = document.getElementById('config-file-path').value;
+            const configContent = document.getElementById('config-editor').value;
+            
+            if (!configContent.trim()) {
+                alert('没有配置内容可备份！');
+                return;
+            }
+
+            // 生成备份文件名
+            const backupFileName = filePath.split('/').pop() + '.backup.' + new Date().getTime() + '.toml';
+            
+            // 创建下载链接
+            const blob = new Blob([configContent], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = backupFileName;
+            a.click();
+            
+            URL.revokeObjectURL(url);
+            showNotification('配置备份已创建：' + backupFileName, 'success');
+        }
+
+        function clearConfigHistory() {
+            if (confirm('确定要清除所有配置历史吗？')) {
+                configHistory = [];
+                document.getElementById('config-history-list').innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 20px;" data-i18n="no_history">暂无历史记录</p>';
+                showNotification('配置历史已清除', 'success');
+            }
+        }
+
+        function restoreConfig(configName) {
+            if (confirm('确定要从备份恢复 ' + configName + ' 吗？')) {
+                document.getElementById('loading-overlay').classList.add('show');
+                
+                setTimeout(() => {
+                    // 这里应该从备份文件加载配置
+                    const restoredConfig = getMockConfig(currentConfigType);
+                    document.getElementById('config-editor').value = restoredConfig;
+                    
+                    document.getElementById('loading-overlay').classList.remove('show');
+                    document.getElementById('config-status').textContent = '配置已恢复';
+                    validateConfig();
+                    showNotification('配置已恢复：' + configName, 'success');
+                }, 1000);
+            }
+        }
+
+        function viewConfigDiff(configName) {
+            // 模拟显示配置差异
+            const diffWindow = window.open('', '_blank', 'width=800,height=600');
+            diffWindow.document.write(`
+                <html>
+                <head>
+                    <title>配置差异 - ${configName}</title>
+                    <style>
+                        body { font-family: monospace; padding: 20px; }
+                        .diff { background: #f0f0f0; padding: 10px; margin: 10px 0; }
+                        .added { background: #d4edda; color: #155724; }
+                        .removed { background: #f8d7da; color: #721c24; }
+                    </style>
+                </head>
+                <body>
+                    <h1>配置差异对比 - ${configName}</h1>
+                    <div class="diff">
+                        <div class="added">+ vpn.port = 7100</div>
+                        <div class="removed">- vpn.port = 7000</div>
+                        <div class="added">+ vpn.obfuscation = true</div>
+                    </div>
+                    <p style="color: #666; font-size: 14px;">此功能需要实际版本控制系统支持</p>
+                </body>
+                </html>
+            `);
+        }
+
+        function batchUpdateConfig() {
+            const batchOperations = [
+                { field: 'vpn.port', value: '7100', type: 'number' },
+                { field: 'vpn.obfuscation', value: 'true', type: 'boolean' },
+                { field: 'obfuscation.enabled', value: 'true', type: 'boolean' },
+                { field: 'logging.level', value: 'info', type: 'string' }
+            ];
+
+            if (confirm('确定要执行批量配置更新吗？这将修改以下配置：\n' + batchOperations.map(op => `${op.field} = ${op.value}`).join('\n'))) {
+                document.getElementById('loading-overlay').classList.add('show');
+                
+                setTimeout(() => {
+                    // 模拟批量更新
+                    const editor = document.getElementById('config-editor');
+                    let configContent = editor.value;
+                    
+                    batchOperations.forEach(op => {
+                        const regex = new RegExp(`^${op.field}\\s*=.*$`, 'm');
+                        const newValue = `${op.field} = ${op.value}`;
+                        
+                        if (regex.test(configContent)) {
+                            configContent = configContent.replace(regex, newValue);
+                        } else {
+                            // 如果不存在，添加到配置中
+                            configContent += `\n${newValue}`;
+                        }
+                    });
+                    
+                    editor.value = configContent;
+                    document.getElementById('loading-overlay').classList.remove('show');
+                    document.getElementById('config-status').textContent = '批量更新完成';
+                    validateConfig();
+                    showNotification('批量配置更新完成！', 'success');
+                }, 1500);
+            }
+        }
+
+        function exportAllConfigs() {
+            // 创建配置ZIP文件
+            const zipContent = {
+                'server.toml': getMockConfig('server'),
+                'client.toml': getMockConfig('client'),
+                'README.md': '# AetherTunnel 配置文件备份\n\n备份时间: ' + new Date().toLocaleString('zh-CN')
+            };
+
+            // 创建下载
+            const zipBlob = new Blob([JSON.stringify(zipContent, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(zipBlob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'aethertunnel-configs-backup-' + new Date().getTime() + '.json';
+            a.click();
+            
+            URL.revokeObjectURL(url);
+            showNotification('配置文件已导出为ZIP格式', 'success');
+        }
+
+        function importConfigs() {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.json,.toml,.zip';
+            input.onchange = function(e) {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                document.getElementById('loading-overlay').classList.add('show');
+                
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    try {
+                        const importedContent = e.target.result;
+                        document.getElementById('config-editor').value = importedContent;
+                        document.getElementById('loading-overlay').classList.remove('show');
+                        document.getElementById('config-status').textContent = '配置导入成功';
+                        validateConfig();
+                        showNotification('配置文件导入成功！', 'success');
+                    } catch (error) {
+                        document.getElementById('loading-overlay').classList.remove('show');
+                        showNotification('配置文件导入失败：' + error.message, 'error');
+                    }
+                };
+                reader.readAsText(file);
+            };
+            input.click();
+        }
+
+        function resetAllConfigs() {
+            if (confirm('确定要重置所有配置为默认值吗？此操作不可恢复！')) {
+                document.getElementById('loading-overlay').classList.add('show');
+                
+                setTimeout(() => {
+                    document.getElementById('config-editor').value = getMockConfig(currentConfigType);
+                    document.getElementById('loading-overlay').classList.remove('show');
+                    document.getElementById('config-status').textContent = '配置已重置';
+                    validateConfig();
+                    showNotification('所有配置已重置为默认值！', 'success');
+                }, 1000);
+            }
+        }
+
+        function toggleConfigEditor() {
+            const editor = document.getElementById('config-editor');
+            editor.style.display = editor.style.display === 'none' ? 'block' : 'none';
+        }
+
+        function showNotification(message, type) {
+            // 创建通知元素
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                padding: 15px 20px;
+                border-radius: 8px;
+                color: white;
+                font-weight: 600;
+                z-index: 10000;
+                animation: slideIn 0.3s ease;
+                background: ${type === 'success' ? 'var(--success-color)' : type === 'error' ? 'var(--danger-color)' : 'var(--primary-color)'};
+            `;
+            notification.textContent = message;
+            
+            // 添加动画样式
+            const style = document.createElement('style');
+            style.textContent = `
+                @keyframes slideIn {
+                    from { transform: translateX(100%); opacity: 0; }
+                    to { transform: translateX(0); opacity: 1; }
+                }
+            `;
+            document.head.appendChild(style);
+            
+            document.body.appendChild(notification);
+            
+            // 自动移除
+            setTimeout(() => {
+                notification.style.animation = 'slideIn 0.3s ease reverse';
+                setTimeout(() => {
+                    notification.remove();
+                    style.remove();
+                }, 300);
+            }, 3000);
+        }
+
+        function addToConfigHistory(filePath, action) {
+            const historyItem = {
+                file: filePath,
+                action: action,
+                timestamp: new Date().toLocaleString('zh-CN'),
+                user: 'admin'
+            };
+            
+            configHistory.unshift(historyItem);
+            
+            // 限制历史记录数量
+            if (configHistory.length > 20) {
+                configHistory = configHistory.slice(0, 20);
+            }
+            
+            // 更新历史记录显示
+            updateConfigHistoryDisplay();
+        }
+
+        function updateConfigHistoryDisplay() {
+            const historyList = document.getElementById('config-history-list');
+            
+            if (configHistory.length === 0) {
+                historyList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 20px;" data-i18n="no_history">暂无历史记录</p>';
+                return;
+            }
+            
+            historyList.innerHTML = configHistory.map(item => `
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 15px; background: var(--bg-secondary); border-radius: 8px; margin-bottom: 10px;">
+                    <div>
+                        <div style="font-weight: 700; margin-bottom: 5px;">${item.file}</div>
+                        <div style="font-size: 12px; color: var(--text-secondary);">${item.timestamp} - ${item.action} - ${item.user}</div>
+                    </div>
+                    <div>
+                        <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="restoreConfig('${item.file}')" data-i18n="restore">恢复</button>
+                        <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="viewConfigDiff('${item.file}')" data-i18n="diff">对比</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // 配置模板函数
+        function getMockConfig(type) {
+            if (type === 'server') {
+                return getServerBasicTemplate();
+            } else {
+                return getClientBasicTemplate();
+            }
+        }
+
+        function getServerBasicTemplate() {
+            return `# AetherTunnel 服务端基础配置
+# 适合大多数VPN使用场景
+
+[server]
+bind_addr = "0.0.0.0"
+bind_port = 7000
+auth_token = "your-secure-token-here"
+
+[vpn]
+enabled = true
+port = 7100
+local_ip = "10.0.0.1"
+remote_ip = "10.0.0.2"
+netmask = "255.255.255.0"
+protocol = "tcp"
+obfuscation = true
+vpn_auth_token = "your-vpn-token-here"
+
+[obfuscation]
+enabled = true
+default_type = "stego"
+adaptive_enabled = true
+
+[dashboard]
+enabled = true
+port = 7500
+`;
+        }
+
+        function getClientBasicTemplate() {
+            return `# AetherTunnel 客户端基础配置
+# 快速连接VPN服务端
+
+[client]
+server_addr = "your-vpn-server.com"
+server_port = 7000
+auth_token = "your-secure-token-here"
+
+[vpn]
+enabled = true
+vpn_server_addr = "your-vpn-server.com"
+vpn_server_port = 7100
+vpn_auth_token = "your-vpn-token-here"
+vpn_tunnel_type = "tcp"
+vpn_obfuscation = true
+vpn_obfuscation_type = "stego"
+
+[obfuscation]
+enabled = true
+default_type = "stego"
+adaptive_enabled = true
+`;
+        }
+
+        function getServerAdvancedTemplate() {
+            return `# AetherTunnel 服务端高级配置
+# 包含性能优化和安全增强
+
+[server]
+bind_addr = "0.0.0.0"
+bind_port = 7000
+auth_token = "your-secure-token-here"
+max_connections = 1000
+graceful_shutdown_timeout = 30
+
+[vpn]
+enabled = true
+port = 7100
+local_ip = "10.0.0.1"
+remote_ip = "10.0.0.2"
+netmask = "255.255.255.0"
+protocol = "tcp"
+obfuscation = true
+vpn_auth_token = "your-vpn-token-here"
+max_peers = 254
+mtu = 1400
+enable_performance = true
+max_pool_size = 1000
+enable_compression = true
+enable_qos = true
+bandwidth_limit = "1Gbps"
+
+[obfuscation]
+enabled = true
+default_type = "stego"
+adaptive_enabled = true
+packet_padding = true
+traffic_morphing = true
+key_rotation = 60
+strength = 7
+
+[dashboard]
+enabled = true
+port = 7500
+
+[logging]
+level = "info"
+format = "json"
+output = "/var/log/aethertunnel/server.log"
+max_size = "100MB"
+max_age = 30
+compress = true
+
+[security]
+enable_ip_whitelist = true
+allowed_ips = ["192.168.1.0/24"]
+max_connections = 1000
+max_connections_per_ip = 10
+slow_attack_threshold = 100
+rate_limit = 100
+`;
+        }
+
+        function getClientAdvancedTemplate() {
+            return `# AetherTunnel 客户端高级配置
+# 包含高级功能和性能优化
+
+[client]
+server_addr = "your-vpn-server.com"
+server_port = 7000
+auth_token = "your-secure-token-here"
+protocol = "tcp"
+
+[vpn]
+enabled = true
+vpn_server_addr = "your-vpn-server.com"
+vpn_server_port = 7100
+vpn_auth_token = "your-vpn-token-here"
+vpn_tunnel_type = "tcp"
+vpn_obfuscation = true
+vpn_obfuscation_type = "stego"
+vpn_local_ip = ""
+vpn_netmask = "255.255.255.0"
+
+[vpn.connection]
+auto_reconnect = true
+max_reconnect_attempts = 0
+reconnect_interval = 5
+reconnect_timeout = 30
+
+[vpn.keepalive]
+enabled = true
+interval = 30
+timeout = 10
+max_failures = 3
+
+[vpn.routes]
+enabled = true
+
+[[vpn.routes.items]]
+network = "10.0.0.0/24"
+via_vpn = true
+description = "VPN网络"
+
+[[vpn.routes.items]]
+network = "192.168.1.0/24"
+via_vpn = false
+description = "本地网络"
+
+[obfuscation]
+enabled = true
+default_type = "stego"
+adaptive_enabled = true
+packet_padding = true
+traffic_morphing = true
+strength = 7
+randomize_packet_size = true
+min_packet_size = 100
+max_packet_size = 1500
+
+[logging]
+level = "info"
+format = "json"
+output = "./logs/client.log"
+max_size = "50MB"
+max_age = 30
+compress = true
+
+[performance]
+enable_memory_pool = true
+pool_size = 100
+worker_threads = 0
+
+[statistics]
+enabled = true
+interval = 60
+realtime = true
+export_format = "json"
+`;
+        }
+
+        function getSecurityHardenedTemplate() {
+            return `# AetherTunnel 安全加固配置
+# 企业级安全标准
+
+[server]
+bind_addr = "0.0.0.0"
+bind_port = 7000
+auth_token = "your-secure-token-here"
+max_connections = 500
+
+[tls]
+enabled = true
+cert_file = "/etc/aethertunnel/certs/server.crt"
+key_file = "/etc/aethertunnel/certs/server.key"
+ca_file = "/etc/aethertunnel/certs/ca.crt"
+min_version = "TLS1.3"
+skip_verify = false
+
+[vpn]
+enabled = true
+port = 7100
+local_ip = "10.0.0.1"
+remote_ip = "10.0.0.2"
+netmask = "255.255.255.0"
+protocol = "tcp"
+obfuscation = true
+vpn_auth_token = "your-vpn-token-here"
+verify_cert = true
+cert_file = "/etc/aethertunnel/certs/vpn.crt"
+key_file = "/etc/aethertunnel/certs/vpn.key"
+
+[obfuscation]
+enabled = true
+default_type = "aes"
+adaptive_enabled = true
+packet_padding = true
+traffic_morphing = true
+key_rotation = 30
+strength = 10
+
+[security]
+enable_ip_whitelist = true
+allowed_ips = ["192.168.1.0/24", "10.0.0.0/8"]
+max_connections = 500
+max_connections_per_ip = 5
+slow_attack_threshold = 50
+rate_limit = 50
+enable_fingerprint = true
+enable_ip_whitelist = true
+
+[logging]
+level = "warn"
+format = "json"
+output = "/var/log/aethertunnel/server.log"
+max_size = "100MB"
+max_age = 90
+compress = true
+sensitive_fields = ["password", "token", "secret", "sk", "authorization"]
+
+[audit]
+enabled = true
+log_file = "/var/log/aethertunnel/audit.log"
+log_connections = true
+log_errors = true
+log_auth = true
+log_admin = true
+`;
+        }
+
+        function getPerformanceOptimizedTemplate() {
+            return `# AetherTunnel 性能优化配置
+# 大流量高并发场景
+
+[server]
+bind_addr = "0.0.0.0"
+bind_port = 7000
+auth_token = "your-secure-token-here"
+max_connections = 10000
+worker_threads = 8
+
+[vpn]
+enabled = true
+port = 7100
+local_ip = "10.0.0.1"
+remote_ip = "10.0.0.2"
+netmask = "255.255.255.0"
+protocol = "tcp"
+obfuscation = true
+vpn_auth_token = "your-vpn-token-here"
+enable_performance = true
+max_pool_size = 5000
+enable_compression = true
+enable_qos = true
+bandwidth_limit = "10Gbps"
+mtu = 9000
+
+[obfuscation]
+enabled = true
+default_type = "xor"
+adaptive_enabled = true
+packet_padding = false
+traffic_morphing = false
+strength = 3
+
+[performance]
+enable_memory_pool = true
+pool_size = 1024  # 1GB
+worker_threads = 8
+enable_cpu_affinity = true
+cpu_cores = [0, 1, 2, 3, 4, 5, 6, 7]
+enable_huge_pages = true
+
+[connection_pool]
+enabled = true
+max_size = 5000
+idle_timeout = "30m"
+max_lifetime = "2h"
+
+[rate_limit]
+enabled = true
+limit = 10000
+burst = 1000
+
+[logging]
+level = "error"
+format = "json"
+output = "/var/log/aethertunnel/server.log"
+max_size = "500MB"
+max_age = 7
+compress = true
+console_output = false
+
+[network]
+enable_ipv6 = true
+bind_interface = ""
+default_gateway = ""
+dns_servers = ["8.8.8.8", "8.8.4.4"]
+`;
+        }
+
+        // TOML格式化和验证函数
+        function formatToml(content) {
+            // 简单的TOML格式化实现
+            let lines = content.split('\n');
+            let formatted = [];
+            let indentLevel = 0;
+            
+            for (let line of lines) {
+                line = line.trim();
+                
+                if (line.startsWith('[')) {
+                    // 节标题
+                    formatted.push('');
+                    formatted.push(line);
+                    indentLevel = 1;
+                } else if (line.startsWith('[[') && line.endsWith(']]')) {
+                    // 数组节标题
+                    formatted.push('');
+                    formatted.push(line);
+                    indentLevel = 1;
+                } else if (line.includes('=')) {
+                    // 键值对
+                    let [key, value] = line.split('=').map(s => s.trim());
+                    let indent = '  '.repeat(indentLevel);
+                    formatted.push(`${indent}${key} = ${value}`);
+                } else if (line.startsWith('#')) {
+                    // 注释
+                    formatted.push(line);
+                } else if (line) {
+                    // 其他内容
+                    formatted.push(line);
+                }
+            }
+            
+            return formatted.join('\n').trim();
+        }
+
+        function isValidToml(content) {
+            // 简单的TOML语法验证
+            try {
+                // 检查基本的TOML结构
+                const lines = content.split('\n');
+                let inSection = false;
+                
+                for (let line of lines) {
+                    line = line.trim();
+                    
+                    if (!line || line.startsWith('#')) continue;
+                    
+                    // 检查节标题
+                    if (line.startsWith('[') && line.endsWith(']')) {
+                        inSection = true;
+                        continue;
+                    }
+                    
+                    // 检查键值对
+                    if (line.includes('=')) {
+                        const [key, value] = line.split('=').map(s => s.trim());
+                        if (!key) return false;
+                        continue;
+                    }
+                    
+                    // 检查其他有效结构
+                    if (line.startsWith('[[') && line.endsWith(']]')) {
+                        continue;
+                    }
+                }
+                
+                return true;
+            } catch (error) {
+                return false;
+            }
+        }
+
+        // 国际化更新
+        const additionalTranslations = {
+            'zh-CN': {
+                config_management: '配置管理',
+                load_config: '加载配置',
+                save_config: '保存配置',
+                format_config: '格式化',
+                validate_config: '验证',
+                config_editor: '配置编辑器',
+                config_file_path: '配置文件路径',
+                config_file_path_hint: '输入配置文件的完整路径，或点击"加载配置"选择文件',
+                config_content: '配置内容',
+                config_content_hint: '编辑配置内容，支持语法高亮和自动补全',
+                config_status: '就绪',
+                config_templates: '配置模板',
+                server_basic_template: '服务端基础配置',
+                server_basic_desc: '标准VPN服务端配置，适合大多数场景',
+                recommended: '推荐',
+                client_basic_template: '客户端基础配置',
+                client_basic_desc: '标准VPN客户端配置，快速连接VPN',
+                server_advanced_template: '服务端高级配置',
+                server_advanced_desc: '高级VPN服务端配置，包含性能优化',
+                advanced: '高级',
+                client_advanced_template: '客户端高级配置',
+                client_advanced_desc: '高级VPN客户端配置，包含混淆设置',
+                security_hardened_template: '安全加固配置',
+                security_hardened_desc: '高安全性配置，适合企业环境',
+                security: '安全',
+                performance_optimized_template: '性能优化配置',
+                performance_optimized_desc: '高性能配置，适合大流量场景',
+                performance: '性能',
+                config_history: '配置历史',
+                clear_history: '清除历史',
+                no_history: '暂无历史记录',
+                restore: '恢复',
+                diff: '对比',
+                batch_operations: '批量操作',
+                batch_update: '批量更新配置',
+                batch_update_desc: '批量更新多个配置参数',
+                export_configs: '导出所有配置',
+                export_configs_desc: '导出所有配置文件为ZIP',
+                import_configs: '导入配置文件',
+                import_configs_desc: '从备份或ZIP导入配置',
+                reset_configs: '重置所有配置',
+                reset_configs_desc: '重置为默认配置',
+                server_config: '服务端配置',
+                client_config: '客户端配置',
+                config_empty: '配置为空',
+                config_valid: '配置有效',
+                config_invalid: '配置无效',
+                config_error: '配置错误',
+                reload_config: '重载配置',
+                backup_config: '备份配置'
+            },
+            'en-US': {
+                config_management: 'Configuration Management',
+                load_config: 'Load Config',
+                save_config: 'Save Config',
+                format_config: 'Format',
+                validate_config: 'Validate',
+                config_editor: 'Configuration Editor',
+                config_file_path: 'Config File Path',
+                config_file_path_hint: 'Enter the full path to the config file, or click "Load Config" to select',
+                config_content: 'Config Content',
+                config_content_hint: 'Edit configuration content with syntax highlighting and auto-completion',
+                config_status: 'Ready',
+                config_templates: 'Configuration Templates',
+                server_basic_template: 'Server Basic Config',
+                server_basic_desc: 'Standard VPN server configuration for most scenarios',
+                recommended: 'Recommended',
+                client_basic_template: 'Client Basic Config',
+                client_basic_desc: 'Standard VPN client configuration for quick connection',
+                server_advanced_template: 'Server Advanced Config',
+                server_advanced_desc: 'Advanced VPN server configuration with performance optimization',
+                advanced: 'Advanced',
+                client_advanced_template: 'Client Advanced Config',
+                client_advanced_desc: 'Advanced VPN client configuration with obfuscation settings',
+                security_hardened_template: 'Security Hardened Config',
+                security_hardened_desc: 'High security configuration for enterprise environments',
+                security: 'Security',
+                performance_optimized_template: 'Performance Optimized Config',
+                performance_optimized_desc: 'High performance configuration for high traffic scenarios',
+                performance: 'Performance',
+                config_history: 'Configuration History',
+                clear_history: 'Clear History',
+                no_history: 'No history records',
+                restore: 'Restore',
+                diff: 'Diff',
+                batch_operations: 'Batch Operations',
+                batch_update: 'Batch Update Config',
+                batch_update_desc: 'Batch update multiple configuration parameters',
+                export_configs: 'Export All Configs',
+                export_configs_desc: 'Export all configuration files as ZIP',
+                import_configs: 'Import Configurations',
+                import_configs_desc: 'Import configurations from backup or ZIP',
+                reset_configs: 'Reset All Configs',
+                reset_configs_desc: 'Reset to default configuration',
+                server_config: 'Server Configuration',
+                client_config: 'Client Configuration',
+                config_empty: 'Configuration is empty',
+                config_valid: 'Configuration is valid',
+                config_invalid: 'Configuration is invalid',
+                config_error: 'Configuration error',
+                reload_config: 'Reload Configuration',
+                backup_config: 'Backup Configuration'
+            }
+        };
+
+        // 更新国际化字典
+        Object.keys(additionalTranslations).forEach(lang => {
+            if (!i18n[lang]) i18n[lang] = {};
+            Object.assign(i18n[lang], additionalTranslations[lang]);
+        });
 
         function resetServerConfig() {
             if (confirm('确定要重置配置吗？')) {

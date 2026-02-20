@@ -15,6 +15,8 @@ type ServerConfig struct {
     EnableTLS   bool   `toml:"enable_tls"`
     CertFile    string `toml:"cert_file"`
     KeyFile     string `toml:"key_file"`
+    MaxConnections int  `toml:"max_connections"`
+    GracefulShutdownTimeout int `toml:"graceful_shutdown_timeout"`
 }
 
 // ClientConfig 客户端配置
@@ -38,12 +40,51 @@ type DashboardConfig struct {
     Port     int    `toml:"port"`
 }
 
+// VPNConfig VPN配置
+type VPNConfig struct {
+    Enabled             bool     `toml:"enabled"`
+    BindAddr            string   `toml:"bind_addr"`
+    Port                int      `toml:"port"`
+    LocalIP             string   `toml:"local_ip"`
+    RemoteIP            string   `toml:"remote_ip"`
+    Netmask             string   `toml:"netmask"`
+    Protocol            string   `toml:"protocol"`              // tcp, udp, sctp, websocket, http
+    Obfuscation         bool     `toml:"obfuscation"`
+    AuthToken           string   `toml:"auth_token"`
+    MaxPeers            int      `toml:"max_peers"`
+    MTU                 int      `toml:"mtu"`
+    EnablePerformance   bool     `toml:"enable_performance"`    // 🆕 启用性能优化
+    MaxPoolSize         int      `toml:"max_pool_size"`         // 🆕 连接池大小
+    EnableCompression   bool     `toml:"enable_compression"`    // 🆕 启用压缩
+    EnableQoS           bool     `toml:"enable_qos"`            // 🆕 启用QoS
+    BandwidthLimit      string   `toml:"bandwidth_limit"`      // 🆕 带宽限制
+    SupportedProtocols   []string `toml:"supported_protocols"`   // 🆕 支持的协议列表
+    EnableHTTPForward   bool     `toml:"enable_http_forward"`   // 🆕 启用HTTP转发
+    EnableSCTPForward   bool     `toml:"enable_sctp_forward"`   // 🆕 启用SCTP转发
+    EnableWSForward     bool     `toml:"enable_ws_forward"`     // 🆕 启用WebSocket转发
+    ProtocolTimeout     string   `toml:"protocol_timeout"`      // 🆕 协议超时
+    ProtocolMaxSize     int      `toml:"protocol_max_size"`     // 🆕 协议最大消息大小
+}
+
+// ObfuscationConfig 数据混淆配置
+type ObfuscationConfig struct {
+    Enabled          bool     `toml:"enabled"`
+    DefaultType      string   `toml:"default_type"`
+    AllowedTypes     []string `toml:"allowed_types"`
+    AdaptiveEnabled  bool     `toml:"adaptive_enabled"`
+    KeyRotation      int      `toml:"key_rotation"` // 密钥轮换时间（分钟）
+    PacketPadding    bool     `toml:"packet_padding"`
+    TrafficMorphing  bool     `toml:"traffic_morphing"`
+}
+
 // Config 配置结构
 type Config struct {
-    Server    ServerConfig    `toml:"server"`
-    Client    ClientConfig    `toml:"client"`
-    Dashboard DashboardConfig `toml:"dashboard"`
-    Proxies   []ProxyConfig   `toml:"proxies"`
+    Server        ServerConfig        `toml:"server"`
+    Client        ClientConfig        `toml:"client"`
+    Dashboard     DashboardConfig     `toml:"dashboard"`
+    VPN           VPNConfig           `toml:"vpn"`
+    Obfuscation   ObfuscationConfig   `toml:"obfuscation"`
+    Proxies       []ProxyConfig       `toml:"proxies"`
 }
 
 // LoadServer 加载服务端配置

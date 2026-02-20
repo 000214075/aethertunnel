@@ -98,6 +98,154 @@ min_version = "TLS1.3"
 
 
 # ----------------------------------------------------------------------------
+# 🔐 VPN 虚拟专用网络配置（🆕 创新功能）
+# ----------------------------------------------------------------------------
+[vpn]
+# 🆕 是否启用 VPN 功能（可选）
+# 启用后，客户端和服务端之间可以建立虚拟专用网络
+# 默认 false，启用后需要配置下面的参数
+enabled = false
+
+# 🆕 VPN 绑定地址（可选）
+# 默认 "0.0.0.0" 表示监听所有网卡
+# bind_addr = "0.0.0.0"
+
+# 🆕 VPN 监听端口（可选）
+# 默认 7100，建议改为 7101-7199 之间的端口
+# ⚠️ 确保此端口在防火墙中开放
+port = 7100
+
+# 🆕 VPN 本地 IP（可选）
+# 服务端的虚拟 IP 地址
+# ⚠️ 建议使用私有 IP 地址段，如 10.0.0.1
+local_ip = "10.0.0.1"
+
+# 🆕 VPN 远程 IP（可选）
+# 客户端分配的起始 IP 地址
+# ⚠️ 建议使用私有 IP 地址段，如 10.0.0.2
+remote_ip = "10.0.0.2"
+
+# 🆕 VPN 子网掩码（可选）
+# 默认 255.255.255.0，表示支持 254 个客户端
+netmask = "255.255.255.0"
+
+# 🆕 VPN 协议（可选）
+# 支持 "tcp", "udp", "webrtc"
+# 默认 "tcp"，WebRTC 需要额外配置
+protocol = "tcp"
+
+# 🆕 是否启用数据混淆（可选）
+# 启用后可以防止 DPI 检测和流量分析
+# 默认 false，启用后需要配置 [obfuscation] 部分
+obfuscation = false
+
+# 🆕 VPN 认证令牌（必填如果启用 VPN）
+# ⚠️ 如果启用 VPN，必须设置此参数
+# 建议使用和 server.auth_token 不同的令牌
+# vpn_auth_token = "your-vpn-auth-token-here"
+
+# 🆕 VPN 最大对等节点数（可选）
+# 默认 254，与子网掩码匹配
+# max_peers = 254
+
+# 🆕 VPN MTU（可选）
+# 默认 1500，如果遇到分片问题可以减小
+# mtu = 1500
+
+# 🆕 启用性能优化（可选）
+# 默认 false，启用后可以提高高并发场景下的性能
+# enable_performance = false
+
+# 🆕 最大连接池大小（可选）
+# 默认 1000，建议设置为最大并发连接数
+# max_pool_size = 1000
+
+# 🆕 启用数据压缩（可选）
+# 默认 false，启用后可以减少带宽使用
+# enable_compression = false
+
+# 🆕 启用 QoS 流量整形（可选）
+# 默认 false，启用后可以优化流量控制
+# enable_qos = false
+
+# 🆕 带宽限制（可选）
+# 格式: "100MB" 或 "1Gbps"，0 = 无限制
+# bandwidth_limit = "0"
+
+# 🆕 支持的协议列表（可选）
+# 支持: "tcp", "udp", "sctp", "websocket", "http", "https", "ssh", "dns"
+# 默认 ["tcp", "udp"]
+# supported_protocols = ["tcp", "udp", "sctp", "websocket", "http"]
+
+# 🆕 启用HTTP转发（可选）
+# 默认 false，启用后可以通过HTTP协议转发VPN数据
+# enable_http_forward = false
+
+# 🆕 启用SCTP转发（可选）
+# 默认 false，启用后可以通过SCTP协议转发VPN数据
+# enable_sctp_forward = false
+
+# 🆕 启用WebSocket转发（可选）
+# 默认 false，启用后可以通过WebSocket协议转发VPN数据
+# enable_ws_forward = false
+
+# 🆕 协议超时（可选）
+# 默认 "30s"，支持 "10s", "30s", "1m", "5m"
+# protocol_timeout = "30s"
+
+# 🆕 协议最大消息大小（可选）
+# 默认 65535，单位字节，最大 10485760 (10MB)
+# protocol_max_size = 65535
+
+
+# ----------------------------------------------------------------------------
+# 🎭 数据混淆和防侦测配置（🆕 创新功能）
+# ----------------------------------------------------------------------------
+[obfuscation]
+# 🆕 是否启用数据混淆（可选）
+# 启用后可以有效防止 DPI 检测和流量分析
+# 默认 false，启用后 [vpn] 的 obfuscation 也需要设置为 true
+enabled = false
+
+# 🆕 默认混淆类型（可选）
+# 支持: "none", "xor", "aes", "chacha", "stego", "morph"
+# 默认 "stego"
+# 不同协议的特点:
+# - none: 不混淆，明文传输
+# - xor: 简单 XOR 加密，性能最好
+# - aes: AES 加密，安全性最高
+# - chacha: ChaCha 加密，移动设备性能最好
+# - stego: 隐写术，隐藏在 HTTP 协议中
+# - morph: 流量整形，模仿其他协议
+default_type = "stego"
+
+# 🆕 允许的混淆类型列表（可选）
+# 留空表示允许所有支持的类型
+# 建议只列出你认为安全的类型
+# allowed_types = ["stego", "morph", "aes"]
+
+# 🆕 是否启用自适应混淆（可选）
+# 启用后根据连接类型自动选择最佳混淆方式
+# 默认 false，需要 [vpn.obfuscation] 和 [obfuscation.enabled] 都启用
+adaptive_enabled = false
+
+# 🆕 密钥轮换时间（可选）
+# 单位: 分钟，0 表示不轮换
+# 建议设置为 60-1440 分钟（1 小时到 1 天）
+# key_rotation = 60
+
+# 🆕 是否启用数据包填充（可选）
+# 启用后可以抵抗基于数据包大小的流量分析
+# 默认 false，会增加带宽使用
+# packet_padding = false
+
+# 🆕 是否启用流量整形（可选）
+# 启用后可以模仿常见协议的特征
+# 默认 false，需要 [obfuscation.adaptive_enabled] 启用
+# traffic_morphing = false
+
+
+# ----------------------------------------------------------------------------
 # 🆕 现代加密配置（高级安全特性）
 # ----------------------------------------------------------------------------
 [advanced_crypto]

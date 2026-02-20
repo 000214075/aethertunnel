@@ -13,7 +13,9 @@ import (
 
     "github.com/aethertunnel/aethertunnel/pkg/config"
     "github.com/aethertunnel/aethertunnel/pkg/crypto"
+    "github.com/aethertunnel/aethertunnel/pkg/obfuscation"
     "github.com/aethertunnel/aethertunnel/pkg/protocol"
+    "github.com/aethertunnel/aethertunnel/pkg/vpn"
 )
 
 var (
@@ -42,6 +44,26 @@ func main() {
 
     // 创建加密器
     encryption := crypto.NewEncryption(cfg.Client.AuthToken)
+
+    // 创建混淆器
+    var obfuscator *obfuscation.Obfuscation
+    if cfg.Obfuscation.Enabled {
+        obfuscator = obfuscation.NewObfuscation(encryption)
+        log.Printf("Obfuscation enabled")
+    }
+
+    // 创建VPN客户端
+    var vpnClient *vpn.VPNClient
+    if cfg.VPN.Enabled {
+        vpnEncryption := crypto.NewEncryption(cfg.VPN.AuthToken)
+        vpnClient = vpn.NewVPNClient(cfg, vpnEncryption)
+        go func() {
+            if err := vpnClient.Connect(); err != nil {
+                log.Printf("VPN connection failed: %v", err)
+            }
+        }()
+        log.Printf("VPN client enabled")
+    }
 
     // 连接到服务器
     for {
