@@ -43,7 +43,7 @@ jobs:
       run: go tool cover -html=coverage.out -o coverage.html
 
     - name: Upload coverage
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: coverage-report
         path: |
@@ -112,6 +112,14 @@ jobs:
             arch: s390x
             goos: linux
             goarch: s390x
+          - os: linux
+            arch: mips64
+            goos: linux
+            goarch: mips64
+          - os: linux
+            arch: mips64le
+            goos: linux
+            goarch: mips64le
           
           # Windows
           - os: windows
@@ -191,23 +199,36 @@ jobs:
           xz -9 -c "$f" > "$f.xz"
         done
 
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+    - name: Upload binaries (Server)
+      uses: actions/upload-artifact@v4
       with:
-        name: ${{ env.PROJECT_NAME }}-${{ matrix.os }}-${{ matrix.arch }}
-        path: dist/*
+        name: ${{ env.PROJECT_NAME }}-server-${{ matrix.goos }}-${{ matrix.goarch }}
+        path: |
+          dist/aethertunnel-server*
+          dist/aethertunnel-server*.gz
+          dist/aethertunnel-server*.xz
+        retention-days: 90
+
+    - name: Upload binaries (Client)
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.PROJECT_NAME }}-client-${{ matrix.goos }}-${{ matrix.goarch }}
+        path: |
+          dist/aethertunnel-client*
+          dist/aethertunnel-client*.gz
+          dist/aethertunnel-client*.xz
         retention-days: 90
 
   # 生成校验和
   checksums:
     name: Generate Checksums
-    needs: build
+    needs: [build]
     runs-on: ubuntu-latest
     if: success()
     
     steps:
     - name: Download all artifacts
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         path: dist
 
@@ -218,10 +239,11 @@ jobs:
         cat SHA256SUMS.txt
 
     - name: Upload checksums
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: checksums
         path: dist/SHA256SUMS.txt
+        retention-days: 90
 
   # 创建 Release
   release:
@@ -231,8 +253,11 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v') && github.event_name != 'pull_request'
     
     steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
     - name: Download all artifacts
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         path: dist
 
