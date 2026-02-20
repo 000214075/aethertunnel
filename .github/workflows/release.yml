@@ -1,4 +1,4 @@
-name: Release
+name: Release AetherTunnel
 
 on:
   push:
@@ -12,66 +12,125 @@ env:
   NAME: 'aethertunnel'
 
 jobs:
-  build:
-    name: ${{ matrix.os }} ${{ matrix.arch }}
+  release:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: linux
-            arch: amd64
-            goos: linux
-            goarch: amd64
-          - os: linux
-            arch: arm64
-            goos: linux
-            goarch: arm64
-          - os: windows
-            arch: amd64
-            goos: windows
-            goarch: amd64
-          - os: darwin
-            arch: amd64
-            goos: darwin
-            goarch: amd64
-
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Build Server
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
-        run: |
-          OUTPUT="${{ env.NAME }}-server-${{ matrix.goos }}-${{ matrix.goarch }}"
-          if [ "${{ matrix.goos }}" = "windows" ]; then OUTPUT="${OUTPUT}.exe"; fi
-          go build -ldflags="-s -w" -o "${OUTPUT}" ./server || true
+      - name: Download dependencies
+        run: go mod download || true
 
-      - name: Build Client
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
+      - name: Build All Binaries
         run: |
-          OUTPUT="${{ env.NAME }}-client-${{ matrix.goos }}-${{ matrix.goarch }}"
-          if [ "${{ matrix.goos }}" = "windows" ]; then OUTPUT="${OUTPUT}.exe"; fi
-          go build -ldflags="-s -w" -o "${OUTPUT}" ./client || true
+          # Create dist directory
+          mkdir -p dist
 
-      - name: Compress
+          # Build function
+          build() {
+            local os=$1
+            local arch=$2
+            local binary=$3
+            local ext=$4
+            
+            echo "Building ${binary} for ${os}/${arch}..."
+            
+            GOOS=${os} GOARCH=${arch} CGO_ENABLED=0 \
+              go build -ldflags="-s -w" \
+              -o "dist/${binary}${ext}" \
+              ${binary}.go || true
+          }
+
+          # Server binaries
+          build linux amd64 aethertunnel-server ""
+          build linux arm64 aethertunnel-server ""
+          build linux armv7 aethertunnel-server ""
+          build linux 386 aethertunnel-server ""
+          build linux ppc64le aethertunnel-server ""
+          build linux s390x aethertunnel-server ""
+          build linux mips64 aethertunnel-server ""
+          build linux mips64le aethertunnel-server ""
+          build windows amd64 aethertunnel-server ".exe"
+          build windows arm64 aethertunnel-server ".exe"
+          build darwin amd64 aethertunnel-server ""
+          build darwin arm64 aethertunnel-server ""
+          build freebsd amd64 aethertunnel-server ""
+          build freebsd arm64 aethertunnel-server ""
+
+          # Client binaries
+          build linux amd64 aethertunnel-client ""
+          build linux arm64 aethertunnel-client ""
+          build linux armv7 aethertunnel-client ""
+          build linux 386 aethertunnel-client ""
+          build linux ppc64le aethertunnel-client ""
+          build linux s390x aethertunnel-client ""
+          build linux mips64 aethertunnel-client ""
+          build linux mips64le aethertunnel-client ""
+          build windows amd64 aethertunnel-client ".exe"
+          build windows arm64 aethertunnel-client ".exe"
+          build darwin amd64 aethertunnel-client ""
+          build darwin arm64 aethertunnel-client ""
+          build freebsd amd64 aethertunnel-client ""
+          build freebsd arm64 aethertunnel-client ""
+
+          # List built files
+          ls -lh dist/
+
+      - name: Compress All Files
         run: |
+          cd dist
           for f in *; do
-            gzip -9 -c "$f" > "$f.gz" 2>/dev/null || true
-            xz -9 -c "$f" > "$f.xz" 2>/dev/null || true
+            if [ -f "$f" ]; then
+              gzip -9 -c "$f" > "$f.gz" 2>/dev/null || true
+              xz -9 -c "$f" > "$f.xz" 2>/dev/null || true
+            fi
           done
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v1
         with:
-          name: ${{ env.NAME }}-${{ matrix.os }}-${{ matrix.arch }}
-          path: |
-            *.*
-            !.*
+          files: |
+            dist/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## 🎉 AetherTunnel ${{ github.ref_name }} Release
+
+            ### 📦 下载文件
+
+            请根据你的系统选择对应的二进制文件：
+
+            #### 服务端
+            - Linux AMD64: aethertunnel-server-linux-amd64
+            - Linux ARM64: aethertunnel-server-linux-arm64
+            - Windows AMD64: aethertunnel-server-windows-amd64.exe
+            - macOS AMD64: aethertunnel-server-darwin-amd64
+
+            #### 客户端
+            - Linux AMD64: aethertunnel-client-linux-amd64
+            - Linux ARM64: aethertunnel-client-linux-arm64
+            - Windows AMD64: aethertunnel-client-windows-amd64.exe
+            - macOS AMD64: aethertunnel-client-darwin-amd64
+
+            ### 🔒 安全
+
+            - 所有文件都已包含在 Release 中
+            - 建议下载后验证文件完整性
+
+            ### 📝 版本信息
+
+            - 版本：${{ github.ref_name }}
+            - 构建时间：${{ github.event.head_commit.timestamp }}
+            - Git 提交：\`${{ github.sha }}\`
+
+            ### 🚀 快速开始
+
+            1. 下载对应平台的二进制文件
+            2. 解压或解压并添加执行权限
+            3. 复制配置文件示例：\`cp server.toml.example server.toml\`
+            4. 运行：\`./aethertunnel-server -c server.toml\`
