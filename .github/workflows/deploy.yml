@@ -1,0 +1,100 @@
+name: Deploy AetherTunnel
+
+on:
+  release:
+    types: [ published ]
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.22'
+
+      - name: Install dependencies
+        run: |
+          go mod download
+          go get github.com/gorilla/websocket
+          go get github.com/libp2p/go-sctp
+
+      - name: Build all platforms
+        run: |
+          # Build Linux AMD64
+          GOOS=linux GOARCH=amd64 go build -o aethertunnel-server-linux-amd64 ./server/main.go
+          GOOS=linux GOARCH=amd64 go build -o aethertunnel-client-linux-amd64 ./client/main.go
+          
+          # Build Windows AMD64
+          GOOS=windows GOARCH=amd64 go build -o aethertunnel-server-windows-amd64.exe ./server/main.go
+          GOOS=windows GOARCH=amd64 go build -o aethertunnel-client-windows-amd64.exe ./client/main.go
+          
+          # Build macOS AMD64
+          GOOS=darwin GOARCH=amd64 go build -o aethertunnel-server-darwin-amd64 ./server/main.go
+          GOOS=darwin GOARCH=amd64 go build -o aethertunnel-client-darwin-amd64 ./client/main.go
+
+      - name: Create release packages
+        run: |
+          mkdir -p release/{linux-amd64,windows-amd64,darwin-amd64}
+          
+          # Linux AMD64
+          cp aethertunnel-server-linux-amd64 release/linux-amd64/
+          cp aethertunnel-client-linux-amd64 release/linux-amd64/
+          cp server.toml.example release/linux-amd64/
+          cp client.toml.example release/linux-amd64/
+          cp README.md release/linux-amd64/
+          cp LICENSE release/linux-amd64/
+          tar -czf aethertunnel-linux-amd64.tar.gz -C release linux-amd64
+          
+          # Windows AMD64
+          cp aethertunnel-server-windows-amd64.exe release/windows-amd64/
+          cp aethertunnel-client-windows-amd64.exe release/windows-amd64/
+          cp server.toml.example release/windows-amd64/
+          cp client.toml.example release/windows-amd64/
+          cp README.md release/windows-amd64/
+          cp LICENSE release/windows-amd64/
+          tar -czf aethertunnel-windows-amd64.tar.gz -C release windows-amd64
+          
+          # macOS AMD64
+          cp aethertunnel-server-darwin-amd64 release/darwin-amd64/
+          cp aethertunnel-client-darwin-amd64 release/darwin-amd64/
+          cp server.toml.example release/darwin-amd64/
+          cp client.toml.example release/darwin-amd64/
+          cp README.md release/darwin-amd64/
+          cp LICENSE release/darwin-amd64/
+          tar -czf aethertunnel-darwin-amd64.tar.gz -C release darwin-amd64
+
+      - name: Upload release assets
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: aethertunnel-linux-amd64.tar.gz
+          asset_name: aethertunnel-linux-amd64.tar.gz
+          asset_content_type: application/gzip
+
+      - name: Upload Windows release assets
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: aethertunnel-windows-amd64.tar.gz
+          asset_name: aethertunnel-windows-amd64.tar.gz
+          asset_content_type: application/gzip
+
+      - name: Upload macOS release assets
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: aethertunnel-darwin-amd64.tar.gz
+          asset_name: aethertunnel-darwin-amd64.tar.gz
+          asset_content_type: application/gzip

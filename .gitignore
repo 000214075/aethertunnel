@@ -145,4 +145,4 @@ deployment/
 *.sqlite3
 
 # === 忽略 GitHub Actions（演示项目不需要）===
-.github/
+# .github/

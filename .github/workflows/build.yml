@@ -1,0 +1,118 @@
+name: Build AetherTunnel
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ created ]
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+        exclude:
+          - goos: windows
+            goarch: arm64
+          - goos: darwin
+            goarch: arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.22'
+
+      - name: Install dependencies
+        run: |
+          go mod download
+          go get github.com/gorilla/websocket
+          go get github.com/libp2p/go-sctp
+
+      - name: Build server and client
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -o aethertunnel-server-${{ matrix.goos }}-${{ matrix.goarch }} ./server/main.go
+          go build -o aethertunnel-client-${{ matrix.goos }}-${{ matrix.goarch }} ./client/main.go
+
+      - name: Create release directory
+        run: |
+          mkdir -p release/${{ matrix.goos }}-${{ matrix.goarch }}
+          cp aethertunnel-server-${{ matrix.goos }}-${{ matrix.goarch }} release/${{ matrix.goos }}-${{ matrix.goarch }}/
+          cp aethertunnel-client-${{ matrix.goos }}-${{ matrix.goarch }} release/${{ matrix.goos }}-${{ matrix.goarch }}/
+          cp server.toml.example release/${{ matrix.goos }}-${{ matrix.goarch }}/
+          cp client.toml.example release/${{ matrix.goos }}-${{ matrix.goarch }}/
+          cp README.md release/${{ matrix.goos }}-${{ matrix.goarch }}/
+          cp LICENSE release/${{ matrix.goos }}-${{ matrix.goarch }}/
+
+      - name: Create archive
+        run: |
+          tar -czf aethertunnel-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz -C release ${{ matrix.goos }}-${{ matrix.goarch }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: aethertunnel-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: aethertunnel-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
+
+  release:
+    name: Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: release-artifacts
+
+      - name: Upload release assets
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: release-artifacts/aethertunnel-linux-amd64.tar.gz
+          asset_name: aethertunnel-linux-amd64.tar.gz
+          asset_content_type: application/gzip
+
+      - name: Upload release assets (Windows)
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: release-artifacts/aethertunnel-windows-amd64.tar.gz
+          asset_name: aethertunnel-windows-amd64.tar.gz
+          asset_content_type: application/gzip
+
+      - name: Upload release assets (macOS)
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: release-artifacts/aethertunnel-darwin-amd64.tar.gz
+          asset_name: aethertunnel-darwin-amd64.tar.gz
+          asset_content_type: application/gzip
+
+      - name: Upload release assets (Linux ARM64)
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: release-artifacts/aethertunnel-linux-arm64.tar.gz
+          asset_name: aethertunnel-linux-arm64.tar.gz
+          asset_content_type: application/gzip
