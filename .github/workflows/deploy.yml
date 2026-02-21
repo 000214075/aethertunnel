@@ -27,15 +27,15 @@ jobs:
       - name: Build all platforms
         run: |
           # Build Linux AMD64
-          GOOS=linux GOARCH=amd64 go build -o aethertunnel-server-linux-amd64 ./server/main.go
+          GOOS=linux GOARCH=amd64 go build -o aethertunnel-server-linux-amd64 ./main.go
           GOOS=linux GOARCH=amd64 go build -o aethertunnel-client-linux-amd64 ./client/main.go
-          
+
           # Build Windows AMD64
-          GOOS=windows GOARCH=amd64 go build -o aethertunnel-server-windows-amd64.exe ./server/main.go
+          GOOS=windows GOARCH=amd64 go build -o aethertunnel-server-windows-amd64.exe ./main.go
           GOOS=windows GOARCH=amd64 go build -o aethertunnel-client-windows-amd64.exe ./client/main.go
-          
+
           # Build macOS AMD64
-          GOOS=darwin GOARCH=amd64 go build -o aethertunnel-server-darwin-amd64 ./server/main.go
+          GOOS=darwin GOARCH=amd64 go build -o aethertunnel-server-darwin-amd64 ./main.go
           GOOS=darwin GOARCH=amd64 go build -o aethertunnel-client-darwin-amd64 ./client/main.go
 
       - name: Create release packages
