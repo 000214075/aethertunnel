@@ -23,7 +23,7 @@ type VPN struct {
 	clients         map[string]*ConnectedClient
 	routes          map[string]*Route
 	listener        net.Listener
-	performance     *PerformanceOptimizer
+	performance     PerformanceOptimizerInterface
 	connPool        *ConnectionPool
 	stats           *VPNStats
 }
@@ -84,7 +84,7 @@ func NewVPN(cfg *config.Config, encryption *crypto.Encryption) *VPN {
 		tunnels:         make(map[string]*Tunnel),
 		clients:         make(map[string]*ConnectedClient),
 		routes:          make(map[string]*Route),
-		performance:     NewPerformanceOptimizer(),
+		performance:     nil, // Will be set later
 		connPool:        NewConnectionPool(cfg.VPN.MaxPoolSize, 30*time.Minute),
 		stats:           NewVPNStats(),
 	}

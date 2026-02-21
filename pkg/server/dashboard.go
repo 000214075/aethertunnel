@@ -1,50 +1,50 @@
-package main
+package server
 
 import (
-    "embed"
+    "encoding/json"
     "fmt"
     "log"
     "net/http"
+    "os"
+
+    "github.com/aethertunnel/aethertunnel/pkg/config"
 )
 
-//go:embed all:dashboard/*
-var dashboardFS embed.FS
-
 // StartDashboard 启动 Web 面板
-func StartDashboard(port int) error {
+func StartDashboard(port int, cfg *config.Config) error {
     // 创建文件服务器
-    fs := http.FileServer(http.FS(dashboardFS))
+    fs := http.FileServer(http.Dir("../../web/dashboard"))
     
     // 创建路由
     mux := http.NewServeMux()
     mux.Handle("/", fs)
     mux.HandleFunc("/index.html", func(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
-        http.ServeFile(w, r, "dashboard/index.html")
+        http.ServeFile(w, r, "web/dashboard/index.html")
     })
     mux.HandleFunc("/server.html", func(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
-        http.ServeFile(w, r, "dashboard/server.html")
+        http.ServeFile(w, r, "web/dashboard/server.html")
     })
     mux.HandleFunc("/client.html", func(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
-        http.ServeFile(w, r, "dashboard/client.html")
+        http.ServeFile(w, r, "web/dashboard/client.html")
     })
-    
+
     // API 路由
     mux.HandleFunc("/api/status", handleAPIStatus)
     mux.HandleFunc("/api/config", handleAPIConfig)
-    
+
     // 启动服务器
     addr := fmt.Sprintf(":%d", port)
     log.Printf("Dashboard starting on %s", addr)
-    
+
     go func() {
         if err := http.ListenAndServe(addr, mux); err != nil {
             log.Printf("Dashboard failed to start: %v", err)
         }
     }()
-    
+
     return nil
 }
 

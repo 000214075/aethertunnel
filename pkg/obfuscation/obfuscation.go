@@ -11,10 +11,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"log"
-	"math/big"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aethertunnel/aethertunnel/pkg/crypto"
@@ -69,24 +67,24 @@ func (o *Obfuscation) generateKeys() {
 	// Derive keys from encryption key
 	hash := sha256.New()
 	hash.Write([]byte("obfuscation-mac-key"))
-	hash.Write(o.encryption.Key)
+	hash.Write(o.encryption.Key())
 	o.macKey = hash.Sum(nil)
 
 	hash.Reset()
 	hash.Write([]byte("obfuscation-cipher-key"))
-	hash.Write(o.encryption.Key)
+	hash.Write(o.encryption.Key())
 	o.cipherKey = hash.Sum(nil)[:32]
 }
 
 // registerObfuscators registers all obfuscation methods
 func (o *Obfuscation) registerObfuscators() {
 	// Register various obfuscation methods
-	obf.register("none", &NoObfuscation{})
-	obf.register("xor", &XORObfuscation{key: o.cipherKey[:16]})
-	obf.register("aes", &AESObfuscation{cipherKey: o.cipherKey})
-	obf.register("chacha", &ChaChaObfuscation{key: o.cipherKey})
-	obf.register("stego", &StegoObfuscation{key: o.macKey})
-	obf.register("morph", &MorphObfuscation{key: o.cipherKey})
+	o.register("none", &NoObfuscation{})
+	o.register("xor", &XORObfuscation{key: o.cipherKey[:16]})
+	o.register("aes", &AESObfuscation{cipherKey: o.cipherKey})
+	o.register("chacha", &ChaChaObfuscation{key: o.cipherKey})
+	o.register("stego", &StegoObfuscation{key: o.macKey})
+	o.register("morph", &MorphObfuscation{key: o.cipherKey})
 }
 
 // register registers an obfuscator
@@ -152,12 +150,11 @@ func (o *Obfuscation) DeobfuscatePacket(data []byte) (*ObfuscatedPacket, error) 
 		return nil, fmt.Errorf("packet too short")
 	}
 
-	// Extract obfuscation type
-	obfuscationType := string(data[0])
+	// Extract encrypted data
 	encryptedData := data[1:]
 
 	// Decrypt the packet
-	decryptedData, err := o.encryption.Decrypt(encryptedData)
+	decryptedData, err := o.encryption.Decrypt(base64.StdEncoding.EncodeToString(encryptedData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt packet: %v", err)
 	}

@@ -20,6 +20,11 @@ func NewEncryption(key string) *Encryption {
     }
 }
 
+// Key 返回加密密钥
+func (e *Encryption) Key() []byte {
+    return e.key
+}
+
 // Encrypt 加密数据
 func (e *Encryption) Encrypt(plaintext []byte) (string, error) {
     // 生成随机 nonce
@@ -29,12 +34,12 @@ func (e *Encryption) Encrypt(plaintext []byte) (string, error) {
     }
 
     // 使用 ChaCha20-Poly1305 加密
-    aead, err := chacha20poly1305.NewX(e.key, nonce)
+    aead, err := chacha20poly1305.NewX(e.key)
     if err != nil {
         return "", err
     }
 
-    ciphertext := aead.Seal(nil, nil, plaintext)
+    ciphertext := aead.Seal(nil, nonce, plaintext, nil)
     
     // 将 nonce 和 ciphertext 组合
     result := make([]byte, len(nonce)+len(ciphertext))
@@ -62,12 +67,12 @@ func (e *Encryption) Decrypt(encrypted string) ([]byte, error) {
     ciphertext := data[chacha20poly1305.NonceSize:]
     
     // 使用 ChaCha20-Poly1305 解密
-    aead, err := chacha20poly1305.NewX(e.key, nonce)
+    aead, err := chacha20poly1305.NewX(e.key)
     if err != nil {
         return nil, err
     }
     
-    plaintext, err := aead.Open(nil, nil, ciphertext)
+    plaintext, err := aead.Open(nil, nonce, ciphertext, nil)
     if err != nil {
         return nil, err
     }

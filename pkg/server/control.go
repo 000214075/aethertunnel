@@ -243,3 +243,22 @@ func (cm *ControlManager) ListConnections() []map[string]interface{} {
 
     return list
 }
+
+// GetServerSimpleExample 获取服务端简单配置示例
+func GetServerSimpleExample() string {
+    return `[server]
+# 绑定地址（0.0.0.0 表示监听所有接口）
+bind_addr = "0.0.0.0"
+
+# 绑定端口
+bind_port = 7001
+
+# 认证令牌（客户端连接时使用）
+auth_token = "your-auth-token-here"
+
+# Web 面板配置
+[dashboard]
+enabled = true
+port = 7500
+`
+}

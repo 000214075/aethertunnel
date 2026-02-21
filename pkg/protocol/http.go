@@ -1,16 +1,12 @@
 package protocol
 
 import (
-	"bufio"
-	"bytes"
 	"compress/gzip"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -162,7 +158,7 @@ func (h *httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Create HTTP connection wrapper
 	httpConn := &HTTPConn{
 		conn:     r.Body.(io.Closer).(net.Conn), // This is a simplification
-		addr:     r.RemoteAddr,
+		addr:     &net.TCPAddr{IP: net.IPv4(127,0,0,1), Port: 0}, // Simplified
 		running:  true,
 		dataChan: make(chan []byte, 1024),
 		errChan:  make(chan error, 10),

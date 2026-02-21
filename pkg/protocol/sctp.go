@@ -69,7 +69,7 @@ func (l *SCTPListener) Accept() (*SCTPConn, error) {
 		return nil, fmt.Errorf("failed to accept SCTP connection: %v", err)
 	}
 
-	sctpConn := NewSCTPConn(conn.(net.Conn), conn.RemoteAddr())
+	sctpConn := NewSCTPConn((*sctp.Conn)(conn), conn.RemoteAddr())
 	go sctpConn.handleIncomingData()
 
 	return sctpConn, nil

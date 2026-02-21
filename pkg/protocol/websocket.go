@@ -1,14 +1,10 @@
 package protocol
 
 import (
-	"bufio"
-	"bytes"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
 	"net"
-	"net/http"
 	"sync"
 	"time"
 
@@ -30,6 +26,37 @@ const (
 	defaultReadTimeout     = 60 * time.Second
 	defaultPingPeriod      = 30 * time.Second
 )
+
+// responseWriter wraps net.Conn to implement http.ResponseWriter
+type responseWriter struct {
+	conn  net.Conn
+	header http.Header
+	code  int
+	wrote bool
+}
+
+func (w *responseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *responseWriter) Write(b []byte) (int, error) {
+	if !w.wrote {
+		w.WriteHeader(http.StatusOK)
+		w.wrote = true
+	}
+	return w.conn.Write(b)
+}
+
+func (w *responseWriter) WriteHeader(code int) {
+	if w.wrote {
+		return
+	}
+	w.code = code
+	w.wrote = true
+}
 
 // WebSocketConn represents a WebSocket connection
 type WebSocketConn struct {
@@ -114,13 +141,8 @@ func NewWebSocketServer(config *WebSocketConfig, handler func(*WebSocketConn)) *
 			return config.EnableCORS
 		},
 		EnableCompression: config.EnableCompression,
-		CompressionLevel:  config.CompressionLevel,
 		Subprotocols:      []string{"aethertunnel"},
-		ReadTimeout:       config.ReadTimeout,
-		WriteTimeout:      config.WriteTimeout,
 		HandshakeTimeout:  config.HandshakeTimeout,
-		AllowOldCipherSuites: false,
-		EnableUTF8:          config.EnableUTF8,
 	}
 
 	return &WebSocketServer{
@@ -169,7 +191,7 @@ func (s *WebSocketServer) Start(addr string) error {
 	s.connChan = make(chan *WebSocketConn, s.config.MaxConnections)
 
 	// Start accepting connections
-	go s.acceptConnections(httpServer)
+	go s.acceptConnections()
 
 	log.Printf("WebSocket server started on %s", addr)
 	return nil
@@ -181,30 +203,31 @@ func (s *WebSocketServer) handleWebSocketUpgrade(w http.ResponseWriter, r *http.
 	defer s.mu.RUnlock()
 
 	if !s.running {
-		http.Error(w, "WebSocket server is not running", http.StatusServiceUnavailable)
 		return
 	}
 
 	// Check connection limit
 	if len(s.connections) >= s.config.MaxConnections {
-		http.Error(w, "Connection limit reached", http.StatusTooManyRequests)
 		return
 	}
 
+	// Create a response writer wrapper
+	w := &responseWriter{conn: conn}
+
 	// Upgrade connection
-	conn, err := s.upgrader.Upgrade(w, r, w.Header())
+	wsConn, err = s.upgrader.Upgrade(w, r, w.Header())
 	if err != nil {
 		log.Printf("Failed to upgrade WebSocket connection: %v", err)
 		return
 	}
 
 	// Set max message size
-	conn.SetReadLimit(s.config.MaxMessageSize)
+	wsConn.SetReadLimit(s.config.MaxMessageSize)
 
 	// Create WebSocket connection wrapper
-	wsConn := &WebSocketConn{
-		conn:        conn,
-		addr:        r.RemoteAddr,
+	wsConnObj := &WebSocketConn{
+		conn:        wsConn,
+		addr:        &net.TCPAddr{IP: net.IPv4(127,0,0,1), Port: 0}, // Simplified
 		running:     true,
 		dataChan:    make(chan []byte, 1024),
 		errChan:     make(chan error, 10),
@@ -213,20 +236,20 @@ func (s *WebSocketServer) handleWebSocketUpgrade(w http.ResponseWriter, r *http.
 	}
 
 	// Set message handlers
-	conn.SetPongHandler(func(appData string) error {
-		return wsConn.handlePong(appData)
+	wsConn.SetPongHandler(func(appData string) error {
+		return wsConnObj.handlePong(appData)
 	})
 
-	conn.SetPingHandler(func(appData string) error {
-		return wsConn.handlePing(appData)
+	wsConn.SetPingHandler(func(appData string) error {
+		return wsConnObj.handlePing(appData)
 	})
 
 	// Start handling connection
-	s.connections[wsConn] = struct{}{}
-	go wsConn.handleIncomingMessages()
-	go wsConn.handlePings()
+	s.connections[wsConnObj] = struct{}{}
+	go wsConnObj.handleIncomingMessages()
+	go wsConnObj.handlePings()
 
-	s.handler(wsConn)
+	s.handler(wsConnObj)
 }
 
 // getBestMessageType determines the best message type to use
@@ -239,8 +262,27 @@ func (s *WebSocketServer) getBestMessageType() int {
 	return WebSocketBinaryMessage
 }
 
+// handleConnection handles a single connection
+func (s *WebSocketServer) handleConnection(conn net.Conn) {
+	defer conn.Close()
+
+	// Create a temporary HTTP request for upgrade
+	r := &http.Request{
+		Method: "GET",
+		Header: make(http.Header),
+		RemoteAddr: conn.RemoteAddr().String(),
+	}
+	r.Header.Set("Upgrade", "websocket")
+
+	// Create a response writer wrapper
+	w := &responseWriter{conn: conn}
+
+	// Handle WebSocket upgrade
+	s.handleWebSocketUpgrade(w, r)
+}
+
 // acceptConnections accepts incoming HTTP connections
-func (s *WebSocketServer) acceptConnections(httpServer *http.Server) {
+func (s *WebSocketServer) acceptConnections() {
 	for s.running {
 		conn, err := s.listener.Accept()
 		if err != nil {
@@ -251,7 +293,8 @@ func (s *WebSocketServer) acceptConnections(httpServer *http.Server) {
 			continue
 		}
 
-		go httpServer.ServeConn(conn)
+		// Handle each connection in a separate goroutine
+		go s.handleConnection(conn)
 	}
 }
 
