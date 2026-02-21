@@ -42,7 +42,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          go build -o aethertunnel-server-${{ matrix.goos }}-${{ matrix.goarch }} ./server/main.go
+          go build -o aethertunnel-server-${{ matrix.goos }}-${{ matrix.goarch }} ./main.go
           go build -o aethertunnel-client-${{ matrix.goos }}-${{ matrix.goarch }} ./client/main.go
 
       - name: Create release directory
