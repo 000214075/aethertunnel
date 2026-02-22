@@ -2,11 +2,13 @@ package protocol
 
 import (
 	"compress/gzip"
+	"bytes"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"

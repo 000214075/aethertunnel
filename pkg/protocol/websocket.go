@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -212,10 +213,10 @@ func (s *WebSocketServer) handleWebSocketUpgrade(w http.ResponseWriter, r *http.
 	}
 
 	// Create a response writer wrapper
-	w := &responseWriter{conn: conn}
+	rw := &responseWriter{conn: w.(net.Conn)}
 
 	// Upgrade connection
-	wsConn, err = s.upgrader.Upgrade(w, r, w.Header())
+	wsConn, err := s.upgrader.Upgrade(rw, r, rw.Header())
 	if err != nil {
 		log.Printf("Failed to upgrade WebSocket connection: %v", err)
 		return
