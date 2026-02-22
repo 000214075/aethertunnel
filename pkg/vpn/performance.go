@@ -1,6 +1,7 @@
 package vpn
 
 import (
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -8,42 +9,43 @@ import (
 
 // PerformanceOptimizer provides performance optimization for VPN
 type PerformanceOptimizer struct {
-	mu               sync.RWMutex
-	enabled          bool
-	stats            *PerformanceStats
-	pool             *ConnectionPool
-	limiter          *RateLimiter
-	breaker          *CircuitBreaker
+	mu      sync.RWMutex
+	enabled bool
+	stats   *PerformanceStats
+	pool    *ConnectionPool
+	limiter *RateLimiter
+	breaker *CircuitBreaker
 }
 
 // PerformanceStats tracks performance metrics
 type PerformanceStats struct {
-	TotalConnections    uint64        `json:"total_connections"`
-	ActiveConnections   uint64        `json:"active_connections"`
-	MaxConnections      uint64        `json:"max_connections"`
-	ConnectionRate      float64       `json:"connection_rate"`
-	BytesPerSecond      float64       `json:"bytes_per_second"`
-	Latency             time.Duration `json:"latency"`
-	PacketLoss          float64       `json:"packet_loss"`
-	mu                  sync.RWMutex
+	TotalConnections  uint64        `json:"total_connections"`
+	ActiveConnections uint64        `json:"active_connections"`
+	MaxConnections    uint64        `json:"max_connections"`
+	ConnectionRate    float64       `json:"connection_rate"`
+	BytesPerSecond    float64       `json:"bytes_per_second"`
+	Latency           time.Duration `json:"latency"`
+	PacketLoss        float64       `json:"packet_loss"`
+	LastUpdate        time.Time     `json:"last_update"`
+	mu                sync.RWMutex
 }
 
 // ConnectionPool manages connection pooling
 type ConnectionPool struct {
-	pool             chan net.Conn
-	maxSize          int
-	currentSize      int32
-	idleTimeout      time.Duration
-	mu               sync.RWMutex
+	pool        chan net.Conn
+	maxSize     int
+	currentSize int32
+	idleTimeout time.Duration
+	mu          sync.RWMutex
 }
 
 // RateLimiter implements rate limiting
 type RateLimiter struct {
-	limit            int64
-	burst            int64
-	tokens           int64
-	lastUpdate       int64
-	mu               sync.Mutex
+	limit      int64
+	burst      int64
+	tokens     int64
+	lastUpdate int64
+	mu         sync.Mutex
 }
 
 // CircuitBreaker implements circuit breaker pattern
@@ -54,6 +56,7 @@ type CircuitBreaker struct {
 	successes        int
 	state            int32 // 0: closed, 1: open, 2: half-open
 	timeout          time.Duration
+	lastFailureTime  int64 // UnixNano timestamp of last failure
 	mu               sync.RWMutex
 }
 
@@ -169,10 +172,10 @@ func (p *PerformanceOptimizer) UpdateStats(bytes int, latency time.Duration) {
 
 	// Update connection rate (connections per second)
 	now := time.Now()
-	if p.stats.lastUpdate.IsZero() {
-		p.stats.lastUpdate = now
+	if p.stats.LastUpdate.IsZero() {
+		p.stats.LastUpdate = now
 	} else {
-		elapsed := now.Sub(p.stats.lastUpdate).Seconds()
+		elapsed := now.Sub(p.stats.LastUpdate).Seconds()
 		if elapsed > 0 {
 			p.stats.ConnectionRate = float64(p.stats.TotalConnections) / elapsed
 		}
@@ -406,12 +409,12 @@ func (s *PerformanceStats) GetStats() map[string]interface{} {
 	defer s.mu.RUnlock()
 
 	return map[string]interface{}{
-		"total_connections":    atomic.LoadUint64(&s.TotalConnections),
-		"active_connections":   atomic.LoadUint64(&s.ActiveConnections),
-		"max_connections":      atomic.LoadUint64(&s.MaxConnections),
-		"connection_rate":      s.ConnectionRate,
-		"bytes_per_second":     s.BytesPerSecond,
-		"latency_ms":           s.Latency.Milliseconds(),
-		"packet_loss":          s.PacketLoss,
+		"total_connections":  atomic.LoadUint64(&s.TotalConnections),
+		"active_connections": atomic.LoadUint64(&s.ActiveConnections),
+		"max_connections":    atomic.LoadUint64(&s.MaxConnections),
+		"connection_rate":    s.ConnectionRate,
+		"bytes_per_second":   s.BytesPerSecond,
+		"latency_ms":         s.Latency.Milliseconds(),
+		"packet_loss":        s.PacketLoss,
 	}
 }

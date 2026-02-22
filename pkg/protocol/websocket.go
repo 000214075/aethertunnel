@@ -30,10 +30,10 @@ const (
 
 // responseWriter wraps net.Conn to implement http.ResponseWriter
 type responseWriter struct {
-	conn  net.Conn
+	conn   net.Conn
 	header http.Header
-	code  int
-	wrote bool
+	code   int
+	wrote  bool
 }
 
 func (w *responseWriter) Header() http.Header {
@@ -73,24 +73,24 @@ type WebSocketConn struct {
 
 // WebSocketConfig represents WebSocket configuration
 type WebSocketConfig struct {
-	ReadBufferSize     int           `toml:"read_buffer_size"`
-	WriteBufferSize    int           `toml:"write_buffer_size"`
-	EnableCompression  bool          `toml:"enable_compression"`
-	CompressionLevel   int           `toml:"compression_level"`
-	MaxMessageSize     int64         `toml:"max_message_size"`
-	ReadTimeout        time.Duration `toml:"read_timeout"`
-	WriteTimeout       time.Duration `toml:"write_timeout"`
-	PingPeriod         time.Duration `toml:"ping_period"`
-	PongTimeout        time.Duration `toml:"pong_timeout"`
-	HandshakeTimeout   time.Duration `toml:"handshake_timeout"`
-	EnableTLS          bool          `toml:"enable_tls"`
-	AllowedOrigins     []string      `toml:"allowed_origins"`
-	EnableCORS         bool          `toml:"enable_cors"`
-	EnableUTF8         bool          `toml:"enable_utf8"`
-	EnablePongHandler  bool          `toml:"enable_pong_handler"`
-	MaxConnections     int           `toml:"max_connections"`
-	EnableBinary       bool          `toml:"enable_binary"`
-	EnableText         bool          `toml:"enable_text"`
+	ReadBufferSize    int           `toml:"read_buffer_size"`
+	WriteBufferSize   int           `toml:"write_buffer_size"`
+	EnableCompression bool          `toml:"enable_compression"`
+	CompressionLevel  int           `toml:"compression_level"`
+	MaxMessageSize    int64         `toml:"max_message_size"`
+	ReadTimeout       time.Duration `toml:"read_timeout"`
+	WriteTimeout      time.Duration `toml:"write_timeout"`
+	PingPeriod        time.Duration `toml:"ping_period"`
+	PongTimeout       time.Duration `toml:"pong_timeout"`
+	HandshakeTimeout  time.Duration `toml:"handshake_timeout"`
+	EnableTLS         bool          `toml:"enable_tls"`
+	AllowedOrigins    []string      `toml:"allowed_origins"`
+	EnableCORS        bool          `toml:"enable_cors"`
+	EnableUTF8        bool          `toml:"enable_utf8"`
+	EnablePongHandler bool          `toml:"enable_pong_handler"`
+	MaxConnections    int           `toml:"max_connections"`
+	EnableBinary      bool          `toml:"enable_binary"`
+	EnableText        bool          `toml:"enable_text"`
 }
 
 // WebSocketServer represents a WebSocket server
@@ -228,7 +228,7 @@ func (s *WebSocketServer) handleWebSocketUpgrade(w http.ResponseWriter, r *http.
 	// Create WebSocket connection wrapper
 	wsConnObj := &WebSocketConn{
 		conn:        wsConn,
-		addr:        &net.TCPAddr{IP: net.IPv4(127,0,0,1), Port: 0}, // Simplified
+		addr:        &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0}, // Simplified
 		running:     true,
 		dataChan:    make(chan []byte, 1024),
 		errChan:     make(chan error, 10),
@@ -269,8 +269,8 @@ func (s *WebSocketServer) handleConnection(conn net.Conn) {
 
 	// Create a temporary HTTP request for upgrade
 	r := &http.Request{
-		Method: "GET",
-		Header: make(http.Header),
+		Method:     "GET",
+		Header:     make(http.Header),
 		RemoteAddr: conn.RemoteAddr().String(),
 	}
 	r.Header.Set("Upgrade", "websocket")

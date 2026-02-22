@@ -1,5 +1,10 @@
 package vpn
 
+import (
+	"net"
+	"time"
+)
+
 // PerformanceOptimizerInterface defines the interface for performance optimization
 type PerformanceOptimizerInterface interface {
 	Enable()
@@ -26,16 +31,4 @@ type PerformanceStatsInterface interface {
 type ConnectionPoolInterface interface {
 	Get(addr string, timeout time.Duration) (net.Conn, error)
 	Put(conn net.Conn)
-}
-
-// RateLimiterInterface defines the interface for rate limiting
-type RateLimiterInterface interface {
-	Allow() bool
-}
-
-// CircuitBreakerInterface defines the interface for circuit breaking
-type CircuitBreakerInterface interface {
-	Allow() bool
-	RecordSuccess()
-	RecordFailure()
 }

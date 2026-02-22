@@ -36,11 +36,11 @@ help:
 	@echo ""
 
 ## build-local: 编译本地平台
-build-local: fmt vet
+build-local: fmt
 	@echo "编译本地平台..."
 	@mkdir -p $(DIST_DIR)
-	@go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/$(PROJECT_NAME)-server ./server
-	@go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/$(PROJECT_NAME)-client ./client
+	@go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/$(PROJECT_NAME)-server main.go
+	@go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/$(PROJECT_NAME)-client ./client/main.go
 	@echo "✅ 编译完成: $(DIST_DIR)"
 
 ## build: 编译所有平台

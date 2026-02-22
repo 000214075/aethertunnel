@@ -1,6 +1,7 @@
 # AetherTunnel Server 配置示例
-# 复制此文件为 server.toml 并修改相应配置
+# 复制此文件为 config.toml 并修改相应配置
 
+# 服务器配置
 [server]
 bind_addr = "0.0.0.0"
 bind_port = 8080
@@ -8,13 +9,13 @@ auth_token = "your-secret-token-here"
 enable_tls = false
 cert_file = ""
 key_file = ""
-max_connections = 1000
-graceful_shutdown_timeout = 30
 
+# Web 面板配置
 [dashboard]
 enabled = true
 port = 8081
 
+# VPN 配置
 [vpn]
 enabled = false
 bind_addr = "0.0.0.0"
@@ -27,7 +28,19 @@ obfuscation = false
 auth_token = "your-vpn-token"
 max_peers = 10
 mtu = 1500
+enable_performance = true
+max_pool_size = 10
+enable_compression = true
+enable_qos = true
+bandwidth_limit = "10mbps"
+supported_protocols = ["tcp", "udp", "sctp", "websocket", "http"]
+enable_http_forward = true
+enable_sctp_forward = true
+enable_ws_forward = true
+protocol_timeout = "30s"
+protocol_max_size = 10485760
 
+# 数据混淆配置
 [obfuscation]
 enabled = false
 default_type = "xor"
@@ -37,6 +50,7 @@ key_rotation = 60
 packet_padding = false
 traffic_morphing = false
 
+# 代理配置（可选）
 [[proxies]]
 name = "http-proxy"
 type = "http"

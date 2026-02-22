@@ -9,24 +9,24 @@ import (
 // VPNStats tracks VPN statistics
 type VPNStats struct {
 	// Tunnel statistics
-	totalTunnels        uint64
-	activeTunnels       uint64
-	tunnelConnections   uint64
-	tunnelFailures      uint64
+	totalTunnels      uint64
+	activeTunnels     uint64
+	tunnelConnections uint64
+	tunnelFailures    uint64
 
 	// Client statistics
-	totalClients        uint64
-	activeClients       uint64
-	maxClients          uint64
-	clientConnections   uint64
+	totalClients         uint64
+	activeClients        uint64
+	maxClients           uint64
+	clientConnections    uint64
 	clientDisconnections uint64
 
 	// Traffic statistics
-	bytesReceived       uint64
-	bytesSent           uint64
-	packetsReceived     uint64
-	packetsSent         uint64
-	droppedPackets      uint64
+	bytesReceived   uint64
+	bytesSent       uint64
+	packetsReceived uint64
+	packetsSent     uint64
+	droppedPackets  uint64
 
 	// Performance statistics
 	avgLatency          time.Duration
@@ -35,11 +35,11 @@ type VPNStats struct {
 	packetLoss          float64
 
 	// Error statistics
-	encryptionErrors    uint64
-	decryptionErrors    uint64
-	obfuscationErrors   uint64
-	handshakeErrors     uint64
-	routingErrors       uint64
+	encryptionErrors  uint64
+	decryptionErrors  uint64
+	obfuscationErrors uint64
+	handshakeErrors   uint64
+	routingErrors     uint64
 
 	// Rate statistics
 	connectionsPerSecond float64
@@ -270,10 +270,10 @@ func (s *VPNStats) GetStats() map[string]interface{} {
 
 	return map[string]interface{}{
 		// Tunnel stats
-		"total_tunnels":         atomic.LoadUint64(&s.totalTunnels),
-		"active_tunnels":        atomic.LoadUint64(&s.activeTunnels),
-		"tunnel_connections":    atomic.LoadUint64(&s.tunnelConnections),
-		"tunnel_failures":       atomic.LoadUint64(&s.tunnelFailures),
+		"total_tunnels":      atomic.LoadUint64(&s.totalTunnels),
+		"active_tunnels":     atomic.LoadUint64(&s.activeTunnels),
+		"tunnel_connections": atomic.LoadUint64(&s.tunnelConnections),
+		"tunnel_failures":    atomic.LoadUint64(&s.tunnelFailures),
 
 		// Client stats
 		"total_clients":         atomic.LoadUint64(&s.totalClients),
@@ -283,28 +283,28 @@ func (s *VPNStats) GetStats() map[string]interface{} {
 		"client_disconnections": atomic.LoadUint64(&s.clientDisconnections),
 
 		// Traffic stats
-		"bytes_received":         atomic.LoadUint64(&s.bytesReceived),
-		"bytes_sent":             atomic.LoadUint64(&s.bytesSent),
-		"packets_received":       atomic.LoadUint64(&s.packetsReceived),
-		"packets_sent":           atomic.LoadUint64(&s.packetsSent),
-		"dropped_packets":        atomic.LoadUint64(&s.droppedPackets),
+		"bytes_received":   atomic.LoadUint64(&s.bytesReceived),
+		"bytes_sent":       atomic.LoadUint64(&s.bytesSent),
+		"packets_received": atomic.LoadUint64(&s.packetsReceived),
+		"packets_sent":     atomic.LoadUint64(&s.packetsSent),
+		"dropped_packets":  atomic.LoadUint64(&s.droppedPackets),
 
 		// Performance stats
-		"avg_latency_ms":        s.avgLatency.Milliseconds(),
-		"max_latency_ms":        s.maxLatency.Milliseconds(),
-		"packet_loss_percent":   s.packetLoss,
+		"avg_latency_ms":         s.avgLatency.Milliseconds(),
+		"max_latency_ms":         s.maxLatency.Milliseconds(),
+		"packet_loss_percent":    s.packetLoss,
 		"connections_per_second": s.connectionsPerSecond,
 		"bytes_per_second":       s.bytesPerSecond,
 
 		// Error stats
-		"encryption_errors":     atomic.LoadUint64(&s.encryptionErrors),
-		"decryption_errors":     atomic.LoadUint64(&s.decryptionErrors),
-		"obfuscation_errors":    atomic.LoadUint64(&s.obfuscationErrors),
-		"handshake_errors":      atomic.LoadUint64(&s.handshakeErrors),
-		"routing_errors":        atomic.LoadUint64(&s.routingErrors),
+		"encryption_errors":  atomic.LoadUint64(&s.encryptionErrors),
+		"decryption_errors":  atomic.LoadUint64(&s.decryptionErrors),
+		"obfuscation_errors": atomic.LoadUint64(&s.obfuscationErrors),
+		"handshake_errors":   atomic.LoadUint64(&s.handshakeErrors),
+		"routing_errors":     atomic.LoadUint64(&s.routingErrors),
 
 		// Uptime
-		"uptime_seconds":        time.Since(s.lastReset).Seconds(),
+		"uptime_seconds": time.Since(s.lastReset).Seconds(),
 	}
 }
 
@@ -334,11 +334,11 @@ func (s *VPNStats) GetTrafficStats() map[string]uint64 {
 	defer s.mu.RUnlock()
 
 	return map[string]uint64{
-		"bytes_received":       atomic.LoadUint64(&s.bytesReceived),
-		"bytes_sent":           atomic.LoadUint64(&s.bytesSent),
-		"packets_received":     atomic.LoadUint64(&s.packetsReceived),
-		"packets_sent":         atomic.LoadUint64(&s.packetsSent),
-		"dropped_packets":      atomic.LoadUint64(&s.droppedPackets),
+		"bytes_received":   atomic.LoadUint64(&s.bytesReceived),
+		"bytes_sent":       atomic.LoadUint64(&s.bytesSent),
+		"packets_received": atomic.LoadUint64(&s.packetsReceived),
+		"packets_sent":     atomic.LoadUint64(&s.packetsSent),
+		"dropped_packets":  atomic.LoadUint64(&s.droppedPackets),
 	}
 }
 

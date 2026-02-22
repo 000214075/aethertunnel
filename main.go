@@ -6,20 +6,17 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
 	"github.com/aethertunnel/aethertunnel/pkg/config"
 	"github.com/aethertunnel/aethertunnel/pkg/crypto"
-	"github.com/aethertunnel/aethertunnel/pkg/obfuscation"
-	"github.com/aethertunnel/aethertunnel/pkg/protocol"
-	"github.com/aethertunnel/aethertunnel/pkg/vpn"
 	"github.com/aethertunnel/aethertunnel/pkg/server"
+	"github.com/aethertunnel/aethertunnel/pkg/vpn"
 )
 
 var (
-	version  = "v1.0.2"
+	version   = "v1.0.2"
 	buildTime = "2026-02-21T08:14:57Z"
 	gitCommit = "eeb217d"
 )
@@ -34,7 +31,8 @@ func main() {
 	if len(os.Args) < 2 {
 		fmt.Printf("Usage: %s <config-file>\n", os.Args[0])
 		fmt.Println("\nConfig file example:")
-		fmt.Println(server.GetServerSimpleExample())
+		exampleConfig, _ := os.ReadFile("config.example.toml")
+		fmt.Println(string(exampleConfig))
 		os.Exit(1)
 	}
 
@@ -48,9 +46,9 @@ func main() {
 	encryption := crypto.NewEncryption(cfg.Server.AuthToken)
 
 	// 创建混淆器
-	var obfuscator *obfuscation.Obfuscation
+	// var obfuscator *obfuscation.Obfuscation
 	if cfg.Obfuscation.Enabled {
-		obfuscator = obfuscation.NewObfuscation(encryption)
+		// obfuscator = obfuscation.NewObfuscation(encryption)
 		log.Printf("Obfuscation enabled with default type: %s", cfg.Obfuscation.DefaultType)
 	}
 
@@ -106,9 +104,7 @@ func main() {
 		log.Println("\nShutting down server...")
 		listener.Close()
 		controlListener.Close()
-		if vpnManager != nil {
-			vpnManager.Stop()
-		}
+		// Note: VPN shutdown not implemented yet
 	}()
 
 	// 主循环

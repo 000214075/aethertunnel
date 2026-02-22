@@ -1,8 +1,8 @@
 package protocol
 
 import (
-	"compress/gzip"
 	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"log"
@@ -16,53 +16,53 @@ import (
 
 // HTTPConn represents an HTTP connection
 type HTTPConn struct {
-	mu          sync.RWMutex
-	conn        net.Conn
-	addr        net.Addr
-	running     bool
-	dataChan    chan []byte
-	errChan     chan error
-	method      string
-	path        string
-	headers     http.Header
-	body        []byte
-	useTLS      bool
-	compress    bool
+	mu       sync.RWMutex
+	conn     net.Conn
+	addr     net.Addr
+	running  bool
+	dataChan chan []byte
+	errChan  chan error
+	method   string
+	path     string
+	headers  http.Header
+	body     []byte
+	useTLS   bool
+	compress bool
 }
 
 // HTTPServer represents an HTTP server
 type HTTPServer struct {
-	mu          sync.RWMutex
-	listener    net.Listener
-	running     bool
-	config      *HTTPConfig
-	handler     func(*HTTPConn)
-	conns       map[*HTTPConn]struct{}
-	httpServer  *http.Server
+	mu         sync.RWMutex
+	listener   net.Listener
+	running    bool
+	config     *HTTPConfig
+	handler    func(*HTTPConn)
+	conns      map[*HTTPConn]struct{}
+	httpServer *http.Server
 }
 
 // HTTPConfig represents HTTP configuration
 type HTTPConfig struct {
-	ReadTimeout         time.Duration `toml:"read_timeout"`
-	WriteTimeout        time.Duration `toml:"write_timeout"`
-	IdleTimeout         time.Duration `toml:"idle_timeout"`
-	MaxHeaderBytes      int           `toml:"max_header_bytes"`
-	EnableCompression   bool          `toml:"enable_compression"`
-	EnableTLS           bool          `toml:"enable_tls"`
-	EnableCORS          bool          `toml:"enable_cors"`
-	EnableChunked       bool          `toml:"enable_chunked"`
-	MaxBodySize         int64         `toml:"max_body_size"`
-	EnableKeepalive     bool          `toml:"enable_keepalive"`
-	EnablePipelining    bool          `toml:"enable_pipelining"`
-	EnableHTTP2         bool          `toml:"enable_http2"`
-	EnableWebSocket     bool          `toml:"enable_websocket"`
-	AllowedMethods      []string      `toml:"allowed_methods"`
-	AllowedOrigins      []string      `toml:"allowed_origins"`
-	EnableAuth          bool          `toml:"enable_auth"`
-	AuthType            string        `toml:"auth_type"`
-	EnableRateLimit     bool          `toml:"enable_rate_limit"`
-	RateLimitRequests   int           `toml:"rate_limit_requests"`
-	RateLimitWindow     time.Duration `toml:"rate_limit_window"`
+	ReadTimeout       time.Duration `toml:"read_timeout"`
+	WriteTimeout      time.Duration `toml:"write_timeout"`
+	IdleTimeout       time.Duration `toml:"idle_timeout"`
+	MaxHeaderBytes    int           `toml:"max_header_bytes"`
+	EnableCompression bool          `toml:"enable_compression"`
+	EnableTLS         bool          `toml:"enable_tls"`
+	EnableCORS        bool          `toml:"enable_cors"`
+	EnableChunked     bool          `toml:"enable_chunked"`
+	MaxBodySize       int64         `toml:"max_body_size"`
+	EnableKeepalive   bool          `toml:"enable_keepalive"`
+	EnablePipelining  bool          `toml:"enable_pipelining"`
+	EnableHTTP2       bool          `toml:"enable_http2"`
+	EnableWebSocket   bool          `toml:"enable_websocket"`
+	AllowedMethods    []string      `toml:"allowed_methods"`
+	AllowedOrigins    []string      `toml:"allowed_origins"`
+	EnableAuth        bool          `toml:"enable_auth"`
+	AuthType          string        `toml:"auth_type"`
+	EnableRateLimit   bool          `toml:"enable_rate_limit"`
+	RateLimitRequests int           `toml:"rate_limit_requests"`
+	RateLimitWindow   time.Duration `toml:"rate_limit_window"`
 }
 
 // DefaultHTTPConfig returns default HTTP configuration
@@ -112,10 +112,10 @@ func NewHTTPServer(config *HTTPConfig, handler func(*HTTPConn)) *HTTPServer {
 	}
 
 	return &HTTPServer{
-		config:      config,
-		handler:     handler,
-		conns:       make(map[*HTTPConn]struct{}),
-		httpServer:  httpServer,
+		config:     config,
+		handler:    handler,
+		conns:      make(map[*HTTPConn]struct{}),
+		httpServer: httpServer,
 	}
 }
 
@@ -159,8 +159,8 @@ func (h *httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Create HTTP connection wrapper
 	httpConn := &HTTPConn{
-		conn:     r.Body.(io.Closer).(net.Conn), // This is a simplification
-		addr:     &net.TCPAddr{IP: net.IPv4(127,0,0,1), Port: 0}, // Simplified
+		conn:     r.Body.(io.Closer).(net.Conn),                     // This is a simplification
+		addr:     &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0}, // Simplified
 		running:  true,
 		dataChan: make(chan []byte, 1024),
 		errChan:  make(chan error, 10),

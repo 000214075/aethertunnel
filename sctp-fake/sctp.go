@@ -25,7 +25,7 @@ type Listener struct {
 func Listen(network, addr string) (*Listener, error) {
 	// Create a fake listener
 	listener := &Listener{
-		addr:     &net.TCPAddr{IP: net.IPv4(127,0,0,1), Port: 0},
+		addr:     &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0},
 		connChan: make(chan net.Conn, 100),
 		running:  true,
 	}
@@ -36,8 +36,8 @@ func Dial(network, addr string) (*Conn, error) {
 	// Create a fake connection
 	conn := &Conn{
 		Conn: &fakeConn{
-			localAddr: &net.TCPAddr{IP: net.IPv4(127,0,0,1), Port: 0},
-			remoteAddr: &net.TCPAddr{IP: net.IPv4(127,0,0,1), Port: 0},
+			localAddr:  &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0},
+			remoteAddr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0},
 		},
 	}
 	return conn, nil

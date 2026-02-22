@@ -20,12 +20,12 @@ import (
 
 // Obfuscation provides packet obfuscation and anti-detection capabilities
 type Obfuscation struct {
-	encryption    *crypto.Encryption
-	obfuscators   map[string]Obfuscator
-	macKey        []byte
-	cipherKey     []byte
-	seqNum        uint64
-	mu            sync.RWMutex
+	encryption  *crypto.Encryption
+	obfuscators map[string]Obfuscator
+	macKey      []byte
+	cipherKey   []byte
+	seqNum      uint64
+	mu          sync.RWMutex
 }
 
 // Obfuscator defines the interface for obfuscation methods
