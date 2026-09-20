@@ -423,6 +423,71 @@ func TestHTTPVHostRoutesByHostHeader(t *testing.T) {
 	}
 }
 
+// TestHTTPProxyTrafficIsRecorded covers the accounting of an http proxy: the
+// reverse proxy is the only path that does not go through one member's stream
+// handler, so its bytes have to be credited to the members explicitly. They are
+// what the dashboard and the bandwidth ledger read.
+func TestHTTPProxyTrafficIsRecorded(t *testing.T) {
+	service := startHTTPService(t, "accounted")
+
+	cfg := testConfig(t, false)
+	cfg.Server.HTTPPort = freePort(t)
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+
+	rs := startServer(t, cfg)
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"web": framedStreamHandler(service)})
+	agent.register(protocol.ProxySpec{
+		Name: "web", Type: protocol.ProxyTypeHTTP, LocalAddr: service,
+		Domains: []string{"accounted.example.com"},
+	})
+
+	group, err := rs.server.tunnels.Get("web")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+
+	base := fmt.Sprintf("http://127.0.0.1:%d/", cfg.Server.HTTPPort)
+	sent := "ask=1"
+	request, err := http.NewRequest(http.MethodPost, base, strings.NewReader(sent))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	request.Host = "accounted.example.com"
+
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status %d (%s)", response.StatusCode, body)
+	}
+
+	_, total, in, out := group.Totals()
+	if total != 1 {
+		t.Errorf("the group counted %d requests, want 1", total)
+	}
+	if in != int64(len(body)) {
+		t.Errorf("the group counted %d bytes in, want %d", in, len(body))
+	}
+	if out != int64(len(sent)) {
+		t.Errorf("the group counted %d bytes out, want %d", out, len(sent))
+	}
+
+	// The members carry the same numbers, which is where the ledger reads them.
+	summary := group.Summary()
+	if len(summary) != 1 {
+		t.Fatalf("the pool has %d members, want 1", len(summary))
+	}
+	if summary[0].BytesIn != in || summary[0].BytesOut != out || summary[0].Total != total {
+		t.Errorf("the member reports %d/%d over %d requests, the group %d/%d over %d",
+			summary[0].BytesIn, summary[0].BytesOut, summary[0].Total, in, out, total)
+	}
+}
+
 func TestHTTPVHostRefusesADomainAnotherTunnelOwns(t *testing.T) {
 	service := startHTTPService(t, "first")
 

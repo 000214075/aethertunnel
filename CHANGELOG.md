@@ -10,6 +10,24 @@
 
 ---
 
+## [3.2.1] — 2026-09-20
+
+### 修复
+
+- **`http` 与 `https` 代理的流量从未被记账。** 反向代理这条路径只更新了组级计数，
+  而面板、会话计数与带宽账本读的是成员计数，因此一个 http 代理无论搬运多少字节，
+  面板都显示 `0 B` / `0 次请求`，客户端断开时写进账本的也是 `bytes_in=0 bytes_out=0`
+  （实测：请求正常返回 200，面板仍是 `total=0 bytes_in=0 bytes_out=0`，
+  账本条目同样为 0）。现在每个完成的请求按成员数平均计入各成员，与数据报会话在多路径上的
+  记法一致；那三个从未被任何地方读取的组级计数已删除。
+  新增两个回归测试：`TestHTTPProxyTrafficIsRecorded`（面板所用的 `Totals()` 与成员摘要）
+  与 `TestLedgerRecordsHTTPProxyTraffic`（账本条目），修复前分别失败于
+  「the group counted 0 requests, want 1」与「bytes_in is 0, want 30」。
+- 文档同步：`docs/SECURITY.md` 的账本一节改为按代理类型说明记账口径，
+  `web/dashboard/README.md` 说明 http 代理按请求计数、池内按比例计入成员。
+
+---
+
 ## [3.2.0] — 2026-09-20
 
 本版本实现了 v3.1.0 文档中列为"尚未实现"的全部条目（移动端应用与 Windows/macOS 的 tun

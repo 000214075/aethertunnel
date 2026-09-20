@@ -35,12 +35,16 @@ per-member detail for anything the table does not show. `/api/proxies` 每个代
 `healthy`）；表格的「成员」列显示成员数与其中可用（healthy）的个数，客户端与本地地址仍是
 第一个成员的；其余成员明细需要直接读取 `/api/proxies`。
 
-Byte and connection counters advance when a stream ends, and the page polls every two
-seconds, so a stream that is still open shows the totals of the streams that finished
-before it. A member that disconnects takes its counters out of the pool aggregate, because
-the aggregate is the sum of the members that are present. 字节与连接计数在一条流结束时累加，
-页面每 2 秒轮询一次，所以仍在进行中的流只显示此前已结束流的合计；成员断开后，它的计数不再
-计入池的合计（合计等于当前成员之和）。
+Byte and connection counters advance when a stream or a request finishes, and the page polls
+every two seconds, so a stream that is still open shows the totals of the ones that finished
+before it. An `http`/`https` proxy counts each served request; when several clients share a
+pool, a request or a datagram session is credited to every member in proportion, because the
+server does not attribute it to one of them. A member that disconnects takes its counters out
+of the pool aggregate, because the aggregate is the sum of the members that are present.
+字节与连接计数在一条流或一个请求结束时累加，页面每 2 秒轮询一次，所以仍在进行中的流只显示
+此前已结束流的合计；`http`/`https` 代理按每个完成的请求计数；池中有多个客户端时，一个请求
+或一个数据报会话按比例计入每个成员，因为服务端并不把它归给某一个成员；成员断开后，它的计数
+不再计入池的合计（合计等于当前成员之和）。
 
 ## Dashboard token / 启用令牌
 

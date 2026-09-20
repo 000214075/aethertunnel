@@ -4,12 +4,15 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -146,6 +149,64 @@ func TestLedgerRecordsSessionUsageWhenTheClientLeaves(t *testing.T) {
 	}
 	if entry.Hash == "" || entry.Signature == "" {
 		t.Error("entry is missing its hash or signature")
+	}
+
+	if n, err := ledger.Verify(entries, mustPublicKey(t, cfg.Ledger.SigningKey)); err != nil {
+		t.Fatalf("the recorded chain does not verify at entry %d: %v", n, err)
+	}
+}
+
+// TestLedgerRecordsHTTPProxyTraffic covers the billing of an http proxy. Its
+// requests are served by the group's reverse proxy rather than by one member's
+// stream handler, so the bytes have to reach the member counters the ledger reads;
+// without that an http proxy is billed as zero however much it carried.
+func TestLedgerRecordsHTTPProxyTraffic(t *testing.T) {
+	service := startHTTPService(t, "billed")
+
+	cfg := ledgerConfig(t, false)
+	cfg.Server.HTTPPort = freePort(t)
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	rs := startServer(t, cfg)
+
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"web": framedStreamHandler(service)})
+	agent.register(protocol.ProxySpec{
+		Name: "web", Type: protocol.ProxyTypeHTTP, LocalAddr: service,
+		Domains: []string{"billed.example.com"},
+	})
+
+	sent := "ask=1"
+	request, err := http.NewRequest(http.MethodPost,
+		fmt.Sprintf("http://127.0.0.1:%d/", cfg.Server.HTTPPort), strings.NewReader(sent))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	request.Host = "billed.example.com"
+
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status %d (%s)", response.StatusCode, body)
+	}
+
+	// The entry is appended when the session ends.
+	agent.client.close()
+
+	entries := waitForLedgerEntries(t, cfg.Ledger.Path, 1)
+	entry := entries[0]
+	if entry.Proxy != "web" {
+		t.Fatalf("entry names proxy %q, want %q", entry.Proxy, "web")
+	}
+	if entry.BytesIn != int64(len(body)) {
+		t.Errorf("bytes_in is %d, want %d", entry.BytesIn, len(body))
+	}
+	if entry.BytesOut != int64(len(sent)) {
+		t.Errorf("bytes_out is %d, want %d", entry.BytesOut, len(sent))
 	}
 
 	if n, err := ledger.Verify(entries, mustPublicKey(t, cfg.Ledger.SigningKey)); err != nil {

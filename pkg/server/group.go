@@ -65,13 +65,6 @@ type ProxyGroup struct {
 	proxyOnce sync.Once
 	proxy     *httputil.ReverseProxy
 
-	// Active, Total, BytesIn and BytesOut aggregate the members; the http path
-	// updates them directly because its traffic is not attributed to one member.
-	Active   atomic.Int64
-	Total    atomic.Int64
-	BytesIn  atomic.Int64
-	BytesOut atomic.Int64
-
 	counter atomic.Uint64
 	once    sync.Once
 	done    chan struct{}
@@ -709,12 +702,8 @@ func (g *ProxyGroup) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 	g.metrics.httpRequests.Add(1)
 	g.metrics.tunnel(g.Name).httpRequests.Add(1)
-	g.Active.Add(1)
 	g.metrics.streamOpened(g.Name)
-	defer func() {
-		g.Active.Add(-1)
-		g.metrics.streamClosed(g.Name)
-	}()
+	defer g.metrics.streamClosed(g.Name)
 
 	counter := &countingResponseWriter{ResponseWriter: w}
 	proxy.ServeHTTP(counter, r)
@@ -724,13 +713,29 @@ func (g *ProxyGroup) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		toClient = 0
 	}
 	fromClient := counter.written
-	g.BytesOut.Add(toClient)
-	g.BytesIn.Add(fromClient)
-	g.Total.Add(1)
-	for _, member := range g.Members() {
-		member.Session.RecordTraffic(toClient/int64(len(g.Members())), fromClient/int64(len(g.Members())))
-	}
+	g.recordHTTPTraffic(toClient, fromClient)
 	g.metrics.recordStream(g.Name, toClient, fromClient)
+}
+
+// recordHTTPTraffic books one served request against the group's members.
+//
+// The members are what the dashboard, the per-session counters and the bandwidth
+// ledger read, and the reverse proxy picks whichever member answers — over a
+// connection it may keep for several requests — so the bytes of a request are
+// credited to every member in proportion. A datagram session spread over several
+// paths is booked the same way.
+func (g *ProxyGroup) recordHTTPTraffic(toClient, fromClient int64) {
+	members := g.Members()
+	if len(members) == 0 {
+		return
+	}
+	shareOut, shareIn := toClient/int64(len(members)), fromClient/int64(len(members))
+	for _, member := range members {
+		member.BytesOut.Add(shareOut)
+		member.BytesIn.Add(shareIn)
+		member.Total.Add(1)
+		member.Session.RecordTraffic(shareOut, shareIn)
+	}
 }
 
 // httpProxy builds the group's reverse proxy once.
