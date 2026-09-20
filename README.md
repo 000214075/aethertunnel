@@ -1,6 +1,6 @@
 # AetherTunnel
 
-**一个能把内网服务发布到公网的 TCP 隧道工具 · A small TCP tunnel that publishes a service behind NAT.**
+**把内网服务发布到公网的隧道工具 · A tunnel that publishes a service behind NAT.**
 服务端 + 客户端 + 内置 Web 面板，纯 Go，无 CGO，六个平台开箱可用。
 Server, client and a built-in web panel. Pure Go, no CGO, cross-compiled for six platforms.
 
@@ -14,15 +14,12 @@ Server, client and a built-in web panel. Pure Go, no CGO, cross-compiled for six
 
 ### 这是什么
 
-AetherTunnel 让一台没有公网 IP 的机器（家里的 NAS、公司的开发机、树莓派）把本地端口
+AetherTunnel 让一台没有公网 IP 的机器（家里的 NAS、公司的开发机、树莓派）把本地服务
 发布到一台有公网 IP 的服务器上。访问者连服务器的端口，流量通过隧道回到你的本地服务。
 
 ```
 访问者 ──► 服务器公网端口 ──► [隧道] ──► 客户端 ──► 本地服务 127.0.0.1:22
 ```
-
-真正的转发、加密、面板数据统计都在这一版里**可用**；这一点请对照下面「这一版有什么 / 没有什么」，
-它是本版本最重要的部分。
 
 ### 30 秒上手
 
@@ -73,36 +70,51 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 
 | 能力 | 状态 | 说明 |
 |---|---|---|
-| TCP 隧道转发 | ✅ 可用 | 访问者 → 服务器公网端口 → 客户端 → 本地服务，支持半关闭，不截断响应 |
+| 代理类型 | ✅ 可用 | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp`；http/https 走服务器的共享监听并按 Host 头选择隧道，stcp/sudp/xtcp 为私有隧道 |
+| XTCP 直连 | ✅ 可用 | 自研 UDP 打洞（HMAC-SHA256 同时打开 + 可靠有序字节流），打洞失败自动回退到服务器中继；两者都会写进日志与审计 |
+| TCP/UDP 转发 | ✅ 可用 | 访问者 → 服务器端口 → 客户端 → 本地服务；TCP 保留半关闭，UDP 按来源地址分会话 |
+| 负载均衡 | ✅ 可用 | 同名代理可由多个客户端组成代理池，策略：`round-robin` `random` `latency` `failover` `adaptive` |
+| 多路径 | ✅ 可用 | 数据报代理可把流量分散到最多 8 条数据连接（`multipath`），单条故障不影响整体 |
 | 控制连接与会话 | ✅ 可用 | 认证、心跳、断线自动重连（指数退避 + 抖动）、连接数上限 |
-| 隧道注册与端口发布 | ✅ 可用 | 客户端启动时注册；服务器真正监听 `remote_port` 并转发 |
 | 可选的数据包加密 | ✅ 可用 | XChaCha20-Poly1305 或 AES-256-GCM，默认**关闭**；控制消息与隧道字节都加密 |
-| 密钥派生 | ✅ 可用 | 口令经 HKDF-SHA256 派生 32 字节密钥，任意长度口令都可用；口令留空则用 auth_token |
-| Web 面板 | ✅ 可用 | 单页、自带资源（编译进二进制，不依赖工作目录）、中英双语、手机可用 |
-| 面板 API | ✅ 可用 | `/api/health` `/api/status` `/api/clients` `/api/proxies` `/api/config`，可设 Bearer token |
-| 多平台 | ✅ 可用 | linux/darwin/windows × amd64/arm64，`scripts/build-release.*` 一键出 12 个产物 + SHA256 |
-| 配置校验 | ✅ 可用 | 未知配置项会**报出来**而不是静默忽略；`--check` 只校验不启动 |
+| 密钥派生 | ✅ 可用 | 口令经 HKDF-SHA256 派生 32 字节密钥；口令留空则用 auth_token |
+| TLS 传输层 | ✅ 可用 | `[transport] enable_tls`，控制端口与数据连接都走 TLS，可用 `ca_file` 做证书校验 |
+| 主机身份 | ✅ 可用 | Ed25519 身份签名，服务端可用 `allowed_keys` 白名单与 `require_identity` 强制；对访客连接同样生效 |
+| 抗量子密钥协商 | ✅ 可用 | `encryption.post_quantum`：X25519 与 ML-KEM-768 混合（HKDF 同时纳入两者），每条数据连接单独派生密钥 |
+| 零知识证明 | ✅ 可用 | `auth_method = "nizk"`：访客用 P-256 上的 Schnorr 证明自己知道 secret_key，过程中不发送该值 |
+| 带宽账本 | ✅ 可用 | Ed25519 签名、哈希链式追加的用量记录（JSONL），`GET /api/ledger` 发布公钥与条目，`--verify-ledger` 可离线校验；改一个字节或换一串公钥都会失败 |
+| 去中心化目录 | ✅ 可用 | 基于 Kademlia 的 DHT（160 位、k 桶、迭代查找）；服务端把已发布的代理写成记录，客户端可用 `dht.discover` 按名字找服务器，运维可用 `--dht-lookup` / `--discover` |
+| 三层隧道 | ⚠️ 仅 Linux | `[vpn]`：客户端从服务端领取地址，IP 包经控制连接转发；服务端是共享一张网卡的路由器。Linux 上打开或创建 tun 设备；其它平台**明确拒绝启动**并说明缺少什么，不会静默降级 |
+| 流量混淆 | ✅ 可用 | `pad_to` 补齐帧长度、`jitter_millis` 加抖动；`disguise = "tls-record"` 把每个写入包进 TLS 1.2 应用数据记录 |
 | 访问控制 | ✅ 可用 | `allow_cidrs` / `deny_cidrs` 在握手前执行；无法解析的来源在存在规则时按拒绝处理 |
 | 连接限流 | ✅ 可用 | 按来源地址的令牌桶，在握手前执行；空闲桶会被回收 |
-| 审计日志 | ✅ 可用 | JSON Lines，记录接入/拒绝、认证失败、上下线、代理注册与拒绝；按大小轮转 |
+| 审计日志 | ✅ 可用 | JSON Lines，记录接入/拒绝、认证失败、上下线、代理注册与拒绝、访客接受与拒绝、打洞结果、隧道地址分配；按大小轮转 |
 | Prometheus 指标 | ✅ 可用 | `GET /metrics`（文本格式 0.0.4），含连接、认证失败、拒绝、流、双向字节与按隧道的序列 |
 | 健康探针 | ✅ 可用 | `GET /healthz` 恒 200；`GET /readyz` 在监听器未就绪或正在关闭时返回 503 |
-| 帧长度填充与抖动 | ✅ 可用 | `[obfuscation] pad_to` / `jitter_millis`，在加密之后补齐，隐藏负载的精确长度 |
-| 单元 + 端到端测试 | ✅ 可用 | 含"访问者→隧道→本地服务"的真实回环测试，明文与加密两种模式 |
+| Web 面板 | ✅ 可用 | 单页、自带资源（编译进二进制）、中英双语、手机可用；含 `/api/ledger` 与 `/api/dht`，代理池的成员数与可用数在代理表格中显示 |
+| 容器与编排 | ✅ 可用 | `Dockerfile`（多阶段 → distroless）与 `deploy/kubernetes/` 清单；凭据可用环境变量提供，不必写进 ConfigMap |
+| 多平台 | ✅ 可用 | linux/darwin/windows × amd64/arm64，`scripts/build-release.*` 一键出 12 个产物 + SHA256 |
+| 配置校验 | ✅ 可用 | 未知配置项会**报出来**而不是静默忽略；`--check` 只校验不启动 |
+| 单元 + 端到端测试 | ✅ 可用 | 含"访问者→隧道→本地服务"的真实回环测试，明文与加密两种模式；另有 38 项检查的运维脚本 `scripts/smoke-test.ps1` |
 
 ### 这一版没有什么
 
-v3.0.0 及更早版本的 README 列出了 20 项功能。对全部 Go 源码检索下列关键词，
-出现次数均为 **0**：`webrtc`、`dht`、`blockchain`、`kyber`、`dilithium`、`zk-snark`、
-`quic`、`mptcp`、`tun`、`tap`。相关描述已从文档中删除。当前**没有实现**的：
+以下能力**没有实现**，文档与配置示例里不再出现对应描述：
 
-- ❌ WebRTC / P2P 直连、去中心化 DHT、区块链与代币激励、零知识证明、抗量子加密（Kyber/Dilithium）
-- ❌ UDP / HTTP / HTTPS / STCP / XTCP / SUDP 等代理类型（只实现了 TCP；配成别的类型会被**明确拒绝**，不会静默失效）
-- ❌ TUN/TAP 虚拟网卡与 VPN 数据面、多路径传输、移动端 App
-- ❌ 负载均衡（`load_balance` 设为非默认值时会打印"尚未实现"警告）、Kubernetes 部署清单
-- ❌ TLS 传输层：`enable_tls` 属于未知键，会被报告而不是被忽略；负载加密由 `[encryption]` 提供
-
-`[vpn]` 配置段会被解析并忽略，启动时打印警告。
+- ❌ **移动端 App**。本仓库只产出服务端与客户端两个可执行程序，没有 iOS/Android 工程，
+  也没有可用的移动端工具链或设备。
+- ❌ **Windows 与 macOS 的 tun 设备**。三层隧道只在 Linux 上打开设备；Windows 需要 Wintun
+  驱动，macOS 需要 utun 控制套接字，本程序都不安装也不打开。Linux 那条路径每次 CI 都会
+  交叉编译，但**没有在真实 tun 设备上运行过**；非 Linux 平台启动 `vpn.enabled = true`
+  会直接报错退出。
+- ❌ **机器学习的路由或调度**。`load_balance = "adaptive"` 的代价函数是"移动平均时延 ×
+  连续失败惩罚"，没有模型、没有训练、没有历史样本。
+- ❌ **区块链、代币或激励**。带宽账本是一条签名哈希链，没有共识、没有货币、没有矿工。
+- ❌ **WebRTC**。XTCP 用的是自己的 UDP 打洞实现，不依赖 WebRTC 协议栈。
+- ❌ **zk-SNARK**。`nizk` 是 P-256 上的 Schnorr 证明：它能证明"知道秘密"而不泄露秘密，
+  但不具备简洁证明、可信设置等性质，名称按实际能力书写。
+- ❌ **TLS 会话模拟**。`disguise = "tls-record"` 只是把写入包进 TLS 记录头，没有握手，
+  能骗过只看首字节的识别器，骗不过会建模 TLS 会话的识别器。
 
 ### 加密怎么开
 
@@ -114,25 +126,51 @@ enabled = true
 algorithm = "xchacha20-poly1305"   # 或 "aes-256-gcm"
 passphrase = ""                     # 留空 = 用 auth_token 派生
 salt = "aethertunnel"               # 两端必须相同
+post_quantum = true                 # 再用 X25519 + ML-KEM-768 协商每条连接的密钥
 ```
 
-说明：密钥不是 auth_token 本身，而是 `HKDF-SHA256(passphrase, salt)` 派生的 32 字节；
+密钥不是 auth_token 本身，而是 `HKDF-SHA256(passphrase, salt)` 派生的 32 字节；
 每个数据包（控制帧）与每条隧道记录都有独立随机 nonce，篡改会被 AEAD 拒绝并断开连接。
-留空口令时"能认证的人就能解密"这一点依然成立，想彻底分离就把 `passphrase` 单独设成另一个密钥。
+开启 `post_quantum` 后，会话密钥由 X25519 与 ML-KEM-768 两个共享秘密共同派生，
+每条数据连接再用 `HKDF(session_key, stream_id)` 单独派生一把密钥。
 
 ### 面板
 
-- 资源用 `go:embed` 打进二进制，**不需要**在二进制旁边放 `web/` 目录（上一版是相对路径读取，发布的压缩包里根本没有这些文件）。
+- 资源用 `go:embed` 打进二进制，**不需要**在二进制旁边放 `web/` 目录。
 - 默认只监听 `127.0.0.1`。要让外部访问，请设置 `[dashboard].token`，之后 `/api/*` 需要
-  `Authorization: Bearer <token>`；`/api/health` 始终公开且不含敏感信息。
+  `Authorization: Bearer <token>`；`/api/health`、`/healthz`、`/readyz` 始终公开且不含敏感信息。
 - 面板轮询 `/api/status`、`/api/clients`、`/api/proxies`，**屏幕上每个数字都来自服务器实时状态**；
-  没有客户端时显示空状态，不会造假数据。上一版的面板一次网络请求都没有，数字全是 `Math.random()`。
+  没有客户端时显示空状态。
+- `/api/ledger` 返回公钥、链头、最近的账本条目与按客户端汇总的用量；条目本身已签名，
+  拿到响应的人可以独立校验。
+- `/api/dht` 返回 DHT 节点标识、绑定地址、已知节点数、对外通告的主机名与当前已通告的代理名。
+
+### 运维
+
+```bash
+# 校验配置
+./aethertunnel-server --config server.toml --check
+
+# 按名字查一条代理记录（用服务端配置即可，查询节点自己绑临时端口）
+./aethertunnel-server --config server.toml --dht-lookup ssh
+
+# 从客户端角色解析同一个名字
+./aethertunnel-client --config client.toml --discover ssh
+
+# 离线核对带宽账本，只需要公钥
+./aethertunnel-server --verify-ledger ledger.jsonl --ledger-key <64 位十六进制公钥>
+```
+
+`scripts/smoke-test.ps1` 会构建两个二进制、起一个本地服务集合（TCP/UDP/HTTP 回显）、
+拉起服务端与两个客户端、逐项验证上表里的能力，最后打印通过数与失败项。它会绑定回环端口，
+运行结束后清理临时目录；加 `-Keep` 保留现场，加 `-ProgressLog <path>` 实时记录进度。
 
 ### 构建与测试
 
 ```bash
 make build          # 本机两个二进制 → bin/
-make test           # 单元 + 端到端测试（隧道测试会绑定回环端口）
+make test           # 单元 + 端到端测试
+make test-race      # 同上，带竞态检测（需要 CGO 与 C 编译器）
 make vet
 make cross          # 12 个产物 + dist/SHA256SUMS
 make check          # 校验示例配置
@@ -141,20 +179,25 @@ make check          # 校验示例配置
 Windows 无 make 时：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 -Version v3.1.0
+powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 -Version v3.2.0
+powershell -ExecutionPolicy Bypass -File scripts\smoke-test.ps1
 ```
 
 ### 从旧版本升级
 
 旧版命令行参数与配置键有一部分已经不同，请读 [`docs/MIGRATION.md`](docs/MIGRATION.md)。
-一句话版本：`auth_token`、`bind_port`、`[[proxies]]` 的写法保持不变，其余请按新示例重写。
+一句话版本：`auth_token`、`bind_port`、`[[proxies]]` 的写法保持不变；`[vpn]` 段已按实现重写，
+旧键 `bind_addr`/`port`/`auth_token`/`protocol` 不再被接受。
 
 ### 安全模型
 
-- 认证是**共享密钥**（`auth_token`），不是证书；token 用常数时间比较，失败时**不会**把 token 写进日志。
-- 没有 TLS 传输层加密：要么只在可信网络里跑，要么打开 `[encryption]`（它保护的是负载，不含协议外观）。
-- 面板 API 只有 Bearer token 一种保护，没有登录会话、没有多用户、没有审计日志。
-- 隧道只转发 TCP；没有连接级别的访问控制（谁能连到服务器的 `remote_port` 谁就能用这条隧道）。
+- 认证可以是共享密钥（`auth_token`）或 Ed25519 身份，两者都不是证书；token 用常数时间比较，
+  失败时**不会**把 token 写进日志。
+- `[encryption]` 保护负载，`[transport] enable_tls` 提供传输层加密与服务器证书认证，
+  `[obfuscation] disguise` 只改变外观、不提供任何机密性。
+- 面板 API 只有 Bearer token 一种保护，没有登录会话、没有多用户。
+- 私有隧道（stcp/sudp/xtcp）的 secret_key 用 `auth_method = "nizk"` 时不会出现在线上，
+  但代理的元数据（名字、类型、地址）会出现在 DHT 里，除非把 `[dht]` 关掉。
 
 详见 [`docs/SECURITY.md`](docs/SECURITY.md)。
 
@@ -164,16 +207,13 @@ powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 -Version v3.1
 
 ### What it is
 
-AetherTunnel publishes a TCP service that sits behind NAT onto a machine with a public
-address. A visitor connects to the server's public port; the bytes travel back through
-the tunnel to the service running on your own machine.
+AetherTunnel publishes a service that sits behind NAT onto a machine with a public
+address. A visitor connects to the server's port; the bytes travel back through the
+tunnel to the service running on your own machine.
 
 ```
 visitor ──► server public port ──► [tunnel] ──► client ──► local service 127.0.0.1:22
 ```
-
-The forwarding, the optional encryption and the dashboard's numbers are all real in this
-release. What is *not* real is just as important — see "What this release does not do".
 
 ### Quick start
 
@@ -223,31 +263,54 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 
 | Capability | State | Notes |
 |---|---|---|
-| TCP tunnelling | ✅ works | visitor → public port → client → local service; half-close is preserved so responses are not truncated |
+| Proxy types | ✅ works | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp`; http and https use one shared listener and are selected by the Host header; stcp, sudp and xtcp are private |
+| XTCP direct path | ✅ works | its own UDP hole punching (HMAC-SHA256 simultaneous open over a reliable ordered byte stream) with an automatic fall back to the server's relay; both outcomes are logged and audited |
+| TCP and UDP forwarding | ✅ works | visitor → server port → client → local service; TCP preserves half-close, UDP keeps one session per source address |
+| Load balancing | ✅ works | several clients may publish one name as a pool; strategies `round-robin`, `random`, `latency`, `failover`, `adaptive` |
+| Multipath | ✅ works | a datagram proxy spreads traffic over up to 8 data connections (`multipath`), and the loss of one does not stop the rest |
 | Control session | ✅ works | auth, heartbeat, exponential-backoff reconnect with jitter, connection limit |
-| Tunnel registration | ✅ works | the server really binds `remote_port`; registration failures are reported to the client |
 | Optional packet encryption | ✅ works | XChaCha20-Poly1305 or AES-256-GCM, **off** by default, covers control frames and tunnelled bytes |
-| Key derivation | ✅ works | HKDF-SHA256 over the passphrase (any length); empty passphrase falls back to `auth_token` |
-| Web dashboard | ✅ works | one self-contained page, embedded in the binary, English + 简体中文, usable on a phone |
-| Dashboard API | ✅ works | `/api/health`, `/api/status`, `/api/clients`, `/api/proxies`, `/api/config`, optional Bearer token |
+| Key derivation | ✅ works | HKDF-SHA256 over the passphrase; an empty passphrase falls back to `auth_token` |
+| TLS transport | ✅ works | `[transport] enable_tls` wraps the control port and every data connection; `ca_file` pins the server certificate |
+| Host identity | ✅ works | Ed25519 assertions, with `allowed_keys` and `require_identity` on the server, checked on data connections from visitors as well |
+| Post-quantum key agreement | ✅ works | `encryption.post_quantum`: X25519 together with ML-KEM-768, both folded into one HKDF, and a separate key per data connection |
+| Proof of token knowledge | ✅ works | `auth_method = "nizk"` proves knowledge of `secret_key` with a Schnorr proof over P-256; the secret itself is never sent |
+| Bandwidth ledger | ✅ works | Ed25519-signed, hash-chained usage records (JSONL); `GET /api/ledger` publishes the public key and the entries, and `--verify-ledger` checks them offline; one altered byte or a different key fails |
+| Decentralised directory | ✅ works | a Kademlia DHT (160-bit, k-buckets, iterative lookup); the server publishes one record per proxy, a client resolves a name with `dht.discover`, and operators use `--dht-lookup` or `--discover` |
+| Layer-3 tunnel | ⚠️ Linux only | `[vpn]`: a client is given an address and its IP packets travel on the control connection; the server is a router over one shared interface. Linux opens or creates a tun device; every other platform **refuses to start** and says what is missing instead of degrading silently |
+| Traffic obfuscation | ✅ works | `pad_to` rounds frame lengths, `jitter_millis` adds delay, and `disguise = "tls-record"` puts every write inside TLS 1.2 application-data records |
+| Access control | ✅ works | `allow_cidrs` / `deny_cidrs` before the handshake; an unparseable source is refused when any rule exists |
+| Rate limiting | ✅ works | a per-source token bucket before the handshake, with idle buckets reclaimed |
+| Audit log | ✅ works | JSON Lines for accepted and refused connections, authentication failures, disconnects, proxy registrations and refusals, visitor outcomes, punch results and tunnel address assignments; rotates by size |
+| Prometheus metrics | ✅ works | `GET /metrics` in the text format 0.0.4: connections, authentication failures, refusals, streams, bytes both ways and per-tunnel series |
+| Health probes | ✅ works | `GET /healthz` is always 200; `GET /readyz` is 503 before the listener is up and while shutting down |
+| Web dashboard | ✅ works | one self-contained embedded page, English + 简体中文, usable on a phone, including `/api/ledger` and `/api/dht`; the proxies table shows how many members a pool has and how many are healthy |
+| Containers and orchestration | ✅ works | a multi-stage `Dockerfile` ending in distroless, and manifests under `deploy/kubernetes/`; credentials can come from environment variables instead of the ConfigMap |
 | Platforms | ✅ works | linux/darwin/windows × amd64/arm64; `scripts/build-release.*` produces 12 binaries + SHA256 |
 | Config validation | ✅ works | unknown keys are **reported**, not ignored; `--check` validates without starting |
-| Tests | ✅ works | unit tests plus a real end-to-end tunnel test, in both cleartext and encrypted modes |
+| Tests | ✅ works | unit tests, a real end-to-end tunnel test in cleartext and encrypted modes, and a 38-check operations script, `scripts/smoke-test.ps1` |
 
 ### What this release does not do
 
-Earlier releases advertised twenty "disruptive" features. **None of them existed in the
-code** — a search of every Go file for `webrtc`, `dht`, `blockchain`, `kyber`, `dilithium`,
-`zk-snark`, `quic`, `mptcp` and `tun` returns **zero hits**. Those claims have been removed,
-because a manual that describes software you cannot run is worse than no manual. Not
-implemented today:
-
-- ❌ WebRTC / P2P, DHT, blockchain or bandwidth market, zero-knowledge proofs, post-quantum crypto
-- ❌ UDP, HTTP, HTTPS, STCP, XTCP, SUDP proxy types — only TCP exists, and asking for another type is refused with an explicit error rather than silently ignored
-- ❌ TUN/TAP or any VPN data path, multipath, traffic obfuscation, AI routing, mobile apps
-- ❌ Load balancing, Prometheus metrics, Kubernetes manifests
-
-The `[obfuscation]` and `[vpn]` config sections still parse but are ignored, and startup says so.
+- ❌ **Mobile apps.** This repository produces a server and a client binary. There is no
+  iOS or Android project, and no mobile toolchain or device was used to build or test one.
+- ❌ **A tun device on Windows or macOS.** The layer-3 tunnel opens a device only on Linux.
+  Windows would need the Wintun driver and macOS a utun control socket; this program installs
+  neither and opens neither. The Linux path is cross-compiled on every CI run but **has not
+  been exercised on a real tun device**. On any other platform, `vpn.enabled = true` makes the
+  server exit with an error naming what is missing.
+- ❌ **Learned routing.** `load_balance = "adaptive"` scores a member by its moving-average
+  response time multiplied by a penalty for consecutive failures. There is no model, no
+  training and no sample history.
+- ❌ **Blockchain, tokens or incentives.** The bandwidth ledger is a signed hash chain: no
+  consensus, no currency and no miners.
+- ❌ **WebRTC.** XTCP uses its own UDP hole punching and does not depend on the WebRTC stack.
+- ❌ **zk-SNARK.** `nizk` is a Schnorr proof over P-256. It proves knowledge of a secret
+  without revealing it, and it has none of the succinctness or setup properties of a SNARK,
+  so it is not called one.
+- ❌ **TLS session mimicry.** `disguise = "tls-record"` wraps writes in TLS record headers and
+  performs no handshake: it defeats a detector that reads the first bytes, not one that models
+  a TLS session.
 
 ### Encryption
 
@@ -259,25 +322,57 @@ enabled = true
 algorithm = "xchacha20-poly1305"   # or "aes-256-gcm"
 passphrase = ""                     # empty = derive from auth_token
 salt = "aethertunnel"               # must match on both ends
+post_quantum = true                 # agree per-connection keys with X25519 + ML-KEM-768
 ```
 
-The key on the wire is `HKDF-SHA256(passphrase, salt)`, not the token itself; every
-control frame and every stream record carries a fresh random nonce, and a tampered record
-is rejected by the AEAD and drops the connection.
+The key is `HKDF-SHA256(passphrase, salt)`, not the token itself. Every control frame and
+every stream record carries a fresh random nonce, and a tampered record is rejected by the
+AEAD and drops the connection. With `post_quantum` on, the session key is derived from both
+an X25519 and an ML-KEM-768 secret, and every data connection derives its own key with
+`HKDF(session_key, stream_id)`.
 
 ### Dashboard
 
-Assets are embedded with `go:embed`, so a released binary serves its own UI with nothing
-next to it. It listens on loopback by default; set `[dashboard].token` to expose it, after
-which `/api/*` needs `Authorization: Bearer <token>` (`/api/health` stays public). Every
-number on screen comes from live server state — empty lists say they are empty instead of
-showing invented rows.
+Assets are embedded with `go:embed`, so a released binary serves its own UI with nothing next
+to it. It listens on loopback by default; set `[dashboard].token` to expose it, after which
+`/api/*` needs `Authorization: Bearer <token>` (`/api/health`, `/healthz` and `/readyz` stay
+public and carry no secrets). Every number on screen comes from live server state; empty lists
+say they are empty.
+
+- `/api/ledger` returns the signing public key, the chain head, the most recent entries and the
+  per-client totals. The entries are already signed, so a reader can check them independently.
+- `/api/dht` returns the DHT node identity, its bound address, the number of known peers, the
+  host it advertises and the proxy names it currently announces.
+
+### Operations
+
+```bash
+# validate a configuration without starting
+./aethertunnel-server --config server.toml --check
+
+# resolve a proxy record by name (the server's own configuration works: the query node binds
+# an ephemeral port)
+./aethertunnel-server --config server.toml --dht-lookup ssh
+
+# the same from a client-role configuration
+./aethertunnel-client --config client.toml --discover ssh
+
+# check a bandwidth ledger offline; only the public key is needed
+./aethertunnel-server --verify-ledger ledger.jsonl --ledger-key <64 hex characters>
+```
+
+`scripts/smoke-test.ps1` builds both binaries, starts a set of local services (TCP, UDP and
+HTTP echoes), starts the server and two clients, exercises every capability in the table above
+and prints the number of checks that passed and any that failed. It binds loopback ports and
+removes its working directory when it finishes; `-Keep` preserves the directory and
+`-ProgressLog <path>` appends each step and verdict as it happens.
 
 ### Build and test
 
 ```bash
 make build     # both binaries into bin/
 make test      # unit + end-to-end tests
+make test-race # the same under the race detector (needs CGO and a C compiler)
 make vet
 make cross     # 12 artifacts + dist/SHA256SUMS
 make check     # validate the example configs
@@ -286,18 +381,21 @@ make check     # validate the example configs
 ### Upgrading from an older release
 
 Some flags and config keys changed; see [`docs/MIGRATION.md`](docs/MIGRATION.md). In short:
-`auth_token`, `bind_port` and the `[[proxies]]` blocks keep their meaning, everything else
-should be rewritten from the new examples.
+`auth_token`, `bind_port` and the `[[proxies]]` blocks keep their meaning, the `[vpn]` section
+has been rewritten around what is implemented, and the old keys `bind_addr`, `port`,
+`auth_token` and `protocol` in that section are no longer accepted.
 
 ### Security model, stated plainly
 
-- Authentication is a **shared secret** (`auth_token`), not a certificate. The comparison is
-  constant-time and a failed attempt never writes the offered token to the log.
-- There is no transport-level TLS. Either keep it on a trusted network or enable
-  `[encryption]` — which protects the payload, not the protocol's appearance.
-- The dashboard has a single Bearer token: no user accounts, no sessions, no audit log.
-- Only TCP is tunnelled, and there is no per-connection access control: whoever can reach a
-  `remote_port` can use that tunnel.
+- Authentication is a shared secret (`auth_token`) or an Ed25519 identity, and neither is a
+  certificate. The token comparison is constant-time and a failed attempt never writes the
+  offered token to the log.
+- `[encryption]` protects the payload, `[transport] enable_tls` provides transport encryption
+  and server authentication, and `[obfuscation] disguise` changes only the appearance: it
+  provides no confidentiality.
+- The dashboard has a single Bearer token: no user accounts, no sessions.
+- A private tunnel's `secret_key` is not sent on the wire when `auth_method = "nizk"`, but the
+  proxy's metadata (name, type, address) is published to the DHT unless `[dht]` is disabled.
 
 See [`docs/SECURITY.md`](docs/SECURITY.md) for the full list, including what an attacker on
 the path can still learn.

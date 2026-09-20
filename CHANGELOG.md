@@ -12,34 +12,119 @@
 
 ## [Unreleased]
 
+---
+
+## [3.2.0] — 2026-09-20
+
+本版本实现了 v3.1.0 文档中列为"尚未实现"的全部条目（移动端应用与 Windows/macOS 的 tun
+设备除外，见文末），并补齐 Kubernetes 清单与容器镜像。
+
 ### 新增
 
-**运维与策略层（已完成并验证）**
+**运维与策略层**
 
 - `[server] allow_cidrs` / `deny_cidrs`：按 CIDR 的访问控制，在握手之前执行；
   先匹配 deny，再匹配 allow（allow 为空表示允许全部来源），无法解析的来源地址在存在规则时按拒绝处理。
 - `[server] rate_limit_per_second` / `rate_limit_burst`：按来源地址的令牌桶限流，
   同样在握手之前执行；空闲桶会被回收，不在内存中按历史来源地址无限增长。
 - `[audit]`：JSON Lines 审计日志，记录接入/拒绝、认证失败、客户端上下线、代理注册与拒绝、
-  ACL 与限流拒绝；按 `max_bytes` 轮转，保留一份历史文件。
+  ACL 与限流拒绝、访客接受与拒绝、打洞结果与隧道地址分配；按 `max_bytes` 轮转，保留一份历史文件。
 - `[metrics]`：`GET /metrics` 输出 Prometheus 文本格式（版本 0.0.4），
   含控制连接、认证失败、ACL 拒绝、限流拒绝、数据连接、流数量与并发、双向字节、UDP 数据报与活动会话，
-  以及按隧道标签的流与字节序列。可设置 `[metrics] token`，
-  该 token 与面板 token 任一可用。
+  以及按隧道标签的流与字节序列。可设置 `[metrics] token`，该 token 与面板 token 任一可用。
 - `GET /healthz` 与 `GET /readyz`：前者恒为 200，后者在监听器未就绪或正在关闭时返回 503；
   两者都不需要令牌。
-- `[obfuscation] pad_to` / `jitter_millis`：帧负载按固定粒度补齐、写入前加入随机延迟。
-  补齐在加密之后进行，帧内保留真实长度前缀，因此帧长度只暴露"落在哪个桶"；
-  接收端仅凭帧标志位去补齐，两端不需要配置一致。该校验和与填充不改变加密强度，
-  也不使流量呈现为其他协议。
-- `GET /healthz` 与 `GET /readyz` 之外的运维准备（Kubernetes 清单、容器镜像）尚在后续阶段。
 
-### 尚未实现
+**代理类型与调度**
 
-- 负载均衡：`[server] load_balance` 会被解析，但设为非默认值时会打印"尚未实现"的警告，
-  第二个注册同名代理的客户端仍会被拒绝。
-- 其余代理类型（UDP/HTTP/HTTPS/STCP/XTCP/SUDP）、TLS 传输层、P2P、DHT、VPN/TUN、
-  多路径、量子抗性密钥交换、零知识证明、带宽账本、移动端应用。
+- `udp`：每个访问者来源地址一个会话，服务器用一个 UDP 套接字承载全部会话。
+- `http` / `https`：服务器上一套共享监听，按请求的 Host 头选择隧道，支持精确域名、
+  `*.通配` 与 `subdomain_host` 后缀匹配；作为反向代理转发并保留流式响应。
+- `stcp` / `sudp` / `xtcp`：私有隧道，只对知道 `secret_key` 的访客开放，不开放公网端口。
+- `xtcp` 打洞：自研 UDP 打洞（HMAC-SHA256 同时打开 + 可靠有序字节流 `pkg/reliable`），
+  失败时经 `[server] p2p_port` 的会合服务回退到中继，两种情况都记入日志与审计。
+- 代理池与 `[server] load_balance`：同名代理可由多个客户端组成池，策略为
+  `round-robin`、`random`、`latency`、`failover`、`adaptive`（时延移动平均 × 连续失败惩罚）。
+- `multipath`：数据报代理最多用 8 条数据连接承载，单条路径故障不影响整个会话。
+- `GET /api/proxies` 增加 `member_count`、`members`、`healthy`、`consecutive_failures` 等池状态字段；
+  控制台的代理表格新增「成员」列，显示成员数与其中可用（healthy）的个数。
+
+**加密与身份**
+
+- `[transport] enable_tls`：控制端口与所有数据连接使用 TLS，客户端可用 `ca_file` 校验证书。
+- `[identity]`：Ed25519 身份签名，服务端可用 `allowed_keys` 白名单、`require_identity` 强制；
+  数据连接与访客连接同样校验，不再只有控制连接校验。
+- `[encryption] post_quantum`：X25519 与 ML-KEM-768 混合密钥协商，每个会话派生会话密钥，
+  每条数据连接再用 `HKDF(session_key, stream_id)` 派生独立密钥。
+- `auth_method = "nizk"`：访客用 P-256 上的 Schnorr 证明自己知道 `secret_key`，不发送该值。
+
+**网络与目录**
+
+- `[ledger]`：Ed25519 签名、哈希链式追加的带宽账本（JSONL）。客户端断开时按代理写入一条，
+  `GET /api/ledger` 发布公钥、链头、最近条目与按客户端汇总；`--verify-ledger` 离线校验，
+  篡改任何一字节或换一串公钥都会失败。
+- `[dht]`：Kademlia DHT（160 位标识、k 桶、迭代查找、值/提供者两个命名空间）。服务端把每个
+  已发布的代理写成记录（记录里带地址与有效期），客户端可用 `dht.discover` 按名字解析服务器地址，
+  并在每次重连前重新解析；运维可用 `--dht-lookup`（服务端配置）与 `--discover`（客户端配置）。
+  通告自带有效期，服务端下掉代理后记录会在一个通告周期内失效。
+- `[vpn]`：三层隧道。客户端向服务端申请地址，IP 包作为 `TypeVPNPacket` 帧在控制连接上传输；
+  服务端用 `pkg/vpn` 的地址池与路由器在多个客户端之间分发。Linux 上打开或创建 tun 设备
+  （`device` 为空则向内核申请名字，MTU 写入网卡）；其它平台启动即报错并说明缺少什么。
+  地址池不会分配网络地址、广播地址与服务端自用地址；非本客户端的源地址会被丢弃。
+
+**混淆与交付**
+
+- `[obfuscation] disguise = "tls-record"`：把每个写入包进 TLS 1.2 应用数据记录，
+  超过 16384 字节的写入按记录上限拆分，读侧透明重组。它不做握手，只改变外观。
+- `Dockerfile`（多阶段构建 → distroless 非 root）与 `deploy/kubernetes/`（Namespace、
+  ConfigMap、Secret 示例、Deployment、Service、kustomization）。
+- `AETHERTUNNEL_AUTH_TOKEN`、`AETHERTUNNEL_DASHBOARD_TOKEN`、
+  `AETHERTUNNEL_ENCRYPTION_PASSPHRASE`：凭据可由环境变量提供，并在校验之前生效，
+  因此配置文件里可以完全不放密钥。
+- 运维子命令：`--dht-lookup`、`--verify-ledger`（服务端），`--discover`（客户端）。
+- `scripts/smoke-test.ps1` 扩到 38 项检查：新增目录（发布、两种查询、未知名）、
+  账本（记账、校验、篡改检测、异钥拒绝）、隧道设备缺失时的拒绝，以及全程开启的连接伪装；
+  新增 `-ProgressLog` 参数与 `-Keep` 保留现场。
+- CI 升到 Go 1.24（`crypto/mlkem` 需要），新增六个目标的交叉编译检查与 Linux 上的 `-race` 任务。
+
+### 修复（由新测试发现）
+
+- `pkg/vpn` 的路由器会把读取缓冲区切片排进发送队列，缓冲区被下一次读取复用后，
+  排在队列里的包内容会被改写。现在入队前复制，测试用两个不同长度的包复现过该问题。
+- `Session.framer` 在会话生命周期中会被抗量子握手替换，而隧道协程同时读取它，
+  存在数据竞争；改为加锁访问的 `Framer()` / `SetFramer()`。
+- `Server.listener` 由 `Run` 写入、由面板与测试读取，同样存在数据竞争；改为加锁访问。
+- `dht.Table` 缺少删除本地记录的方法，导致服务端下掉代理后仍会继续重新发布；
+  新增 `Forget`。
+- `-dht-lookup` 使用服务端自身配置时会去绑定服务端已经占用的 DHT 端口而失败；
+  查询节点现在改绑临时端口，且在没有配置 `bootstrap` 时向 `listen_addr` 指向的节点查询。
+- 客户端 `--discover` 与 `dht.discover` 未等待加入 DHT 就查询，首次必然失败；
+  现在先完成 bootstrap 再解析。
+- 帧长度填充的抖动与补齐在 `[obfuscation] enabled = false` 时也会生效；
+  现在 disguise 未启用时会给出警告。
+- `obfs` 的 TLS 记录头校验只检查了主版本号，`0x0301`（TLS 1.0）会被当成合法记录；
+  现在要求完整的 `0303`。
+- IPv6 包的长度校验把"负载长度"当成"整包长度"，导致所有 IPv6 包被判为畸形。
+- 测试端口分配在 Windows 上会取到被系统保留的端口，UDP 绑定随即失败；
+  UDP 代理测试改用 UDP 端口探测，服务端测试与运维脚本同时探测 TCP 与 UDP。
+- `Server.setListener` 递归调用自己，在非可重入互斥锁上自锁死，服务端一启动就卡住；
+  现在直接赋值。
+
+### 兼容性
+
+- **线协议升到 4**（`ProtocolVersion = 4`）：本版本新增了帧填充标志位与 16–18 号消息类型，
+  3 版对端不认识它们——它会把填充帧里的长度前缀当成数据而拒绝该帧。因此两端必须一起升级。
+  版本不一致时握手仍然成功，但两端都会在日志里报出 `protocol mismatch`，
+  这一条比"看起来能连上、部分功能静默失效"更容易排查。
+- 配置文件向后兼容 v3.1.0：`[server]`、`[client]`、`[[proxies]]` 的既有键含义未变，
+  新增段都是可选的，默认关闭。
+
+### 仍未实现
+
+- **移动端应用**：本仓库只产出服务端与客户端两个可执行程序，没有 iOS/Android 工程。
+- **Windows 与 macOS 的 tun 设备**：三层隧道只在 Linux 上打开设备；Windows 需要 Wintun 驱动，
+  macOS 需要 utun 控制套接字，本程序都不提供。Linux 路径每次 CI 交叉编译，但未在真实 tun
+  设备上运行过。
 
 ---
 

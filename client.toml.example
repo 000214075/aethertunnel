@@ -1,10 +1,16 @@
-# AetherTunnel client configuration — v3.1.0
+# AetherTunnel client configuration — v3.2.0
 #
 # Start with:  aethertunnel-client --config client.toml
 # Validate:    aethertunnel-client --config client.toml --check
+# Resolve a proxy name through the DHT:  aethertunnel-client --config client.toml --discover ssh
+# Print this client's identity key:      aethertunnel-client --config client.toml --identity
+#
+# The auth token may also come from the environment:
+#   AETHERTUNNEL_AUTH_TOKEN
 
 [client]
-# host:port of the AetherTunnel server.
+# host:port of the AetherTunnel server. Leave it empty and set [dht] discover to
+# resolve the address from the DHT instead.
 server_addr = "127.0.0.1:7001"
 
 # Must match the server's auth_token.
@@ -29,14 +35,81 @@ enabled = false
 algorithm = "xchacha20-poly1305"   # or "aes-256-gcm"
 passphrase = ""
 salt = "aethertunnel"
+# Must match the server. Agrees a separate key for every data connection.
+post_quantum = false
 
-# One [[proxies]] block per service you want to publish. Only type "tcp" is
-# implemented in this version; other types are rejected with an explicit error
-# rather than being accepted and then doing nothing.
+[transport]
+# TLS to the server. ca_file is the trust anchor; empty uses the system roots.
+enable_tls = false
+ca_file = ""
+# Overrides the name checked against the certificate. Empty uses the host part of
+# client.server_addr.
+server_name = ""
+# Accept any certificate. The connection is private but the server is not
+# authenticated, and the setting is reported as a warning.
+insecure_skip_verify = false
+
+[identity]
+# Present an Ed25519 key instead of, or as well as, the shared token. The key is
+# generated on first use.
+enabled = false
+key_file = "aethertunnel-identity.key"
+
+# Padding and jitter apply to what this client writes. The disguise has to match the
+# server, because it changes the bytes on the wire rather than how many of them
+# there are.
+[obfuscation]
+enabled = false
+pad_to = 256
+jitter_millis = 0
+# disguise = "tls-record"   # must match the server; leave unset for no disguise
+
+# Join a DHT and resolve the server address from it. Combined with an empty
+# client.server_addr this is how a client follows a proxy that moves between
+# servers: the address is re-resolved before every connection attempt.
+[dht]
+enabled = false
+listen_addr = "0.0.0.0:7001"
+bootstrap = []
+node_id = ""
+namespace = "aethertunnel"
+ttl_seconds = 3600
+announce_ttl_seconds = 90
+republish_seconds = 30
+lookup_timeout_seconds = 5
+# The proxy name to resolve when client.server_addr is empty.
+discover = ""
+
+# Layer-3 tunnel: ask the server for an address on its subnet and carry this
+# machine's IP traffic to it.
 #
-# remote_port is the port opened on the *server*; visitors connect there and the
-# bytes are forwarded to local_ip:local_port on this machine. Set remote_port = 0
-# to register the tunnel without a public port.
+# The interface has to exist on this machine. Linux opens or creates a tun
+# interface with this name; other platforms report that they have no tun
+# implementation in this build. The address is assigned by the server and does not
+# come from this file.
+[vpn]
+enabled = false
+device = "tun0"
+# Overrides the MTU the server reports.
+mtu = 0
+
+# One [[proxies]] block per service you want to publish. Types:
+#
+#   tcp    remote_port on the server, forwarded to a local TCP service
+#   udp    remote_port on the server, one session per visitor address
+#   http   reached through the server's shared listener, selected by Host header;
+#          remote_port must be 0 and at least one entry in domains is required
+#   https  the same over TLS
+#   stcp   private: reachable only by a visitor that knows secret_key
+#   sudp   private and datagram based
+#   xtcp   private, tries a direct path between the visitor and this client first
+#          and falls back to the server's relay
+#
+# local_ip and remote_port default to 127.0.0.1 and 0.
+#
+# group pools several clients that publish the same name under one endpoint;
+# server.load_balance decides which one serves a visitor. multipath spreads a
+# datagram proxy over up to 8 data connections.
 
 [[proxies]]
 name = "ssh"
@@ -51,3 +124,31 @@ type = "tcp"
 local_ip = "127.0.0.1"
 local_port = 8000
 remote_port = 8080
+
+# Shared by every client that joins the same group.
+# [[proxies]]
+# name = "pooled-web"
+# type = "tcp"
+# local_ip = "127.0.0.1"
+# local_port = 8000
+# remote_port = 8080
+# group = "web-pool"
+
+# A private tunnel: no public port, and a visitor needs the secret.
+# [[proxies]]
+# name = "database"
+# type = "stcp"
+# local_ip = "127.0.0.1"
+# local_port = 5432
+# secret_key = "CHANGE-ME-a-second-random-secret"
+# auth_method = "secret"   # or "nizk", which proves knowledge without sending it
+
+# One [[visitors]] block per private tunnel you want to reach on this machine.
+# [[visitors]]
+# name = "database"
+# type = "stcp"
+# server_name = "database"
+# bind_addr = "127.0.0.1"
+# bind_port = 15432
+# secret_key = "CHANGE-ME-a-second-random-secret"
+# auth_method = "secret"

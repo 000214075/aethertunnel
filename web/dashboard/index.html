@@ -468,6 +468,7 @@ a { color: var(--accent); }
                 <th data-i18n="proxies.col.localAddr">Local address</th>
                 <th data-i18n="proxies.col.remotePort">Remote port</th>
                 <th data-i18n="proxies.col.client">Client</th>
+                <th data-i18n="proxies.col.members">Members</th>
                 <th data-i18n="proxies.col.activeConns">Active conns</th>
                 <th data-i18n="proxies.col.totalConns">Total conns</th>
                 <th data-i18n="proxies.col.bytesIn">Bytes in</th>
@@ -619,6 +620,9 @@ a { color: var(--accent); }
       'proxies.col.localAddr': 'Local address',
       'proxies.col.remotePort': 'Remote port',
       'proxies.col.client': 'Client',
+      'proxies.col.members': 'Members',
+      'proxies.membersOne': '1 member ({healthy} healthy)',
+      'proxies.members': '{n} members ({healthy} healthy)',
       'proxies.col.activeConns': 'Active conns',
       'proxies.col.totalConns': 'Total conns',
       'proxies.col.bytesIn': 'Bytes in',
@@ -726,6 +730,9 @@ a { color: var(--accent); }
       'proxies.col.localAddr': '本地地址',
       'proxies.col.remotePort': '远端端口',
       'proxies.col.client': '客户端',
+      'proxies.col.members': '成员',
+      'proxies.membersOne': '1 个成员（{healthy} 个可用）',
+      'proxies.members': '{n} 个成员（{healthy} 个可用）',
       'proxies.col.activeConns': '活动连接',
       'proxies.col.totalConns': '累计连接',
       'proxies.col.bytesIn': '入站字节',
@@ -847,6 +854,23 @@ a { color: var(--accent); }
     while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
     var shown = i === 0 ? String(Math.round(n)) : n.toFixed(n < 10 ? 2 : 1);
     return (neg ? '-' : '') + shown + ' ' + units[i];
+  }
+
+  // membersLabel describes a proxy's pool: how many clients registered it, and how
+  // many of them can still provide a stream. A proxy published by one client has
+  // one entry in the list the API returns.
+  function membersLabel(proxy) {
+    var members = (proxy && proxy.members) ? proxy.members : [];
+    var known = Number(proxy && proxy.member_count);
+    var total = !isNaN(known) && known > 0 ? known : members.length;
+    if (!total) return t('common.na');
+    var healthy = 0;
+    members.forEach(function (member) {
+      if (member && member.healthy) healthy++;
+    });
+    return total === 1
+      ? t('proxies.membersOne', { healthy: fmtInt(healthy) })
+      : t('proxies.members', { n: fmtInt(total), healthy: fmtInt(healthy) });
   }
 
   function fmtDuration(seconds) {
@@ -1160,6 +1184,7 @@ a { color: var(--accent); }
       tr.appendChild(makeCell(proxy.local_addr, 'proxies.col.localAddr', 'id'));
       tr.appendChild(makeCell(proxy.remote_port, 'proxies.col.remotePort', 'num'));
       tr.appendChild(makeCell(proxy.client_id, 'proxies.col.client', 'id'));
+      tr.appendChild(makeCell(membersLabel(proxy), 'proxies.col.members', 'num'));
       tr.appendChild(makeCell(fmtInt(proxy.active_connections), 'proxies.col.activeConns', 'num'));
       tr.appendChild(makeCell(fmtInt(proxy.total_connections), 'proxies.col.totalConns', 'num'));
       tr.appendChild(makeCell(fmtBytes(proxy.bytes_in), 'proxies.col.bytesIn', 'num'));

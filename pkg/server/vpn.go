@@ -59,7 +59,7 @@ func openVPN(cfg *config.Config, logger *log.Logger, open DeviceOpener) (*vpnSer
 
 	device, err := open(cfg.VPN.Device, cfg.VPN.MTU)
 	if err != nil {
-		return nil, fmt.Errorf("vpn: %w", err)
+		return nil, err
 	}
 
 	router, err := vpn.NewRouter(device, vpn.Options{MTU: cfg.VPN.MTU, Logger: logger})

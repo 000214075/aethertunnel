@@ -146,28 +146,56 @@ func (d *directory) Lookup(name string) (discovery.Record, error) {
 	return d.node.Resolve(name)
 }
 
-// LookupProxy starts the DHT node described by cfg, resolves one proxy name and
-// shuts the node down again. It is what the server binary's -dht-lookup flag calls,
-// and it needs no running tunnel server: any node that can reach the DHT resolves
-// the same record.
+// LookupProxy resolves one proxy name through the DHT described by cfg and shuts the
+// node down again. It is what the -dht-lookup flag calls, and it needs no running
+// tunnel server: any node that can reach the DHT resolves the same record.
+//
+// The query node binds an ephemeral port rather than the configured one, so this can
+// be run on the host that is already running the server described by the same file.
 func LookupProxy(cfg *config.Config, logger *log.Logger, name string) (discovery.Record, error) {
-	dir, err := openDirectory(cfg, logger)
+	if !cfg.DHT.Enabled {
+		return discovery.Record{}, fmt.Errorf("the DHT is not enabled: set [dht] enabled = true and a bootstrap address")
+	}
+
+	settings := cfg.DHTSettings(logger)
+	settings.ListenAddr = "127.0.0.1:0"
+
+	// With no bootstrap list configured, the node at the configured listen address is
+	// asked instead. That is the server a deployment starts from this same file, so a
+	// lookup works on the host that runs the server without a second configuration.
+	if len(settings.Bootstrap) == 0 {
+		if peer := localDHTAddr(cfg.DHT.ListenAddr); peer != "" {
+			settings.Bootstrap = []string{peer}
+			logger.Printf("dht: no bootstrap peer is configured; asking %s", peer)
+		}
+	}
+
+	node, err := discovery.Start(settings)
 	if err != nil {
 		return discovery.Record{}, err
 	}
-	if dir == nil {
-		return discovery.Record{}, fmt.Errorf("the DHT is not enabled: set [dht] enabled = true and a bootstrap address")
-	}
-	defer func() { _ = dir.Close() }()
+	defer func() { _ = node.Close() }()
 
-	if len(cfg.DHT.Bootstrap) > 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		for _, failure := range dir.node.Bootstrap(ctx) {
-			logger.Printf("dht: bootstrap %v", failure)
-		}
-		cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, failure := range node.Bootstrap(ctx) {
+		logger.Printf("dht: bootstrap %v", failure)
 	}
-	return dir.Lookup(name)
+	return node.Lookup(ctx, name)
+}
+
+// localDHTAddr turns a configured listen address into something a query node can
+// send a datagram to: a wildcard host becomes the loopback address, because a node
+// listening on every interface is reachable there.
+func localDHTAddr(listenAddr string) string {
+	host, port, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		return ""
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
 }
 
 // summary is the payload of GET /api/dht.

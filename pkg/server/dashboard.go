@@ -112,14 +112,14 @@ func (d *Dashboard) healthz(w http.ResponseWriter, r *http.Request) {
 
 // readyz reports that the server is listening and accepting control connections.
 func (d *Dashboard) readyz(w http.ResponseWriter, r *http.Request) {
-	ready := d.server.listener != nil && !d.server.closing.Load()
+	ready := d.server.Listener() != nil && !d.server.closing.Load()
 	status := http.StatusOK
 	if !ready {
 		status = http.StatusServiceUnavailable
 	}
 	writeJSON(w, status, map[string]any{
 		"ready":        ready,
-		"listening":    d.server.listener != nil,
+		"listening":    d.server.Listener() != nil,
 		"shuttingDown": d.server.closing.Load(),
 	})
 }

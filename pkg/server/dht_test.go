@@ -258,12 +258,14 @@ func TestLookupProxyResolvesThroughASecondNode(t *testing.T) {
 	}
 	waitForListener(t, rs.server, "ssh")
 
-	// A second configuration points at the server's DHT node the way an operator's
-	// would, and resolves through it.
+	serverDHTAddr := rs.server.directory.node.Addr()
+	// A second configuration resolves through the server's DHT node, and its
+	// listen_addr deliberately names the port the running server already holds: a
+	// lookup node binds its own port, so that collision must not matter.
 	lookupCfg := &config.Config{}
 	lookupCfg.DHT.Enabled = true
-	lookupCfg.DHT.ListenAddr = "127.0.0.1:" + itoa(freeUDPPort(t))
-	lookupCfg.DHT.Bootstrap = []string{rs.server.directory.node.Addr()}
+	lookupCfg.DHT.ListenAddr = serverDHTAddr
+	lookupCfg.DHT.Bootstrap = []string{serverDHTAddr}
 	if err := lookupCfg.Validate(""); err != nil {
 		t.Fatalf("lookup config invalid: %v", err)
 	}
@@ -274,6 +276,67 @@ func TestLookupProxyResolvesThroughASecondNode(t *testing.T) {
 	}
 	if record.Server != net.JoinHostPort("127.0.0.1", itoa(publicPort)) {
 		t.Errorf("resolved %q, want the published port %d", record.Server, publicPort)
+	}
+}
+
+// TestLookupProxyFallsBackToTheConfiguredListenAddress covers the operator who runs
+// the lookup with the server's own configuration, which names no bootstrap peer
+// because the file describes the node that starts the DHT.
+func TestLookupProxyFallsBackToTheConfiguredListenAddress(t *testing.T) {
+	echoAddr := startEcho(t)
+	cfg := dhtConfig(t, false)
+	cfg.DHT.ListenAddr = "0.0.0.0:" + itoa(freeUDPPort(t))
+	cfg.DHT.AdvertiseHost = "127.0.0.1"
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("config invalid: %v", err)
+	}
+	rs := startServer(t, cfg)
+
+	publicPort := freePort(t)
+	client, err := newTestClient(t, rs.addr, false)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.close()
+	if _, err := client.authenticate("test-client", testToken); err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	if err := client.register(protocol.ProxySpec{
+		Name: "ssh", Type: "tcp", LocalAddr: echoAddr, RemotePort: publicPort,
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := client.framer.ReadFrame(); err != nil {
+		t.Fatalf("read proxy list: %v", err)
+	}
+	waitForListener(t, rs.server, "ssh")
+
+	// The server's own configuration, with no bootstrap peer of its own.
+	record, err := LookupProxy(cfg, discardLogger(), "ssh")
+	if err != nil {
+		t.Fatalf("LookupProxy with no bootstrap peer: %v", err)
+	}
+	if record.Server != net.JoinHostPort("127.0.0.1", itoa(publicPort)) {
+		t.Errorf("resolved %q, want the published port %d", record.Server, publicPort)
+	}
+}
+
+func TestLocalDHTAddr(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"127.0.0.1:7001", "127.0.0.1:7001"},
+		{"0.0.0.0:7001", "127.0.0.1:7001"},
+		{":7001", "127.0.0.1:7001"},
+		{"[::]:7001", "127.0.0.1:7001"},
+		{"2001:db8::1:7001", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := localDHTAddr(tc.in); got != tc.want {
+			t.Errorf("localDHTAddr(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 

@@ -15,12 +15,32 @@ JS，无 CDN、无构建、无框架；页面只渲染 API 返回的数据，没
 | `GET /api/config` | Configuration view + Refresh button / 打开配置页与刷新按钮 |
 | `DELETE /api/clients/{id}` | Disconnect button, then re-poll / 断开按钮，随后重新轮询 |
 
-`GET /api/health` is public but unused here. Failures raise a dismissible error banner;
-a failed `/api/status` also raises "disconnected — retrying". Empty lists say
-"no clients connected" / "no proxies registered"; before the first successful load, the
-tables show `—`. 请求失败会显示可关闭的错误横幅；`/api/status` 失败还会显示
-「连接断开 — 正在重试」；列表为空时明确显示「当前没有已连接的客户端」
-「暂无已注册的代理」。
+`GET /api/health` is public but unused here: `/healthz` and `/readyz` are the probes an
+orchestrator polls. `GET /api/ledger` and `GET /api/dht` exist on the same listener and
+need the same token, but this page does not render them; read them with `curl` or a
+dashboard client. Failures raise a dismissible error banner; a failed `/api/status` also
+raises "disconnected — retrying". Empty lists say "no clients connected" / "no proxies
+registered"; before the first successful load, the tables show `—`. 请求失败会显示可关闭
+的错误横幅；`/api/status` 失败还会显示「连接断开 — 正在重试」；列表为空时明确显示
+「当前没有已连接的客户端」「暂无已注册的代理」。
+
+## Proxy pools / 代理池
+
+`/api/proxies` returns one row per proxy, with the pool's aggregate counters and a
+`members` array (`client_id`, `local_addr`, `latency_ms`, `failures`, `healthy`). The
+proxies table shows the member count and how many of them are healthy in the *Members*
+column, next to the first member's client and local address; `/api/proxies` carries the
+per-member detail for anything the table does not show. `/api/proxies` 每个代理返回一行，
+含池的合计计数与 `members` 数组（`client_id`、`local_addr`、`latency_ms`、`failures`、
+`healthy`）；表格的「成员」列显示成员数与其中可用（healthy）的个数，客户端与本地地址仍是
+第一个成员的；其余成员明细需要直接读取 `/api/proxies`。
+
+Byte and connection counters advance when a stream ends, and the page polls every two
+seconds, so a stream that is still open shows the totals of the streams that finished
+before it. A member that disconnects takes its counters out of the pool aggregate, because
+the aggregate is the sum of the members that are present. 字节与连接计数在一条流结束时累加，
+页面每 2 秒轮询一次，所以仍在进行中的流只显示此前已结束流的合计；成员断开后，它的计数不再
+计入池的合计（合计等于当前成员之和）。
 
 ## Dashboard token / 启用令牌
 

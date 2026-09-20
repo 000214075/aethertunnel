@@ -90,3 +90,53 @@ jobs:
 
       - name: the binaries report their version
         run: ./bin/aethertunnel-server${{ matrix.exe }} --version
+
+  delivery:
+    name: delivery (image and manifests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The manifests are rendered without a cluster, which is what catches a broken
+      # kustomization, a missing file or a mistyped resource name.
+      - name: the Kubernetes manifests render
+        run: |
+          kubectl kustomize deploy/kubernetes > /tmp/rendered.yaml
+          test -s /tmp/rendered.yaml
+          for kind in Namespace ConfigMap Deployment Service; do
+            grep -q "^kind: $kind$" /tmp/rendered.yaml || { echo "the render has no $kind"; exit 1; }
+          done
+          grep -q 'name: aethertunnel-server' /tmp/rendered.yaml
+          echo "the manifests render into $(grep -c '^kind: ' /tmp/rendered.yaml) objects"
+
+      - name: build the container image
+        run: docker build -t aethertunnel:ci .
+
+      # The image is distroless: it has no shell, so the check is that the server
+      # itself comes up and answers its own probes.
+      - name: the image starts and answers its probes
+        run: |
+          cat > /tmp/ci-server.toml <<'EOF'
+          [server]
+          bind_addr = "0.0.0.0"
+          bind_port = 7001
+          auth_token = "ci-token-that-is-long-enough"
+
+          [dashboard]
+          enabled = true
+          bind_addr = "0.0.0.0"
+          port = 7500
+          token = "ci-dashboard-token"
+          EOF
+          docker run -d --name aethertunnel-ci -p 17500:7500 \
+            -v /tmp/ci-server.toml:/etc/aethertunnel/server.toml:ro \
+            aethertunnel:ci
+          ready=''
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:17500/healthz > /dev/null; then ready=yes; break; fi
+            sleep 1
+          done
+          docker logs aethertunnel-ci
+          docker rm -f aethertunnel-ci
+          test -n "$ready" || { echo "the container never answered /healthz"; exit 1; }
+          echo "the container answered its probes"

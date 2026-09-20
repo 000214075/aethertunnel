@@ -125,14 +125,14 @@ func startVPNServer(t *testing.T, cfg *config.Config, device *testTUN) *runningS
 	go func() { done <- srv.Run(ctx) }()
 
 	deadline := time.Now().Add(5 * time.Second)
-	for srv.listener == nil {
+	for srv.Listener() == nil {
 		if time.Now().After(deadline) {
 			t.Fatal("server did not start listening")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	rs := &runningServer{server: srv, addr: srv.listener.Addr().String(), cancel: cancel, done: done}
+	rs := &runningServer{server: srv, addr: srv.Listener().Addr().String(), cancel: cancel, done: done}
 	t.Cleanup(func() {
 		cancel()
 		select {

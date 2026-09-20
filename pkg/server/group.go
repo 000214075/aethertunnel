@@ -53,10 +53,14 @@ type ProxyGroup struct {
 	mu      sync.RWMutex
 	members []*Tunnel
 
-	listener net.Listener
-	packet   net.PacketConn
-	pump     *flynet.DatagramPump
-	vhost    *vhostBinding
+	// endpointMu guards the published endpoint. It is separate from mu because the
+	// dashboard reads Addr while the control path may be binding or closing the
+	// endpoint, and neither should wait for the other's list snapshot.
+	endpointMu sync.RWMutex
+	listener   net.Listener
+	packet     net.PacketConn
+	pump       *flynet.DatagramPump
+	vhost      *vhostBinding
 
 	proxyOnce sync.Once
 	proxy     *httputil.ReverseProxy
@@ -158,6 +162,8 @@ func newProxyGroup(spec protocol.ProxySpec, manager *TunnelManager) *ProxyGroup 
 
 // Addr returns the address the group is published on.
 func (g *ProxyGroup) Addr() string {
+	g.endpointMu.RLock()
+	defer g.endpointMu.RUnlock()
 	switch {
 	case g.listener != nil:
 		return g.listener.Addr().String()
@@ -166,6 +172,20 @@ func (g *ProxyGroup) Addr() string {
 	default:
 		return ""
 	}
+}
+
+// vhostBinding returns the group's HTTP hostname binding, if it has one.
+func (g *ProxyGroup) vhostBinding() *vhostBinding {
+	g.endpointMu.RLock()
+	defer g.endpointMu.RUnlock()
+	return g.vhost
+}
+
+// datagramPump returns the pump serving a udp proxy, if it has one.
+func (g *ProxyGroup) datagramPump() *flynet.DatagramPump {
+	g.endpointMu.RLock()
+	defer g.endpointMu.RUnlock()
+	return g.pump
 }
 
 // Members returns a snapshot of the group's members, oldest first.
@@ -245,9 +265,9 @@ func (g *ProxyGroup) add(session *Session, spec protocol.ProxySpec) (*Tunnel, er
 			g.mu.Unlock()
 			return nil, err
 		}
-	} else if g.vhost != nil {
+	} else if binding := g.vhostBinding(); binding != nil {
 		// A pooled http tunnel may add hostnames the first member did not use.
-		if err := g.vhost.extend(spec.Domains); err != nil {
+		if err := binding.extend(spec.Domains); err != nil {
 			g.mu.Lock()
 			g.members = g.members[:len(g.members)-1]
 			g.mu.Unlock()
@@ -280,20 +300,30 @@ func (g *ProxyGroup) remove(member *Tunnel) bool {
 }
 
 // close releases the group's endpoint exactly once.
+//
+// The endpoint is detached under the lock and torn down outside it: closing a
+// listener unblocks its accept loop, and that loop must not need the lock to
+// observe the group's done channel.
 func (g *ProxyGroup) close(reason string) {
 	g.once.Do(func() {
 		close(g.done)
-		if g.listener != nil {
-			_ = g.listener.Close()
+
+		g.endpointMu.Lock()
+		listener, packet, pump, binding := g.listener, g.packet, g.pump, g.vhost
+		g.listener, g.packet, g.pump, g.vhost = nil, nil, nil, nil
+		g.endpointMu.Unlock()
+
+		if listener != nil {
+			_ = listener.Close()
 		}
-		if g.packet != nil {
-			_ = g.packet.Close()
+		if packet != nil {
+			_ = packet.Close()
 		}
-		if g.pump != nil {
-			g.pump.Shutdown()
+		if pump != nil {
+			pump.Shutdown()
 		}
-		if g.vhost != nil {
-			g.vhost.remove()
+		if binding != nil {
+			binding.remove()
 		}
 		g.logger.Printf("proxy %q closed (%s)", g.Name, reason)
 	})
@@ -312,7 +342,9 @@ func (g *ProxyGroup) bind() error {
 		if err != nil {
 			return fmt.Errorf("cannot publish %s on %s: %w", g.Name, addr, err)
 		}
+		g.endpointMu.Lock()
 		g.listener = listener
+		g.endpointMu.Unlock()
 		go g.acceptLoop()
 		g.logger.Printf("proxy %q (tcp) published on %s", g.Name, addr)
 
@@ -326,7 +358,9 @@ func (g *ProxyGroup) bind() error {
 		if err != nil {
 			return fmt.Errorf("cannot publish %s on %s/udp: %w", g.Name, addr, err)
 		}
+		g.endpointMu.Lock()
 		g.packet = packet
+		g.endpointMu.Unlock()
 		g.startUDP()
 		g.logger.Printf("proxy %q (udp) published on %s", g.Name, addr)
 
@@ -338,7 +372,9 @@ func (g *ProxyGroup) bind() error {
 		if err != nil {
 			return err
 		}
+		g.endpointMu.Lock()
 		g.vhost = binding
+		g.endpointMu.Unlock()
 
 	case protocol.ProxyTypeSTCP, protocol.ProxyTypeSUDP, protocol.ProxyTypeXTCP:
 		if g.AuthMethod == config.AuthMethodNIZK {
@@ -466,8 +502,17 @@ const maxCostFailures = 4
 // --- tcp ----------------------------------------------------------------------
 
 func (g *ProxyGroup) acceptLoop() {
+	// The listener is captured once: closing the group clears the field, and the
+	// loop has to keep serving the endpoint it was started for until it closes.
+	g.endpointMu.RLock()
+	listener := g.listener
+	g.endpointMu.RUnlock()
+	if listener == nil {
+		return
+	}
+
 	for {
-		conn, err := g.listener.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
 			select {
 			case <-g.done:
@@ -560,8 +605,12 @@ func (g *ProxyGroup) startUDP() {
 		paths = 1
 	}
 
-	g.pump = &flynet.DatagramPump{
-		Socket: g.packet,
+	g.endpointMu.RLock()
+	packet := g.packet
+	g.endpointMu.RUnlock()
+
+	pump := &flynet.DatagramPump{
+		Socket: packet,
 		Paths:  paths,
 		Open: func(addr net.Addr) (*protocol.Framer, func(), error) {
 			member := g.pick()
@@ -585,7 +634,10 @@ func (g *ProxyGroup) startUDP() {
 		IdleTimeout: g.idleTimeout,
 		Logger:      g.logger,
 	}
-	g.pump.Start()
+	g.endpointMu.Lock()
+	g.pump = pump
+	g.endpointMu.Unlock()
+	pump.Start()
 }
 
 // recordSession books the traffic of one finished datagram session against the

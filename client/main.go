@@ -169,6 +169,9 @@ func main() {
 		}
 		defer func() { _ = resolver.Close() }()
 
+		for _, failure := range resolver.Bootstrap(resolver.Context()) {
+			logger.Printf("dht: bootstrap %v", failure)
+		}
 		record, err := resolver.Resolve(*discover)
 		if err != nil {
 			logger.Fatalf("dht lookup of %q failed: %v", *discover, err)

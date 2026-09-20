@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +20,14 @@ import (
 // the pump writes its first datagram, because the pipe between them is
 // unbuffered.
 func newEchoPump(t *testing.T, idle time.Duration) (*DatagramPump, net.PacketConn) {
+	t.Helper()
+	return newEchoPumpWith(t, idle, nil)
+}
+
+// newEchoPumpWith starts an echo pump after configure has attached the callbacks
+// it wants, because the pump reads those fields from its own goroutines and so
+// they must be in place before the first datagram arrives.
+func newEchoPumpWith(t *testing.T, idle time.Duration, configure func(*DatagramPump)) (*DatagramPump, net.PacketConn) {
 	t.Helper()
 
 	socket, err := net.ListenPacket("udp", "127.0.0.1:0")
@@ -57,6 +66,9 @@ func newEchoPump(t *testing.T, idle time.Duration) (*DatagramPump, net.PacketCon
 				_ = serviceSide.Close()
 			}, nil
 		},
+	}
+	if configure != nil {
+		configure(pump)
 	}
 	pump.Start()
 
@@ -141,13 +153,17 @@ func TestDatagramPumpKeepsOneSessionPerAddress(t *testing.T) {
 }
 
 func TestDatagramPumpReportsTraffic(t *testing.T) {
-	pump, _ := newEchoPump(t, 2*time.Second)
+	var upload, download atomic.Int64
 
-	var (
-		mu       sync.Mutex
-		upload   int64
-		download int64
-	)
+	pump, _ := newEchoPumpWith(t, 2*time.Second, func(p *DatagramPump) {
+		p.OnDatagram = func(toPeer bool, n int) {
+			if toPeer {
+				upload.Add(int64(n))
+			} else {
+				download.Add(int64(n))
+			}
+		}
+	})
 
 	socket, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -155,63 +171,52 @@ func TestDatagramPumpReportsTraffic(t *testing.T) {
 	}
 	defer socket.Close()
 
-	got := sendAndReceive(t, socket, pump.Socket.LocalAddr(), "counted")
-
-	// The counters are only read once the session has been observed, so attach
-	// them after the fact and send one more datagram.
-	mu.Lock()
-	pump.OnDatagram = func(toPeer bool, n int) {
-		mu.Lock()
-		defer mu.Unlock()
-		if toPeer {
-			upload += int64(n)
-		} else {
-			download += int64(n)
-		}
-	}
-	mu.Unlock()
-
-	const payload = "counted-again"
-	if got != "counted" {
+	if got := sendAndReceive(t, socket, pump.Socket.LocalAddr(), "counted"); got != "counted" {
 		t.Fatalf("the first datagram came back as %q", got)
 	}
+
+	// The first datagram only opens the session; the counters are cleared so the
+	// bytes reported below belong to the datagrams sent after it.
+	upload.Store(0)
+	download.Store(0)
+
+	const payload = "counted-again"
 	if again := sendAndReceive(t, socket, pump.Socket.LocalAddr(), payload); again != payload {
 		t.Fatalf("the second datagram came back as %q", again)
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
-	if upload != int64(len(payload)) {
-		t.Fatalf("uploaded %d bytes, want %d", upload, len(payload))
+	if got := upload.Load(); got != int64(len(payload)) {
+		t.Fatalf("uploaded %d bytes, want %d", got, len(payload))
 	}
-	if download != int64(len(payload)) {
-		t.Fatalf("downloaded %d bytes, want %d", download, len(payload))
+	if got := download.Load(); got != int64(len(payload)) {
+		t.Fatalf("downloaded %d bytes, want %d", got, len(payload))
 	}
 }
 
 func TestDatagramPumpAccountsForEverySession(t *testing.T) {
-	pump, _ := newEchoPump(t, 2*time.Second)
-
 	var (
 		mu       sync.Mutex
 		opened   int
 		closed   int
 		reported int64
 	)
-	pump.OnSession = func(delta int) {
-		mu.Lock()
-		defer mu.Unlock()
-		if delta > 0 {
-			opened++
-		} else {
-			closed++
+
+	pump, _ := newEchoPumpWith(t, 2*time.Second, func(p *DatagramPump) {
+		p.OnSession = func(delta int) {
+			mu.Lock()
+			defer mu.Unlock()
+			if delta > 0 {
+				opened++
+			} else {
+				closed++
+			}
 		}
-	}
-	pump.Close = func(addr net.Addr, toPeer, fromPeer int64) {
-		mu.Lock()
-		reported += toPeer + fromPeer
-		mu.Unlock()
-	}
+		p.Close = func(addr net.Addr, toPeer, fromPeer int64) {
+			mu.Lock()
+			reported += toPeer + fromPeer
+			mu.Unlock()
+		}
+	})
 
 	socket, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {

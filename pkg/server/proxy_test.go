@@ -359,10 +359,14 @@ func TestUDPTunnelKeepsSessionsPerVisitorAddress(t *testing.T) {
 
 func agentSessions(srv *Server, name string) int {
 	tunnel, err := srv.tunnels.Get(name)
-	if err != nil || tunnel.pump == nil {
+	if err != nil {
 		return 0
 	}
-	return tunnel.pump.Sessions()
+	pump := tunnel.datagramPump()
+	if pump == nil {
+		return 0
+	}
+	return pump.Sessions()
 }
 
 func TestHTTPVHostRoutesByHostHeader(t *testing.T) {

@@ -15,7 +15,7 @@ LDFLAGS  := -s -w \
 GO       ?= go
 GOFLAGS  :=
 
-.PHONY: all build test vet fmt lint tidy clean cross release check run-server run-client
+.PHONY: all build test test-race vet fmt lint tidy clean cross release check run-server run-client
 
 all: fmt vet test build
 
@@ -26,7 +26,11 @@ build:
 
 ## test: unit and integration tests (the tunnel test binds loopback ports)
 test:
-	$(GO) test ./... -count=1 -timeout 180s
+	$(GO) test ./... -count=1 -timeout 300s
+
+## test-race: the same tests under the race detector (needs CGO and a C compiler)
+test-race:
+	CGO_ENABLED=1 $(GO) test ./... -count=1 -race -timeout 900s
 
 ## vet: static checks
 vet:

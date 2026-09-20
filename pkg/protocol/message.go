@@ -32,7 +32,11 @@ import (
 
 // ProtocolVersion is bumped whenever the frame layout or the message set changes
 // in a way that breaks older peers.
-const ProtocolVersion = 3
+//
+// Version 4 added the padding flag (bit 1) and message types 16-18, none of
+// which a version 3 peer understands: it would read a padded payload's length
+// prefix as data and reject the frame.
+const ProtocolVersion = 4
 
 // MessageType identifies a frame.
 type MessageType uint8

@@ -352,7 +352,7 @@ func TestMultipathSpreadsDatagramsOverSeveralConnections(t *testing.T) {
 	if group.Multipath != 3 {
 		t.Fatalf("the group reports multipath %d", group.Multipath)
 	}
-	if group.pump == nil || group.pump.Paths != 3 {
+	if pump := group.datagramPump(); pump == nil || pump.Paths != 3 {
 		t.Fatal("the pump was not given three paths")
 	}
 

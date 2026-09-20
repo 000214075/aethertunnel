@@ -284,6 +284,11 @@ func (n *Node) Bootstrap(ctx context.Context) []error {
 	return failures
 }
 
+// Context is the node's lifetime context, cancelled by Close. It bounds a call that
+// has no request scope of its own, such as the bootstrap a command line performs
+// before its first lookup.
+func (n *Node) Context() context.Context { return n.ctx }
+
 // Close stops the node and waits for its goroutines.
 func (n *Node) Close() error {
 	n.cancel()

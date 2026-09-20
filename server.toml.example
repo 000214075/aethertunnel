@@ -1,4 +1,4 @@
-# AetherTunnel server configuration — v3.1.0
+# AetherTunnel server configuration — v3.2.0
 #
 # Every key in this file is understood by this version. Unknown keys are reported
 # on startup instead of being silently ignored, so a typo or a setting carried over
@@ -6,6 +6,12 @@
 #
 # Start with:  aethertunnel-server --config server.toml
 # Validate:    aethertunnel-server --config server.toml --check
+# Look up a published proxy:  aethertunnel-server --config server.toml --dht-lookup ssh
+# Verify a bandwidth ledger:  aethertunnel-server --verify-ledger ledger.jsonl --ledger-key <hex>
+#
+# The credentials below may also come from the environment, which is how a container
+# deployment keeps them out of a ConfigMap:
+#   AETHERTUNNEL_AUTH_TOKEN, AETHERTUNNEL_DASHBOARD_TOKEN, AETHERTUNNEL_ENCRYPTION_PASSPHRASE
 
 [server]
 bind_addr = "0.0.0.0"
@@ -32,6 +38,43 @@ heartbeat_seconds = 30
 dial_timeout_seconds = 10
 graceful_shutdown_seconds = 5
 
+# Shared listener for http and https proxies. A proxy of those types is reached
+# through this port and selected by the request's Host header, so it needs no port
+# of its own. 0 disables the listener for that scheme.
+http_port = 7080
+# The TLS listener needs a certificate and its key. Generate a self-signed pair with:
+#   openssl req -x509 -newkey rsa:2048 -days 365 -nodes \
+#     -keyout https.key -out https.crt -subj "/CN=tunnel.example.com"
+https_port = 0
+https_cert_file = ""
+https_key_file = ""
+
+# Lets an http proxy without explicit domains be reached at
+# <proxy-name>.<subdomain_host>.
+subdomain_host = ""
+
+# UDP port used for xtcp hole punching. 0 disables it, and an xtcp proxy then falls
+# back to the relayed path.
+p2p_port = 7002
+
+# Which member of a proxy group serves the next visitor:
+#   "round-robin"  in turn
+#   "random"       uniformly at random
+#   "latency"      the member with the smallest measured response time
+#   "failover"     the first member until it stops being healthy
+#   "adaptive"     the lowest cost, where cost is the measured response time
+#                  multiplied by a penalty for consecutive failures
+load_balance = "round-robin"
+
+# Access control, applied to every accepted connection. An empty allow list accepts
+# every address; an entry in the deny list always wins.
+allow_cidrs = []
+deny_cidrs = []
+
+# Per-source-address connection rate. 0 disables the limit.
+rate_limit_per_second = 20
+rate_limit_burst = 40
+
 [dashboard]
 enabled = true
 # Keep this on loopback unless you also set a token: the dashboard exposes client
@@ -40,6 +83,99 @@ bind_addr = "127.0.0.1"
 port = 7500
 # When set, /api/* requires "Authorization: Bearer <token>". /api/health stays open.
 token = ""
+
+# Prometheus /metrics, served on the dashboard listener. A separate token lets a
+# scraper authenticate without the dashboard credential.
+[metrics]
+enabled = true
+token = ""
+
+# Append-only JSONL record of accepted and refused connections, proxy registrations
+# and visitor exchanges. Rotates once the file exceeds max_bytes.
+[audit]
+enabled = false
+path = "aethertunnel-audit.jsonl"
+max_bytes = 33554432
+
+# Signed, hash-chained record of the bandwidth each client used. The chain is
+# published on GET /api/ledger together with the public key an auditor needs; the
+# signing key is generated on first use and never leaves this machine.
+[ledger]
+enabled = false
+path = "aethertunnel-ledger.jsonl"
+signing_key_file = "aethertunnel-ledger.key"
+
+# Kademlia DHT over UDP. The server publishes one record per proxy it accepts, so a
+# client can resolve a proxy name instead of being told which server serves it.
+[dht]
+enabled = false
+listen_addr = "0.0.0.0:7001"
+# Other DHT nodes to join. Empty makes this node a one-node table, which still
+# answers for the records it published itself.
+bootstrap = []
+# 40 hex characters. Empty selects a random identifier that changes on every start.
+node_id = ""
+# Key prefix, so two deployments can share one DHT.
+namespace = "aethertunnel"
+ttl_seconds = 3600
+announce_ttl_seconds = 90
+# Must be shorter than announce_ttl_seconds.
+republish_seconds = 30
+lookup_timeout_seconds = 5
+# The host a client is told to dial for a proxy published here. No port: the port is
+# the one that serves each proxy. Required when bind_addr is a wildcard address,
+# which it is by default, or the published address is not reachable from outside.
+advertise_host = ""
+
+# Layer-3 tunnel. Each client that asks is given an address from this subnet and its
+# IP packets are routed through the server.
+#
+# The interface must exist on the host: Linux opens or creates a tun interface with
+# this name, and every other platform reports that it has no tun implementation in
+# this build. Routes are never changed by this program; add the route to the subnet
+# yourself, for example:
+#   ip route add 10.7.0.0/24 dev tun0
+[vpn]
+enabled = false
+# Interface name. Empty asks the kernel for the next free one.
+device = "tun0"
+# The subnet clients are allocated from. The server keeps the first usable address.
+address = "10.7.0.0/24"
+# Overrides the interface MTU. Zero uses the interface's own value.
+mtu = 0
+# Refuse a session that does not want a tunnel address.
+require = false
+
+# Padding hides exact frame lengths from an observer that counts bytes. It does not
+# make the traffic look like anything else; the disguise below does that.
+[obfuscation]
+enabled = false
+# Round every frame payload up to a multiple of this many bytes. 0 disables the
+# padding even when enabled is true.
+pad_to = 256
+jitter_millis = 0
+# "none" writes frames as they are. "tls-record" puts every write inside TLS 1.2
+# application-data records, which defeats a detector that reads only the first
+# bytes. It is not a TLS handshake, so a detector that models a session can still
+# tell the connection apart.
+# disguise = "tls-record"
+
+[identity]
+# Authenticate clients with an Ed25519 key instead of the shared token. Requires
+# identity.enabled on the client as well.
+enabled = false
+# Hex public keys accepted from clients. Empty accepts any key that signs correctly,
+# which proves possession but does not restrict who may connect.
+allowed_keys = []
+# Refuse a client that presents no valid identity.
+require_identity = false
+
+[transport]
+# TLS on the control port and on every data connection. This is the only way to get
+# certificate-based server authentication.
+enable_tls = false
+cert_file = ""
+key_file = ""
 
 [encryption]
 # Optional AEAD protection for control messages and tunnelled bytes. When enabled,
@@ -50,3 +186,6 @@ algorithm = "xchacha20-poly1305"   # or "aes-256-gcm"
 # secret. Both ends must agree on this value.
 passphrase = ""
 salt = "aethertunnel"
+# Replace the passphrase-derived key with one agreed through X25519 together with
+# ML-KEM-768, and derive a separate key for every data connection. Requires enabled.
+post_quantum = false

@@ -33,7 +33,10 @@
 [CmdletBinding()]
 param(
     [string]$Root = (Join-Path $env:TEMP ("aether-smoke-" + [guid]::NewGuid().ToString('N').Substring(0, 8))),
-    [switch]$Keep
+    [switch]$Keep,
+    # Appends each step and verdict here as it happens. stdout is buffered when the
+    # script is run with its output redirected, so this is what shows where a run is.
+    [string]$ProgressLog = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,6 +47,18 @@ $script:Processes = @()
 function Write-Step([string]$Message) {
     Write-Host ""
     Write-Host "== $Message" -ForegroundColor Cyan
+    Write-Progress-Line ("== " + $Message)
+}
+
+# Add-Content flushes on every call, so the progress file shows where a run is even
+# when stdout is redirected and therefore buffered.
+function Write-Progress-Line([string]$Line) {
+    if (-not $ProgressLog) { return }
+    try {
+        Add-Content -Path $ProgressLog -Value ((Get-Date).ToString('HH:mm:ss') + ' ' + $Line) -Encoding UTF8 -ErrorAction Stop
+    } catch {
+        # A missing progress log must not fail the run.
+    }
 }
 
 function Test-Check {
@@ -55,9 +70,11 @@ function Test-Check {
             throw "check returned false"
         }
         Write-Host ("   PASS  " + $Name) -ForegroundColor Green
+        Write-Progress-Line ("PASS  " + $Name)
         $script:Passes++
     } catch {
         Write-Host ("   FAIL  " + $Name + " -- " + $_.Exception.Message) -ForegroundColor Red
+        Write-Progress-Line ("FAIL  " + $Name + " -- " + $_.Exception.Message)
         $script:Failures += $Name
     }
 }
@@ -180,11 +197,24 @@ function Invoke-Curl {
 # standard error into an error record, which with ErrorActionPreference Stop ends
 # the script, so one-shot invocations go through cmd and discard it.
 function Invoke-Binary {
-    param([string]$FilePath, [string[]]$Arguments = @())
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments = @(),
+        # A command that is expected to fail (a refused configuration, a failed
+        # verification) reads its output from stderr instead, and does not stop the
+        # run.
+        [switch]$AllowFailure
+    )
 
     if (-not $Arguments) { $Arguments = @() }
     $line = '"' + $FilePath + '"'
     foreach ($argument in $Arguments) { $line += ' "' + $argument + '"' }
+
+    if ($AllowFailure) {
+        # 2>&1 so the message a failure prints is captured too.
+        $output = (cmd /c ($line + ' 2>&1') | Out-String)
+        return $output
+    }
     return (cmd /c ($line + ' 2>NUL') | Out-String)
 }
 
@@ -261,6 +291,8 @@ $httpPort = Get-FreePort
 $httpsPort = Get-FreePort
 $dashboardPort = Get-FreePort
 $p2pPort = Get-FreePort
+$dhtPort = Get-FreePort
+$vpnPort = Get-FreePort
 $tcpProxyPort = Get-FreePort
 $udpProxyPort = Get-FreePort
 $stcpVisitorPort = Get-FreePort
@@ -306,6 +338,15 @@ post_quantum = true
 enable_tls = true
 "@
 
+# Every TCP connection in this run is wrapped, so the disguise is exercised by the
+# control connection, every data connection and every visitor connection.
+$commonObfuscation = @"
+[obfuscation]
+enabled = true
+pad_to = 256
+disguise = "tls-record"
+"@
+
 @"
 [client]
 server_addr = "127.0.0.1:$controlPort"
@@ -315,6 +356,8 @@ $commonSecurity
 ca_file = ""
 server_name = "127.0.0.1"
 insecure_skip_verify = true
+
+$commonObfuscation
 
 [identity]
 enabled = true
@@ -381,6 +424,8 @@ ca_file = ""
 server_name = "127.0.0.1"
 insecure_skip_verify = true
 
+$commonObfuscation
+
 [identity]
 enabled = true
 key_file = "$identityFile"
@@ -424,6 +469,8 @@ $commonSecurity
 ca_file = ""
 server_name = "127.0.0.1"
 insecure_skip_verify = true
+
+$commonObfuscation
 
 [identity]
 enabled = true
@@ -473,7 +520,33 @@ enabled = true
 [audit]
 enabled = true
 path = "$RootFwd/audit.jsonl"
+
+[ledger]
+enabled = true
+path = "$RootFwd/ledger.jsonl"
+signing_key_file = "$RootFwd/ledger.key"
+
+[dht]
+enabled = true
+listen_addr = "127.0.0.1:$dhtPort"
+advertise_host = "127.0.0.1"
+
+$commonObfuscation
 "@ | Set-Content -Path $serverToml -Encoding UTF8
+
+# A client-role configuration that resolves the server address from the DHT instead
+# of being told it. This is the operator path: it names a proxy, not a host.
+$dhtToml = Join-Path $Root 'dht.toml'
+@"
+[client]
+auth_token = "$token"
+
+[dht]
+enabled = true
+listen_addr = "127.0.0.1:0"
+bootstrap = ["127.0.0.1:$dhtPort"]
+discover = "tcp-echo"
+"@ | Set-Content -Path $dhtToml -Encoding UTF8
 
 Write-Step "validating the configuration"
 foreach ($pair in @(
@@ -672,8 +745,145 @@ Test-Check 'the server recorded the refusal of the wrong secret' {
 
 if ($badVisitor -and -not $badVisitor.HasExited) { Stop-Process -Id $badVisitor.Id -Force -ErrorAction SilentlyContinue }
 
-Write-Step "checking the operational surface"
+Write-Step "checking the directory and the ledger"
 
+Test-Check 'the DHT node is serving' {
+    $body = Invoke-Curl @('-s', "http://127.0.0.1:$dashboardPort/api/dht")
+    $dht = $body | ConvertFrom-Json
+    if (-not $dht.enabled) { throw "the DHT is not enabled: $body" }
+    if (-not $dht.node_id -or $dht.node_id.Length -ne 40) { throw "the node id is '$($dht.node_id)'" }
+    if ($dht.advertise_as -ne '127.0.0.1') { throw "the node advertises as '$($dht.advertise_as)'" }
+    return $true
+}
+
+Test-Check 'the DHT announced every public proxy' {
+    $body = Invoke-Curl @('-s', "http://127.0.0.1:$dashboardPort/api/dht")
+    $announced = ($body | ConvertFrom-Json).announced
+    foreach ($name in @('tcp-echo', 'udp-echo', 'private', 'direct')) {
+        if ($announced -notcontains $name) { throw "$name was not announced; the directory holds $($announced -join ', ')" }
+    }
+    return $true
+}
+
+Test-Check 'a lookup resolves a proxy name to the port it is published on' {
+    # The server's own configuration, while that server is running: the query node
+    # binds its own port, so the lookup still works on the same host.
+    $record = (Invoke-Binary -FilePath $serverExe -Arguments @('-config', $serverToml, '-dht-lookup', 'tcp-echo') -AllowFailure).Trim()
+    if ($record -notmatch "-> 127\.0\.0\.1:$tcpProxyPort") { throw "the lookup returned '$record'" }
+    return $true
+}
+
+Test-Check 'a client-role process resolves a proxy name through the DHT' {
+    $resolved = (Invoke-Binary -FilePath $clientExe -Arguments @('-config', $dhtToml, '-discover', 'tcp-echo') -AllowFailure).Trim()
+    if ($resolved -notmatch "-> 127\.0\.0\.1:$tcpProxyPort") { throw "discovery returned '$resolved'" }
+    return $true
+}
+
+Test-Check 'a proxy name inside a private tunnel resolves as well' {
+    $resolved = (Invoke-Binary -FilePath $clientExe -Arguments @('-config', $dhtToml, '-discover', 'private') -AllowFailure).Trim()
+    if ($resolved -notmatch [regex]::Escape("-> 127.0.0.1:$controlPort")) { throw "discovery returned '$resolved'" }
+    if ($resolved -notmatch [regex]::Escape('(type stcp')) { throw "the record does not report the private type: '$resolved'" }
+    return $true
+}
+
+Test-Check 'a name that was never published is reported as unknown' {
+    $output = Invoke-Binary -FilePath $clientExe -Arguments @('-config', $dhtToml, '-discover', 'nothing-here') -AllowFailure
+    if ($output -notmatch 'not found') { throw "the lookup returned '$output'" }
+    if ($output -match 'not found' -and $output -notmatch 'failed') { throw "the lookup did not fail: $output" }
+    return $true
+}
+
+Test-Check 'the ledger has no entry while the client is still connected' {
+    $body = Invoke-Curl @('-s', "http://127.0.0.1:$dashboardPort/api/ledger")
+    $ledger = $body | ConvertFrom-Json
+    if (-not $ledger.enabled) { throw "the ledger is not enabled: $body" }
+    if ($ledger.count -ne 0) { throw "the ledger already holds $($ledger.count) entries before any client left" }
+    if ($ledger.public_key.Length -ne 64) { throw "the public key is '$($ledger.public_key)'" }
+    return $true
+}
+
+Write-Step "stopping the owner client so its usage is recorded"
+if ($client -and -not $client.HasExited) { Stop-Process -Id $client.Id -Force -ErrorAction SilentlyContinue }
+Start-Sleep -Seconds 2
+
+Test-Check 'the ledger records the usage of the session that ended' {
+    $body = Invoke-Curl @('-s', "http://127.0.0.1:$dashboardPort/api/ledger")
+    $ledger = $body | ConvertFrom-Json
+    if ($ledger.count -lt 1) { throw "the ledger still holds $($ledger.count) entries" }
+
+    # One entry is written per proxy the client published, and the proxies that
+    # carried no traffic are recorded with zero bytes, so the check totals them.
+    $bytes = 0
+    foreach ($client in $ledger.totals.PSObject.Properties) {
+        $bytes += [int64]$client.Value.bytes_in + [int64]$client.Value.bytes_out
+    }
+    if ($bytes -le 0) { throw "the ledger holds $($ledger.count) entries that between them record no traffic" }
+    return $true
+}
+
+Test-Check 'the ledger verifies against the published public key' {
+    $body = Invoke-Curl @('-s', "http://127.0.0.1:$dashboardPort/api/ledger")
+    $publicKey = ($body | ConvertFrom-Json).public_key
+    $output = (Invoke-Binary -FilePath $serverExe -Arguments @(
+            '-verify-ledger', "$RootFwd/ledger.jsonl", '-ledger-key', $publicKey)).Trim()
+    if ($output -notmatch 'entries verified') { throw "verification printed '$output'" }
+    return $true
+}
+
+Test-Check 'a tampered ledger does not verify' {
+    $body = Invoke-Curl @('-s', "http://127.0.0.1:$dashboardPort/api/ledger")
+    $publicKey = ($body | ConvertFrom-Json).public_key
+
+    $tampered = Join-Path $Root 'ledger-tampered.jsonl'
+    $lines = Get-Content (Join-Path $Root 'ledger.jsonl')
+    $entry = $lines[0] | ConvertFrom-Json
+    $entry.bytes_in = $entry.bytes_in + 1
+    ($entry | ConvertTo-Json -Compress) | Set-Content -Path $tampered -Encoding UTF8
+
+    $output = Invoke-Binary -FilePath $serverExe -Arguments @(
+        '-verify-ledger', "$RootFwd/ledger-tampered.jsonl", '-ledger-key', $publicKey) -AllowFailure
+    if ($output -notmatch 'verification failed') { throw "a tampered ledger was accepted: $output" }
+    return $true
+}
+
+Test-Check 'a ledger verified against another key is refused' {
+    $foreignKey = 'a' * 64
+    $output = Invoke-Binary -FilePath $serverExe -Arguments @(
+        '-verify-ledger', "$RootFwd/ledger.jsonl", '-ledger-key', $foreignKey) -AllowFailure
+    if ($output -notmatch 'verification failed') { throw "a ledger verified under a foreign key: $output" }
+    if ($output -notmatch 'does not verify') { throw "the failure does not name the signature: $output" }
+    return $true
+}
+
+Test-Check 'the vpn section refuses to start where there is no tun device' {
+    $vpnToml = Join-Path $Root 'vpn-server.toml'
+    @"
+[server]
+bind_addr = "127.0.0.1"
+bind_port = $vpnPort
+auth_token = "$token"
+
+[vpn]
+enabled = true
+device = "tun0"
+address = "10.7.0.0/24"
+"@ | Set-Content -Path $vpnToml -Encoding UTF8
+
+    if ($env:OS -ne 'Windows_NT') {
+        # On Linux the server would open a real tun interface and keep running, which
+        # is not something this script drives. The tun path is covered by the package
+        # tests, and by the -race job in CI.
+        Write-Host "   skipped on this platform: a tun device cannot be opened non-interactively here"
+        return $true
+    }
+
+    $output = Invoke-Binary -FilePath $serverExe -Arguments @('-config', $vpnToml) -AllowFailure
+    if ($output -notmatch 'no tun implementation') { throw "the server did not report the missing tun device: $output" }
+    if ($output -notmatch 'Wintun') { throw "the message does not say what a tun device on Windows needs: $output" }
+    return $true
+}
+
+Write-Step "checking the operational surface"
 Test-Check 'the audit log recorded the security events' {
     $auditPath = Join-Path $Root 'audit.jsonl'
     if (-not (Test-Path $auditPath)) { throw "no audit log was written" }

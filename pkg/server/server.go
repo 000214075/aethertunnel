@@ -66,7 +66,10 @@ type Server struct {
 	identities []ed25519.PublicKey
 	nonces     *crypto.NonceCache
 
-	listener net.Listener
+	// listener is assigned by Run when it binds, and read by the dashboard's
+	// readiness probe and by Shutdown, so it is guarded rather than written once.
+	listenerMu sync.Mutex
+	listener   net.Listener
 
 	totalConnections atomic.Int64
 
@@ -171,6 +174,20 @@ func (s *Server) framerOptions() protocol.FramerOptions {
 	}
 }
 
+// Listener returns the bound listener, or nil before Run has bound one.
+func (s *Server) Listener() net.Listener {
+	s.listenerMu.Lock()
+	defer s.listenerMu.Unlock()
+	return s.listener
+}
+
+// setListener records the bound listener.
+func (s *Server) setListener(listener net.Listener) {
+	s.listenerMu.Lock()
+	defer s.listenerMu.Unlock()
+	s.listener = listener
+}
+
 // Cipher reports the encryption algorithm in use ("none" when disabled).
 func (s *Server) Cipher() string { return s.cipher.Algorithm() }
 
@@ -219,7 +236,7 @@ func (s *Server) Run(ctx context.Context) error {
 			disguise:  s.cfg.ObfuscationDisguise(),
 		}
 	}
-	s.listener = listener
+	s.setListener(listener)
 
 	s.logger.Printf("AetherTunnel server %s (protocol %d) listening on %s", s.version, protocol.ProtocolVersion, listener.Addr())
 	s.logger.Printf("encryption: %s", s.Cipher())
@@ -314,8 +331,8 @@ func (s *Server) Shutdown(reason string) {
 		return
 	}
 	s.logger.Printf("shutting down: %s", reason)
-	if s.listener != nil {
-		_ = s.listener.Close()
+	if listener := s.Listener(); listener != nil {
+		_ = listener.Close()
 	}
 	s.vhost.stop()
 	if s.p2p != nil {
