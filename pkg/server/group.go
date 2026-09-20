@@ -188,6 +188,14 @@ func (g *ProxyGroup) datagramPump() *flynet.DatagramPump {
 	return g.pump
 }
 
+// published reports whether the group has been given its endpoint: a listener, a
+// packet socket or a hostname binding.
+func (g *ProxyGroup) published() bool {
+	g.endpointMu.RLock()
+	defer g.endpointMu.RUnlock()
+	return g.listener != nil || g.packet != nil || g.vhost != nil
+}
+
 // Members returns a snapshot of the group's members, oldest first.
 func (g *ProxyGroup) Members() []*Tunnel {
 	g.mu.RLock()

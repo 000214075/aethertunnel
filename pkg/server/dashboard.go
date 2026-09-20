@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aethertunnel/aethertunnel/pkg/config"
@@ -39,8 +40,26 @@ type Dashboard struct {
 
 	mux        *http.ServeMux
 	httpServer *http.Server
-	listener   net.Listener
 	startedAt  time.Time
+
+	// listenerMu guards the bound listener, which Start writes while the rest of the
+	// process (the tests, and anything that wants the address) may read it.
+	listenerMu sync.Mutex
+	listener   net.Listener
+}
+
+// Listener returns the bound listener, or nil before Start has bound one.
+func (d *Dashboard) Listener() net.Listener {
+	d.listenerMu.Lock()
+	defer d.listenerMu.Unlock()
+	return d.listener
+}
+
+// setListener records the bound listener.
+func (d *Dashboard) setListener(listener net.Listener) {
+	d.listenerMu.Lock()
+	defer d.listenerMu.Unlock()
+	d.listener = listener
 }
 
 // NewDashboard prepares the dashboard routes.
@@ -144,7 +163,7 @@ func (d *Dashboard) Start() error {
 	if err != nil {
 		return err
 	}
-	d.listener = listener
+	d.setListener(listener)
 	d.httpServer = &http.Server{
 		Handler:           d.mux,
 		ReadHeaderTimeout: 5 * time.Second,

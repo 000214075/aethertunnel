@@ -285,7 +285,7 @@ func TestPooledProxiesReportThemselvesToTheDashboard(t *testing.T) {
 	}
 	defer dashboard.Stop()
 
-	response, err := http.Get(fmt.Sprintf("http://%s/api/proxies", dashboard.listener.Addr()))
+	response, err := http.Get(fmt.Sprintf("http://%s/api/proxies", dashboard.Listener().Addr()))
 	if err != nil {
 		t.Fatalf("fetch the proxy list: %v", err)
 	}

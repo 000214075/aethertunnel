@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -65,11 +66,11 @@ func TestExchangeReturnsTheAcceptedReply(t *testing.T) {
 
 func TestExchangeIgnoresDatagramsThePredicateRejects(t *testing.T) {
 	// The first datagrams are noise, as a peer's punch hellos would be on a real
-	// punch socket; the accepted reply arrives afterwards.
-	noise := 0
+	// punch socket; the accepted reply arrives afterwards. The service answers on
+	// its own goroutine, so the counter it keeps has to be atomic.
+	var noise atomic.Int64
 	server := startRendezvous(t, func(request []byte, from net.Addr) [][]byte {
-		noise++
-		if noise < 4 {
+		if noise.Add(1) < 4 {
 			return [][]byte{[]byte("noise")}
 		}
 		return [][]byte{[]byte("ATP2-wanted")}
@@ -93,8 +94,8 @@ func TestExchangeIgnoresDatagramsThePredicateRejects(t *testing.T) {
 	if string(reply) != "ATP2-wanted" {
 		t.Fatalf("reply is %q", reply)
 	}
-	if noise < 4 {
-		t.Fatalf("the rendezvous was asked only %d times", noise)
+	if asked := noise.Load(); asked < 4 {
+		t.Fatalf("the rendezvous was asked only %d times", asked)
 	}
 }
 

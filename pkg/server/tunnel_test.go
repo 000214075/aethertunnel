@@ -312,7 +312,7 @@ func waitForListener(t *testing.T, srv *Server, name string) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		tunnel, err := srv.tunnels.Get(name)
-		if err == nil && tunnel.listener != nil {
+		if err == nil && tunnel.published() {
 			return
 		}
 		if time.Now().After(deadline) {
