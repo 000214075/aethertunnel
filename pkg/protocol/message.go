@@ -69,6 +69,10 @@ const (
 	TypeVisitorChallenge MessageType = 16
 	// TypeVisitorProve carries the visitor's proof.
 	TypeVisitorProve MessageType = 17
+	// TypeVPNPacket carries exactly one IP packet as its payload, in either
+	// direction, on a control connection that was given a tunnel address. The frame
+	// boundary preserves the packet boundary.
+	TypeVPNPacket MessageType = 18
 )
 
 // String makes logs readable.
@@ -108,6 +112,8 @@ func (t MessageType) String() string {
 		return "visitor-challenge"
 	case TypeVisitorProve:
 		return "visitor-prove"
+	case TypeVPNPacket:
+		return "vpn-packet"
 	default:
 		return fmt.Sprintf("unknown(%d)", uint8(t))
 	}
@@ -370,6 +376,9 @@ type AuthRequest struct {
 	IdentityNonce     []byte `json:"identity_nonce,omitempty"`
 	IdentityTime      int64  `json:"identity_time,omitempty"`
 	IdentitySignature []byte `json:"identity_signature,omitempty"`
+	// VPN asks the server for an address on its layer-3 tunnel subnet. The server
+	// answers with VPNAddress when it can provide one.
+	VPN bool `json:"vpn,omitempty"`
 }
 
 // AuthResponse reports whether the session was accepted.
@@ -391,6 +400,14 @@ type AuthResponse struct {
 	// IdentityRequired tells the client that the server refuses sessions without
 	// a valid identity assertion, so the error is actionable.
 	IdentityRequired bool `json:"identity_required,omitempty"`
+	// VPNAddress is the tunnel address the server assigned. Empty means the
+	// session carries no layer-3 traffic, either because the client did not ask or
+	// because the server has no tunnel configured.
+	VPNAddress string `json:"vpn_address,omitempty"`
+	// VPNMask is the subnet mask for VPNAddress, as a dotted quad.
+	VPNMask string `json:"vpn_mask,omitempty"`
+	// VPNMTU is the packet size limit the server's interface accepts.
+	VPNMTU int `json:"vpn_mtu,omitempty"`
 }
 
 // Tunnel types a client may publish. "tcp" and "udp" take a public port on the

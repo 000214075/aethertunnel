@@ -21,6 +21,10 @@ const testToken = "0123456789abcdef0123456789abcdef"
 
 // --- harness ------------------------------------------------------------------
 
+// freePort returns a loopback port reserved for TCP. A proxy that binds UDP needs
+// freeUDPPort instead: the operating system hands out TCP and UDP ephemeral ports
+// from different ranges, and a port that is free for one is not necessarily free for
+// the other.
 func freePort(t *testing.T) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

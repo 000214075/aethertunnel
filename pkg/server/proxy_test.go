@@ -278,7 +278,8 @@ func framedStreamHandler(localAddr string) dataHandler {
 func TestUDPTunnelRoundTrip(t *testing.T) {
 	echo := startUDPEcho(t)
 	cfg := testConfig(t, false)
-	remotePort := freePort(t)
+	// A udp proxy binds UDP, so the port has to come from a UDP probe.
+	remotePort := freeUDPPort(t)
 
 	rs := startServer(t, cfg)
 	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"echo-udp": datagramHandler(echo)})
@@ -318,7 +319,7 @@ func TestUDPTunnelRoundTrip(t *testing.T) {
 func TestUDPTunnelKeepsSessionsPerVisitorAddress(t *testing.T) {
 	echo := startUDPEcho(t)
 	cfg := testConfig(t, false)
-	remotePort := freePort(t)
+	remotePort := freeUDPPort(t)
 
 	rs := startServer(t, cfg)
 	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"echo-udp": datagramHandler(echo)})

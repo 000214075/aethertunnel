@@ -12,6 +12,7 @@ import (
 
 	"github.com/aethertunnel/aethertunnel/pkg/crypto"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
+	"github.com/aethertunnel/aethertunnel/pkg/vpn"
 )
 
 // Session is one authenticated client control connection.
@@ -30,10 +31,13 @@ type Session struct {
 	ConnectedAt      time.Time
 	HeartbeatSeconds int
 
-	conn   net.Conn
-	framer *protocol.Framer
-	done   chan struct{}
-	once   sync.Once
+	conn net.Conn
+	// framer is replaced when a post-quantum key agreement completes, and tunnel
+	// goroutines write through it meanwhile, so it is read through Framer.
+	framerMu sync.RWMutex
+	framer   *protocol.Framer
+	done     chan struct{}
+	once     sync.Once
 
 	// streamKey is the post-quantum session key, empty when the session agreed
 	// none. It is the input for every data connection's own key.
@@ -50,6 +54,40 @@ type Session struct {
 	totalStreams    atomic.Int64
 	bytesFromClient atomic.Int64
 	bytesToClient   atomic.Int64
+
+	// vpnPeer and vpnTransport are set when the session was given a tunnel
+	// address. The transport is what the control loop hands received packets to.
+	vpnMu        sync.Mutex
+	vpnPeer      *vpn.Peer
+	vpnTransport *vpn.ChannelTransport
+	vpnAddress   string
+}
+
+// setVPN records the tunnel peer and transport of a session that was given an
+// address.
+func (s *Session) setVPN(peer *vpn.Peer, transport *vpn.ChannelTransport) {
+	s.vpnMu.Lock()
+	defer s.vpnMu.Unlock()
+	s.vpnPeer = peer
+	s.vpnTransport = transport
+	if peer != nil && peer.Address() != nil {
+		s.vpnAddress = peer.Address().String()
+	}
+}
+
+// vpnTransportFor returns the transport a received packet belongs to, or nil when
+// the session has no tunnel.
+func (s *Session) vpnTransportFor() *vpn.ChannelTransport {
+	s.vpnMu.Lock()
+	defer s.vpnMu.Unlock()
+	return s.vpnTransport
+}
+
+// VPNAddress is the tunnel address the session holds, or an empty string.
+func (s *Session) VPNAddress() string {
+	s.vpnMu.Lock()
+	defer s.vpnMu.Unlock()
+	return s.vpnAddress
 }
 
 func newSession(conn net.Conn, framer *protocol.Framer, req *protocol.AuthRequest, encrypted bool, heartbeatSeconds int) *Session {
@@ -77,7 +115,19 @@ func (s *Session) Done() <-chan struct{} { return s.done }
 // Framer returns the control framer. Writes are serialised inside the framer, so
 // it is safe to send a DataRequest from a tunnel goroutine while the session loop
 // sends a heartbeat ack.
-func (s *Session) Framer() *protocol.Framer { return s.framer }
+func (s *Session) Framer() *protocol.Framer {
+	s.framerMu.RLock()
+	defer s.framerMu.RUnlock()
+	return s.framer
+}
+
+// SetFramer replaces the control framer, which happens once, when a post-quantum
+// key agreement completes.
+func (s *Session) SetFramer(framer *protocol.Framer) {
+	s.framerMu.Lock()
+	defer s.framerMu.Unlock()
+	s.framer = framer
+}
 
 func (s *Session) touchHeartbeat() { s.heartbeatAt.Store(time.Now().UnixNano()) }
 
@@ -206,6 +256,17 @@ func (s *Session) Close(reason string) {
 			// one, so a pool survives the loss of one client.
 			t.group.remove(t)
 		}
+
+		s.vpnMu.Lock()
+		transport := s.vpnTransport
+		s.vpnTransport, s.vpnPeer, s.vpnAddress = nil, nil, ""
+		s.vpnMu.Unlock()
+		if transport != nil {
+			// Closing the transport stops the peer's serve loop, which detaches it
+			// from the router.
+			_ = transport.Close()
+		}
+
 		_ = s.conn.Close()
 	})
 }

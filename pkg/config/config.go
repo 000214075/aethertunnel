@@ -23,6 +23,7 @@ import (
 	"github.com/aethertunnel/aethertunnel/pkg/crypto"
 	"github.com/aethertunnel/aethertunnel/pkg/dht"
 	"github.com/aethertunnel/aethertunnel/pkg/discovery"
+	"github.com/aethertunnel/aethertunnel/pkg/vpn"
 )
 
 // ServerConfig is the [server] section.
@@ -347,14 +348,26 @@ type ObfuscationConfig struct {
 	JitterMillis int `toml:"jitter_millis"`
 }
 
-// VPNConfig is kept so old configuration files still parse. The VPN data path is
-// not implemented in this version; see docs/ARCHITECTURE.md.
+// VPNConfig is the [vpn] section: a layer-3 tunnel that gives each client an
+// address on a subnet.
+//
+// The server owns the subnet and hands out one address per session; the client is
+// told which address it got when its session is accepted, so only the server has an
+// address to configure.
 type VPNConfig struct {
-	Enabled   bool   `toml:"enabled"`
-	BindAddr  string `toml:"bind_addr"`
-	Port      int    `toml:"port"`
-	AuthToken string `toml:"auth_token"`
-	Protocol  string `toml:"protocol"`
+	Enabled bool `toml:"enabled"`
+	// Device is the interface name. On the server it is the interface the tunnel
+	// reads and writes; on the client it is the interface to create. An empty name
+	// asks the kernel for the next free one, which only Linux supports.
+	Device string `toml:"device"`
+	// Address is the subnet the server allocates client addresses from, in CIDR
+	// form. The server keeps the first usable address for itself. Server only.
+	Address string `toml:"address"`
+	// MTU overrides the interface MTU. Zero uses the interface's own value.
+	MTU int `toml:"mtu"`
+	// Require asks the server to refuse a session that does not want a tunnel
+	// address. Server only.
+	Require bool `toml:"require"`
 }
 
 // Config is the whole file.
@@ -796,7 +809,21 @@ func (c *Config) Validate(role string) error {
 		}
 	}
 	if c.VPN.Enabled {
-		c.Warnings = append(c.Warnings, "vpn.enabled is true but the VPN data path is not implemented in this version; it will be ignored")
+		if c.VPN.MTU != 0 && (c.VPN.MTU < vpn.MinMTU || c.VPN.MTU > vpn.MaxMTU) {
+			problems = append(problems, fmt.Sprintf("vpn.mtu must be %d-%d, got %d", vpn.MinMTU, vpn.MaxMTU, c.VPN.MTU))
+		}
+		switch role {
+		case RoleServer:
+			if c.VPN.Address == "" {
+				problems = append(problems, "vpn.enabled is true but vpn.address is empty: the server needs a subnet to allocate client addresses from")
+			} else if _, err := vpn.NewPool(c.VPN.Address); err != nil {
+				problems = append(problems, fmt.Sprintf("vpn.address %q is not usable: %v", c.VPN.Address, err))
+			}
+		case RoleClient:
+			if c.VPN.Address != "" {
+				c.Warnings = append(c.Warnings, "vpn.address has no effect in a client configuration: the server decides the subnet and tells the client which address it got")
+			}
+		}
 	}
 
 	switch {

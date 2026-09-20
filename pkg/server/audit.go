@@ -37,6 +37,9 @@ const (
 	EventVisitorRejected = "visitor_rejected"
 	EventP2PDirect       = "p2p_direct"
 	EventP2PRelayed      = "p2p_relayed"
+
+	EventVPNAssigned = "vpn_address_assigned"
+	EventVPNRejected = "vpn_address_rejected"
 )
 
 // Auditor writes JSON Lines audit records. A disabled auditor discards

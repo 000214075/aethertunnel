@@ -24,6 +24,7 @@ import (
 	"github.com/aethertunnel/aethertunnel/pkg/discovery"
 	flynet "github.com/aethertunnel/aethertunnel/pkg/net"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
+	"github.com/aethertunnel/aethertunnel/pkg/vpn"
 )
 
 // Stamped at build time; see the server's main.go for the ldflags form.
@@ -46,12 +47,31 @@ type client struct {
 	resolver *discovery.Node
 	target   string
 
+	// vpnTransport is the packet path of the current session, nil unless the server
+	// gave this client a tunnel address.
+	vpnMu        sync.Mutex
+	vpnTransport *vpn.ChannelTransport
+
 	mu              sync.Mutex
 	session         string
 	p2pPort         int
 	sessionKey      []byte
 	activeStreams   sync.WaitGroup
 	registeredNames []string
+}
+
+// deliverVPN hands a packet received on the control connection to the tunnel.
+func (c *client) deliverVPN(packet []byte) {
+	c.vpnMu.Lock()
+	transport := c.vpnTransport
+	c.vpnMu.Unlock()
+	if transport == nil {
+		c.logger.Printf("the server sent a tunnel packet but this session holds no address")
+		return
+	}
+	if !transport.Deliver(packet) {
+		c.logger.Printf("dropped a tunnel packet because the tunnel's buffer is full")
+	}
 }
 
 // serverAddr is the address the next connection attempt dials.
@@ -320,6 +340,7 @@ func (c *client) runSession(ctx context.Context) error {
 		ClientVersion: version,
 		Protocol:      protocol.ProtocolVersion,
 		Encryption:    c.cipher.Algorithm(),
+		VPN:           c.cfg.VPN.Enabled,
 	}
 
 	var kexState []byte
@@ -388,6 +409,16 @@ func (c *client) runSession(ctx context.Context) error {
 		return err
 	}
 
+	// The server gave this session an address on its layer-3 subnet, so the tunnel
+	// runs for as long as the session does and stops with it.
+	if response.VPNAddress != "" {
+		stopTunnel, err := c.startVPN(ctx, framer, response)
+		if err != nil {
+			return err
+		}
+		defer stopTunnel()
+	}
+
 	heartbeatDone := make(chan struct{})
 	go c.heartbeatLoop(heartbeatDone, framer, response.HeartbeatSecs)
 
@@ -413,6 +444,8 @@ func (c *client) runSession(ctx context.Context) error {
 				continue
 			}
 			go c.serveStream(response.Session, request)
+		case protocol.TypeVPNPacket:
+			c.deliverVPN(msg.Payload)
 		case protocol.TypeP2PPrepare:
 			var prepare protocol.P2PPrepare
 			if err := json.Unmarshal(msg.Payload, &prepare); err != nil {
@@ -430,6 +463,77 @@ func (c *client) runSession(ctx context.Context) error {
 			c.logger.Printf("ignoring unexpected control frame %s", msg.Type)
 		}
 	}
+}
+
+// startVPN opens the client's layer-3 interface and runs the tunnel for one session.
+//
+// It returns a function that stops the tunnel and closes the interface. The tunnel
+// is started after the session exists, because the address it configures comes from
+// the server's answer, and it stops when the session does: the packets it carries
+// have nowhere to go without the session.
+func (c *client) startVPN(ctx context.Context, framer *protocol.Framer, response protocol.AuthResponse) (func(), error) {
+	if !c.cfg.VPN.Enabled {
+		// The server offered an address but this client has no [vpn] section, so
+		// there is nowhere to put the packets.
+		c.logger.Printf("the server offered tunnel address %s but [vpn] enabled is false; ignoring it",
+			response.VPNAddress)
+		return func() {}, nil
+	}
+
+	mtu := response.VPNMTU
+	if c.cfg.VPN.MTU != 0 {
+		mtu = c.cfg.VPN.MTU
+	}
+
+	device, err := vpn.Open(c.cfg.VPN.Device, mtu)
+	if err != nil {
+		return nil, fmt.Errorf("open the tunnel interface: %w", err)
+	}
+	if err := vpn.AssignAddress(device, response.VPNAddress); err != nil {
+		_ = device.Close()
+		return nil, fmt.Errorf("configure %s with %s: %w", device.Name(), response.VPNAddress, err)
+	}
+
+	transport := vpn.NewChannelTransport(func(packet []byte) error {
+		return framer.WriteFrame(&protocol.Message{Type: protocol.TypeVPNPacket, Payload: packet})
+	})
+	tunnel, err := vpn.New(device, transport, vpn.Options{MTU: mtu, Logger: c.logger})
+	if err != nil {
+		_ = device.Close()
+		_ = transport.Close()
+		return nil, err
+	}
+
+	c.vpnMu.Lock()
+	c.vpnTransport = transport
+	c.vpnMu.Unlock()
+
+	tunnelCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := tunnel.Run(tunnelCtx); err != nil {
+			c.logger.Printf("tunnel %s stopped: %v", device.Name(), err)
+		}
+	}()
+
+	mask := response.VPNMask
+	if mask == "" {
+		mask = "255.255.255.0"
+	}
+	c.logger.Printf("tunnel interface %s is %s/%s, MTU %d", device.Name(), response.VPNAddress, mask, tunnel.MTU())
+
+	return func() {
+		cancel()
+		<-done
+		c.vpnMu.Lock()
+		c.vpnTransport = nil
+		c.vpnMu.Unlock()
+
+		stats := tunnel.Stats().Snapshot()
+		c.logger.Printf("tunnel stopped: %d packets out (%d bytes), %d in (%d bytes), %d dropped",
+			stats.FromDevice, stats.BytesFromDevice, stats.ToDevice, stats.BytesToDevice, stats.Dropped)
+	}, nil
 }
 
 // registerProxies publishes every configured tunnel on the current session.

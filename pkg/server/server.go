@@ -26,6 +26,10 @@ type Options struct {
 	BuildTime string
 	GitCommit string
 	Logger    *log.Logger
+	// VPNOpen opens the layer-3 interface. nil uses the operating system's own tun
+	// support. It is here so a test can run the layer-3 path on a machine that
+	// cannot provide an interface.
+	VPNOpen DeviceOpener
 }
 
 // Server is the AetherTunnel server.
@@ -55,6 +59,7 @@ type Server struct {
 	vhost     *vhostSet
 	p2p       *p2pRendezvous
 	directory *directory
+	vpn       *vpnService
 
 	tlsConfig  *tls.Config
 	identities []ed25519.PublicKey
@@ -99,6 +104,14 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		_ = auditor.Close()
 		return nil, err
 	}
+	tunnels, err := openVPN(cfg, logger, opts.VPNOpen)
+	if err != nil {
+		_ = dir.Close()
+		_ = bandwidth.Close()
+		_ = auditor.Close()
+		return nil, err
+	}
+	vpnService := tunnels
 	tlsConfig, err := cfg.ServerTLSConfig()
 	if err != nil {
 		return nil, err
@@ -124,6 +137,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		identities: identities,
 		nonces:     crypto.NewNonceCache(0),
 		directory:  dir,
+		vpn:        vpnService,
 	}
 	sessions := newSessionManager(cfg.Server.MaxConnections)
 	s.sessions = sessions
@@ -283,6 +297,9 @@ func (s *Server) closeStores() {
 	if err := s.directory.Close(); err != nil {
 		s.logger.Printf("closing the DHT node: %v", err)
 	}
+	if err := s.vpn.Close(); err != nil {
+		s.logger.Printf("closing the vpn interface: %v", err)
+	}
 }
 
 // identityAssertion is one client identity assertion in the wire form both the
@@ -364,6 +381,27 @@ func (s *Server) handleConn(conn net.Conn) {
 		})
 		_ = conn.Close()
 	}
+}
+
+// refuseVPN tears down a session whose tunnel request could not be met. The session
+// was already registered, so it is removed from both registries and its address, if
+// one was assigned, is released.
+func (s *Server) refuseVPN(session *Session, conn net.Conn, reason string) {
+	s.metrics.controlRejected.Add(1)
+	s.auditor.Record(AuditEvent{
+		Event: EventVPNRejected, ClientID: session.ID, Remote: session.RemoteAddr,
+		Outcome: "denied", Detail: reason,
+	})
+	s.logger.Printf("refusing %s: %s", conn.RemoteAddr(), reason)
+
+	_ = session.Framer().WriteJSON(protocol.TypeAuthResponse, protocol.AuthResponse{
+		OK: false, ServerVersion: s.version, Protocol: protocol.ProtocolVersion,
+		Encryption: s.Cipher(), Error: reason,
+	})
+	s.tunnels.RemoveSessionTunnels(session, "tunnel request refused")
+	s.sessions.Remove(session.ID)
+	session.Close("tunnel request refused")
+	s.vpn.release(session.ID)
 }
 
 // handleControl authenticates a client and then serves its session loop.
@@ -472,6 +510,33 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 			req.ClientVersion, req.Protocol, s.Cipher(), len(sessionKey) > 0, len(req.Identity) > 0),
 	})
 
+	// A tunnel address is assigned before the response is written, because the
+	// response is what carries it.
+	var vpnAddress, vpnMask string
+	var vpnMTU int
+	switch {
+	case s.cfg.VPN.Require && !req.VPN:
+		// The operator wants every session on the tunnel, and this client did not
+		// ask for one.
+		s.refuseVPN(session, conn, "this server requires a layer-3 tunnel (vpn.require); set [vpn] enabled = true")
+		return
+	case req.VPN && s.vpn == nil:
+		s.refuseVPN(session, conn, "this server has no layer-3 tunnel configured")
+		return
+	case req.VPN:
+		address, mtu, err := s.attachVPN(session)
+		if err != nil {
+			s.logger.Printf("client %s: cannot provide a tunnel address: %v", session.ID, err)
+			s.refuseVPN(session, conn, "no tunnel address is available")
+			return
+		}
+		vpnAddress, vpnMask, vpnMTU = address, s.vpn.Mask(), mtu
+		s.auditor.Record(AuditEvent{
+			Event: EventVPNAssigned, ClientID: session.ID, Remote: session.RemoteAddr,
+			Outcome: "ok", Detail: fmt.Sprintf("tunnel address %s, mtu %d", vpnAddress, vpnMTU),
+		})
+	}
+
 	response := protocol.AuthResponse{
 		OK:               true,
 		Session:          session.ID,
@@ -482,6 +547,9 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 		ProtocolMismatch: req.Protocol != protocol.ProtocolVersion,
 		P2PPort:          s.cfg.Server.P2PPort,
 		KEX:              kexResponse,
+		VPNAddress:       vpnAddress,
+		VPNMask:          vpnMask,
+		VPNMTU:           vpnMTU,
 	}
 	// The response itself is still protected by the configured cipher; both
 	// sides switch to the agreed key immediately afterwards.
@@ -491,7 +559,7 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 		return
 	}
 	if len(sessionKey) > 0 {
-		session.framer = protocol.NewFramerWithOptions(conn, sessionCipher, s.framerOptions())
+		session.SetFramer(protocol.NewFramerWithOptions(conn, sessionCipher, s.framerOptions()))
 		s.logger.Printf("post-quantum session key %s agreed with %s", crypto.SessionKeyID(sessionKey), conn.RemoteAddr())
 	}
 
@@ -502,6 +570,9 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 		s.tunnels.RemoveSessionTunnels(session, "client disconnected")
 		s.sessions.Remove(session.ID)
 		session.Close("control connection ended")
+		// The address is released after the session is closed, so the peer stops
+		// routing packets here before the lease disappears.
+		s.vpn.release(session.ID)
 		// The ledger entry is written after the member endpoints are gone, so it
 		// covers the whole life of the proxy and is written once.
 		s.recordSessionUsage(session)
@@ -528,7 +599,7 @@ func (s *Server) sessionLoop(session *Session) {
 			_ = session.conn.SetReadDeadline(time.Now().Add(deadline))
 		}
 
-		msg, err := session.framer.ReadFrame()
+		msg, err := session.Framer().ReadFrame()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				s.logger.Printf("client %s missed its heartbeat window (%s), closing", session.ID, deadline)
@@ -541,7 +612,7 @@ func (s *Server) sessionLoop(session *Session) {
 		switch msg.Type {
 		case protocol.TypeHeartbeat:
 			session.touchHeartbeat()
-			if err := session.framer.WriteFrame(&protocol.Message{Type: protocol.TypeHeartbeatAck}); err != nil {
+			if err := session.Framer().WriteFrame(&protocol.Message{Type: protocol.TypeHeartbeatAck}); err != nil {
 				return
 			}
 
@@ -573,6 +644,18 @@ func (s *Server) sessionLoop(session *Session) {
 			})
 			s.sendProxyList(session)
 
+		case protocol.TypeVPNPacket:
+			// A packet from the client goes to the transport the session's peer
+			// reads from. A session without a tunnel must not be able to flood the
+			// router, so the frame is dropped and counted.
+			if transport := session.vpnTransportFor(); transport != nil {
+				if !transport.Deliver(msg.Payload) {
+					s.logger.Printf("client %s: dropped a tunnel packet because its buffer is full", session.ID)
+				}
+			} else {
+				s.logger.Printf("client %s sent a tunnel packet but holds no tunnel address", session.ID)
+			}
+
 		case protocol.TypeError:
 			s.logger.Printf("client %s reported an error: %s", session.ID, string(msg.Payload))
 
@@ -583,7 +666,7 @@ func (s *Server) sessionLoop(session *Session) {
 }
 
 func (s *Server) replyError(session *Session, message string) {
-	if err := session.framer.WriteJSON(protocol.TypeError, protocol.ErrorPayload{Error: message}); err != nil {
+	if err := session.Framer().WriteJSON(protocol.TypeError, protocol.ErrorPayload{Error: message}); err != nil {
 		s.logger.Printf("client %s: could not deliver error %q: %v", session.ID, message, err)
 	}
 }
@@ -613,7 +696,7 @@ func (s *Server) sendProxyList(session *Session) {
 		statuses = append(statuses, status)
 	}
 
-	if err := session.framer.WriteJSON(protocol.TypeProxyList, statuses); err != nil {
+	if err := session.Framer().WriteJSON(protocol.TypeProxyList, statuses); err != nil {
 		s.logger.Printf("client %s: could not send proxy list: %v", session.ID, err)
 	}
 }
