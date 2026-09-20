@@ -207,8 +207,9 @@ func (d *Dashboard) apiStatus(w http.ResponseWriter, r *http.Request) {
 	in, out := d.server.totalBytes()
 	activeStreams := int64(0)
 	registered := 0
-	for _, tunnel := range d.server.tunnels.List() {
-		activeStreams += tunnel.Active.Load()
+	for _, group := range d.server.tunnels.Groups() {
+		active, _, _, _ := group.Totals()
+		activeStreams += active
 		registered++
 	}
 
@@ -266,21 +267,37 @@ func (d *Dashboard) apiClients(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Dashboard) apiProxies(w http.ResponseWriter, r *http.Request) {
-	tunnels := d.server.tunnels.List()
-	proxies := make([]map[string]any, 0, len(tunnels))
+	groups := d.server.tunnels.Groups()
+	proxies := make([]map[string]any, 0, len(groups))
 
-	for _, t := range tunnels {
-		proxies = append(proxies, map[string]any{
-			"name":               t.Name,
-			"type":               t.Spec.Type,
-			"local_addr":         t.Spec.LocalAddr,
-			"remote_port":        t.RemotePort,
-			"client_id":          t.Session.ID,
-			"active_connections": t.Active.Load(),
-			"total_connections":  t.Total.Load(),
-			"bytes_in":           t.BytesIn.Load(),
-			"bytes_out":          t.BytesOut.Load(),
-		})
+	for _, group := range groups {
+		active, total, in, out := group.Totals()
+		members := group.Summary()
+
+		row := map[string]any{
+			"name":               group.Name,
+			"type":               group.Type,
+			"remote_port":        group.RemotePort,
+			"domains":            group.Domains,
+			"group":              group.Group,
+			"load_balance":       group.strategy,
+			"multipath":          group.Multipath,
+			"addr":               group.Addr(),
+			"member_count":       len(members),
+			"members":            members,
+			"active_connections": active,
+			"total_connections":  total,
+			"bytes_in":           in,
+			"bytes_out":          out,
+		}
+
+		// The single-member fields keep the original shape of the response so an
+		// existing client of this API does not have to know about pools.
+		if len(members) > 0 {
+			row["local_addr"] = members[0].LocalAddr
+			row["client_id"] = members[0].ClientID
+		}
+		proxies = append(proxies, row)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"proxies": proxies})

@@ -420,6 +420,12 @@ type ProxySpec struct {
 	SecretKey string `json:"secret_key,omitempty"`
 	// AuthMethod is "secret" or "nizk".
 	AuthMethod string `json:"auth_method,omitempty"`
+	// Group pools this proxy with every other registration of the same name and
+	// group, so the server publishes one endpoint and balances across members.
+	Group string `json:"group,omitempty"`
+	// Multipath is how many parallel data connections carry one datagram
+	// session. Zero or one means a single path.
+	Multipath int `json:"multipath,omitempty"`
 }
 
 // VisitorConnect is the first frame of a visitor connection. A visitor is a
@@ -438,6 +444,12 @@ type VisitorConnect struct {
 	// KEX carries the visitor's hybrid public key when
 	// [encryption].post_quantum is on.
 	KEX []byte `json:"kex,omitempty"`
+	// The identity assertion, identical in form to the one a control connection
+	// carries, so a server that requires an identity requires it here too.
+	Identity          []byte `json:"identity,omitempty"`
+	IdentityNonce     []byte `json:"identity_nonce,omitempty"`
+	IdentityTime      int64  `json:"identity_time,omitempty"`
+	IdentitySignature []byte `json:"identity_signature,omitempty"`
 }
 
 // VisitorChallenge is the server's reply when a proxy uses auth_method = "nizk":
@@ -492,16 +504,19 @@ type P2PFallback struct {
 
 // ProxyStatus is one row of the proxy table reported to the dashboard.
 type ProxyStatus struct {
-	Name        string   `json:"name"`
-	Type        string   `json:"type"`
-	LocalAddr   string   `json:"local_addr"`
-	RemotePort  int      `json:"remote_port,omitempty"`
-	Domains     []string `json:"domains,omitempty"`
-	ClientID    string   `json:"client_id"`
-	Active      int64    `json:"active_connections"`
-	TotalOpened int64    `json:"total_connections"`
-	BytesIn     int64    `json:"bytes_in"`
-	BytesOut    int64    `json:"bytes_out"`
+	Name       string   `json:"name"`
+	Type       string   `json:"type"`
+	LocalAddr  string   `json:"local_addr"`
+	RemotePort int      `json:"remote_port,omitempty"`
+	Domains    []string `json:"domains,omitempty"`
+	ClientID   string   `json:"client_id"`
+	// GroupMembers is how many clients share this published name. One means the
+	// proxy is served by a single client.
+	GroupMembers int   `json:"group_members,omitempty"`
+	Active       int64 `json:"active_connections"`
+	TotalOpened  int64 `json:"total_connections"`
+	BytesIn      int64 `json:"bytes_in"`
+	BytesOut     int64 `json:"bytes_out"`
 }
 
 // DataRequest tells the client that a public connection is waiting and asks it to

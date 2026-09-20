@@ -23,14 +23,41 @@ type visitorSession struct {
 	// datagram session the framer already seals each frame.
 	cipher *crypto.Cipher
 	remote string
+
+	// kexResponse is the answer to the visitor's post-quantum key exchange. It
+	// travels in the first frame the server sends, and both ends then switch to
+	// the agreed key; kexSent keeps it to exactly one frame so the two sides
+	// agree on where the switch happens.
+	kexResponse []byte
+	kexSent     bool
+}
+
+// takeKEX returns the key agreement response when this is the first frame the
+// server sends, and nil afterwards. Everything the visitor reads before that
+// frame is protected by the configured cipher; everything after it is protected
+// by the agreed key, and both ends agree on where the switch happens because only
+// one frame carries it.
+func (v *visitorSession) takeKEX() []byte {
+	if v.kexSent || len(v.kexResponse) == 0 {
+		return nil
+	}
+	v.kexSent = true
+	return v.kexResponse
+}
+
+// switchFramer moves the connection onto the agreed key.
+func (v *visitorSession) switchFramer(opts protocol.FramerOptions) *protocol.Framer {
+	v.framer = protocol.NewFramerWithOptions(v.conn, v.cipher, opts)
+	return v.framer
 }
 
 // handleVisitor serves a visitor connection: a second client that wants to reach
 // a private proxy of another client.
 //
-// A visitor connection is authenticated twice — the server auth token, then
-// either the proxy's secret key or a proof of knowledge of it — because a private
-// proxy is only as private as the key guarding it.
+// A visitor connection is authenticated three times over: the server auth token,
+// the client identity when the server requires one, and the proxy's secret key or
+// a proof of knowledge of it. A private proxy is only as private as the key
+// guarding it, so none of the three is optional.
 func (s *Server) handleVisitor(conn net.Conn, framer *protocol.Framer, msg *protocol.Message) {
 	var req protocol.VisitorConnect
 	if len(msg.Payload) == 0 || json.Unmarshal(msg.Payload, &req) != nil {
@@ -51,12 +78,28 @@ func (s *Server) handleVisitor(conn net.Conn, framer *protocol.Framer, msg *prot
 		return
 	}
 
-	tunnel, err := s.tunnels.Get(req.Proxy)
+	if err := s.checkIdentity(identityAssertion{
+		PublicKey: req.Identity,
+		Nonce:     req.IdentityNonce,
+		Timestamp: req.IdentityTime,
+		Signature: req.IdentitySignature,
+	}); err != nil {
+		s.metrics.authFailures.Add(1)
+		s.auditor.Record(AuditEvent{
+			Event: EventAuthFailed, Remote: remote, Proxy: req.Proxy,
+			Outcome: "denied", Detail: err.Error(),
+		})
+		s.logger.Printf("visitor from %s rejected: %v", remote, err)
+		s.rejectVisitor(conn, framer, err.Error())
+		return
+	}
+
+	group, err := s.tunnels.Get(req.Proxy)
 	if err != nil {
 		s.rejectVisitor(conn, framer, fmt.Sprintf("no proxy named %q is registered", req.Proxy))
 		return
 	}
-	if !tunnel.Private() {
+	if !group.Private {
 		s.rejectVisitor(conn, framer, fmt.Sprintf("proxy %q is not a private proxy", req.Proxy))
 		return
 	}
@@ -87,11 +130,14 @@ func (s *Server) handleVisitor(conn net.Conn, framer *protocol.Framer, msg *prot
 		kexResponse = response
 	}
 
-	session := &visitorSession{conn: conn, framer: framer, cipher: visitorCipher, remote: remote}
+	session := &visitorSession{
+		conn: conn, framer: framer, cipher: visitorCipher,
+		remote: remote, kexResponse: kexResponse,
+	}
 
-	switch tunnel.AuthMethod {
+	switch group.AuthMethod {
 	case config.AuthMethodNIZK:
-		if err := s.challengeVisitor(session, tunnel, kexResponse); err != nil {
+		if err := s.challengeVisitor(session, group, kexResponse); err != nil {
 			s.metrics.authFailures.Add(1)
 			s.auditor.Record(AuditEvent{
 				Event: EventVisitorRejected, Remote: remote, Proxy: req.Proxy,
@@ -101,7 +147,7 @@ func (s *Server) handleVisitor(conn net.Conn, framer *protocol.Framer, msg *prot
 			return
 		}
 	default:
-		if !tunnel.matchesSecret(req.Secret) {
+		if !group.matchesSecret(req.Secret) {
 			s.metrics.authFailures.Add(1)
 			s.auditor.Record(AuditEvent{
 				Event: EventVisitorRejected, Remote: remote, Proxy: req.Proxy,
@@ -117,16 +163,16 @@ func (s *Server) handleVisitor(conn net.Conn, framer *protocol.Framer, msg *prot
 	s.auditor.Record(AuditEvent{
 		Event: EventVisitorAccepted, Remote: remote, Proxy: req.Proxy,
 		Outcome: "ok",
-		Detail:  fmt.Sprintf("type=%s auth=%s agreed_key=%v", tunnel.Type, tunnel.AuthMethod, len(kexResponse) > 0),
+		Detail:  fmt.Sprintf("type=%s auth=%s agreed_key=%v", group.Type, group.AuthMethod, len(kexResponse) > 0),
 	})
 
 	switch req.Type {
 	case protocol.ProxyTypeXTCP:
-		s.serveXTCPVisitor(session, tunnel)
+		s.serveXTCPVisitor(session, group)
 	case protocol.ProxyTypeSUDP:
-		s.relayDatagramVisitor(session, tunnel)
+		s.relayDatagramVisitor(session, group)
 	default:
-		s.relayStreamVisitor(session, tunnel)
+		s.relayStreamVisitor(session, group)
 	}
 }
 
@@ -138,7 +184,7 @@ func (s *Server) handleVisitor(conn net.Conn, framer *protocol.Framer, msg *prot
 // The challenge carries the key-agreement response, and the framer is replaced
 // immediately afterwards, so the two ends agree on exactly where the switch
 // happens.
-func (s *Server) challengeVisitor(session *visitorSession, tunnel *Tunnel, kexResponse []byte) error {
+func (s *Server) challengeVisitor(session *visitorSession, group *ProxyGroup, kexResponse []byte) error {
 	nonce, err := crypto.Nonce()
 	if err != nil {
 		s.rejectVisitor(session.conn, session.framer, "cannot generate a challenge")
@@ -146,13 +192,13 @@ func (s *Server) challengeVisitor(session *visitorSession, tunnel *Tunnel, kexRe
 	}
 
 	if err := session.framer.WriteJSON(protocol.TypeVisitorChallenge, protocol.VisitorChallenge{
-		Proxy: tunnel.Name,
+		Proxy: group.Name,
 		Nonce: nonce,
-		KEX:   kexResponse,
+		KEX:   session.takeKEX(),
 	}); err != nil {
 		return fmt.Errorf("send the challenge: %w", err)
 	}
-	session.framer = protocol.NewFramerWithOptions(session.conn, session.cipher, s.framerOptions())
+	session.switchFramer(s.framerOptions())
 
 	handshakeTimeout := time.Duration(s.cfg.Server.HandshakeTimeoutSecs) * time.Second
 	if handshakeTimeout > 0 {
@@ -167,8 +213,8 @@ func (s *Server) challengeVisitor(session *visitorSession, tunnel *Tunnel, kexRe
 	}
 
 	if err := crypto.SchnorrVerify(
-		tunnel.SecretPublicKey,
-		protocol.VisitorProofContext(tunnel.Name, nonce),
+		group.SecretPublicKey,
+		protocol.VisitorProofContext(group.Name, nonce),
 		answer.Proof,
 	); err != nil {
 		s.rejectVisitor(session.conn, session.framer, "the proof does not verify")
@@ -183,78 +229,87 @@ func (s *Server) rejectVisitor(conn net.Conn, framer *protocol.Framer, reason st
 	_ = conn.Close()
 }
 
-// relayStreamVisitor pairs a visitor connection with a data connection from the
-// proxy's owner and copies bytes between them.
-func (s *Server) relayStreamVisitor(session *visitorSession, tunnel *Tunnel) {
-	dc, release, err := tunnel.openStream(true)
+// relayStreamVisitor pairs a visitor connection with a data connection from one
+// member of the proxy's group and copies bytes between them.
+func (s *Server) relayStreamVisitor(session *visitorSession, group *ProxyGroup) {
+	member, stream, err := group.openForVisitor()
 	if err != nil {
 		s.logger.Printf("visitor from %s: %v", session.remote, err)
 		s.rejectVisitor(session.conn, session.framer, err.Error())
 		return
 	}
-	defer release()
+	defer stream.release()
 
-	if err := session.framer.WriteJSON(protocol.TypeDataOpenAck, protocol.DataOpenAck{OK: true}); err != nil {
-		_ = dc.Close()
+	ack := protocol.DataOpenAck{OK: true, KEX: session.takeKEX()}
+	if err := session.framer.WriteJSON(protocol.TypeDataOpenAck, ack); err != nil {
+		_ = stream.dc.Close()
 		return
 	}
-	session.framer = protocol.NewFramerWithOptions(session.conn, session.cipher, s.framerOptions())
+	session.switchFramer(s.framerOptions())
 
 	visitorSide := &cryptoStreamConn{
 		Stream: crypto.NewStream(session.conn, session.cipher),
 		conn:   session.conn,
 	}
-	_ = tunnel.pipeStream(visitorSide, dc, "visitor "+session.remote)
+	_ = member.pipeStream(visitorSide, stream.dc, "visitor "+session.remote)
 }
 
 // relayDatagramVisitor does the same for a sudp visitor, where each frame is one
 // datagram rather than part of a byte stream.
-func (s *Server) relayDatagramVisitor(session *visitorSession, tunnel *Tunnel) {
-	dc, release, err := tunnel.openStream(true)
+func (s *Server) relayDatagramVisitor(session *visitorSession, group *ProxyGroup) {
+	member, stream, err := group.openForVisitor()
 	if err != nil {
 		s.logger.Printf("visitor from %s: %v", session.remote, err)
 		s.rejectVisitor(session.conn, session.framer, err.Error())
 		return
 	}
-	defer release()
+	defer stream.release()
 
-	if err := session.framer.WriteJSON(protocol.TypeDataOpenAck, protocol.DataOpenAck{OK: true}); err != nil {
-		_ = dc.Close()
+	ack := protocol.DataOpenAck{OK: true, KEX: session.takeKEX()}
+	if err := session.framer.WriteJSON(protocol.TypeDataOpenAck, ack); err != nil {
+		_ = stream.dc.Close()
 		return
 	}
-	session.framer = protocol.NewFramerWithOptions(session.conn, session.cipher, s.framerOptions())
+	session.switchFramer(s.framerOptions())
 
-	_ = tunnel.pipeDatagrams(session.framer, dc, "visitor "+session.remote)
+	_ = member.pipeDatagrams(session.framer, stream.dc, "visitor "+session.remote)
 }
 
 // serveXTCPVisitor offers the visitor a hole-punch token and waits either for the
 // visitor to report that the punch failed or for it to go away.
-func (s *Server) serveXTCPVisitor(session *visitorSession, tunnel *Tunnel) {
+func (s *Server) serveXTCPVisitor(session *visitorSession, group *ProxyGroup) {
 	if s.p2p == nil {
 		// No rendezvous listener: the relayed path is the only path.
-		s.relayStreamVisitor(session, tunnel)
+		s.relayStreamVisitor(session, group)
 		return
 	}
 
-	token, err := s.p2p.offer(tunnel)
+	owner := group.pick()
+	if owner == nil {
+		s.rejectVisitor(session.conn, session.framer, "no client is publishing this proxy")
+		return
+	}
+
+	token, err := s.p2p.offer(group)
 	if err != nil {
-		s.logger.Printf("visitor from %s: cannot start a punch for %q: %v", session.remote, tunnel.Name, err)
-		s.relayStreamVisitor(session, tunnel)
+		s.logger.Printf("visitor from %s: cannot start a punch for %q: %v", session.remote, group.Name, err)
+		s.relayStreamVisitor(session, group)
 		return
 	}
 	s.metrics.p2pPunches.Add(1)
 
-	if err := session.framer.WriteJSON(protocol.TypeP2PPeer, protocol.P2PPeer{Token: token}); err != nil {
+	offer := protocol.P2PPeer{Token: token, KEX: session.takeKEX()}
+	if err := session.framer.WriteJSON(protocol.TypeP2PPeer, offer); err != nil {
 		s.p2p.forget(token)
 		_ = session.conn.Close()
 		return
 	}
-	session.framer = protocol.NewFramerWithOptions(session.conn, session.cipher, s.framerOptions())
+	session.switchFramer(s.framerOptions())
 
-	// Ask the owner to open its side of the punch.
-	prepare := protocol.P2PPrepare{Proxy: tunnel.Name, Token: token}
-	if err := tunnel.Session.Framer().WriteJSON(protocol.TypeP2PPrepare, prepare); err != nil {
-		s.logger.Printf("visitor from %s: cannot ask the owner of %q to punch: %v", session.remote, tunnel.Name, err)
+	// Ask one member to open its side of the punch.
+	prepare := protocol.P2PPrepare{Proxy: group.Name, Token: token}
+	if err := owner.Session.Framer().WriteJSON(protocol.TypeP2PPrepare, prepare); err != nil {
+		s.logger.Printf("visitor from %s: cannot ask the owner of %q to punch: %v", session.remote, group.Name, err)
 		s.p2p.forget(token)
 		_ = session.conn.Close()
 		return
@@ -270,7 +325,7 @@ func (s *Server) serveXTCPVisitor(session *visitorSession, tunnel *Tunnel) {
 		// visitor is talking to the owner directly, or the visitor gave up.
 		s.p2p.forget(token)
 		s.auditor.Record(AuditEvent{
-			Event: EventP2PDirect, Remote: session.remote, Proxy: tunnel.Name,
+			Event: EventP2PDirect, Remote: session.remote, Proxy: group.Name,
 			Outcome: "ok", Detail: "visitor left the rendezvous without asking for a relay",
 		})
 		_ = session.conn.Close()
@@ -279,12 +334,12 @@ func (s *Server) serveXTCPVisitor(session *visitorSession, tunnel *Tunnel) {
 	case msg.Type == protocol.TypeP2PFallback:
 		s.metrics.p2pRelayed.Add(1)
 		s.auditor.Record(AuditEvent{
-			Event: EventP2PRelayed, Remote: session.remote, Proxy: tunnel.Name,
+			Event: EventP2PRelayed, Remote: session.remote, Proxy: group.Name,
 			Outcome: "ok", Detail: "hole punching failed, using the relayed path",
 		})
-		s.logger.Printf("visitor %s for %q fell back to the relayed path", session.remote, tunnel.Name)
+		s.logger.Printf("visitor %s for %q fell back to the relayed path", session.remote, group.Name)
 		s.p2p.forget(token)
-		s.relayStreamVisitor(session, tunnel)
+		s.relayStreamVisitor(session, group)
 
 	default:
 		s.p2p.forget(token)

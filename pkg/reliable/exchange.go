@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// Exchange sends payload to server repeatedly and returns the first datagram it
-// receives in reply, together with the address it came from.
+// Exchange sends payload to server repeatedly and returns the addresses reply it
+// selects, together with the address it came from.
 //
 // It runs on the very socket that will later carry the stream. That is the whole
 // point: a NAT maps a socket's traffic by port, so the rendezvous server only
@@ -17,15 +17,23 @@ import (
 // and the stream leave through the same socket. Exchanging addresses from a
 // throwaway socket produces a mapping that no incoming packet will ever reach.
 //
+// accept decides which datagrams count as the reply. It must not be nil, because
+// the peer starts punching as soon as the server has told it where this socket
+// is, so hello datagrams and the reply can arrive interleaved; anything accept
+// rejects is discarded, and the peer keeps retrying.
+//
 // Exchange must be called before Punch or Accept. It leaves the socket usable and
 // does not consume the handshake token, so the caller may set the token with
 // SetToken before punching.
-func (s *Socket) Exchange(ctx context.Context, server net.Addr, payload []byte) ([]byte, net.Addr, error) {
+func (s *Socket) Exchange(ctx context.Context, server net.Addr, payload []byte, accept func([]byte) bool) ([]byte, net.Addr, error) {
 	if server == nil {
 		return nil, nil, errors.New("reliable: exchange needs a server address")
 	}
 	if len(payload) == 0 {
 		return nil, nil, errors.New("reliable: exchange needs a payload")
+	}
+	if accept == nil {
+		return nil, nil, errors.New("reliable: exchange needs an accept predicate")
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -81,6 +89,9 @@ func (s *Socket) Exchange(ctx context.Context, server net.Addr, payload []byte) 
 			return nil, nil, fmt.Errorf("reliable: exchange read: %w", err)
 		}
 		if n == 0 {
+			continue
+		}
+		if !accept(buf[:n]) {
 			continue
 		}
 

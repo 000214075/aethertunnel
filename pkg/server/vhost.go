@@ -1,14 +1,11 @@
 package server
 
 import (
-	"context"
 	"crypto/tls"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -19,8 +16,8 @@ import (
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
 )
 
-// vhostRouter publishes every http or https tunnel on one shared listener. The
-// request's Host header selects the tunnel, so a single TLS certificate and a
+// vhostRouter publishes every http or https proxy on one shared listener. The
+// request's Host header selects the proxy, so a single TLS certificate and a
 // single port serve any number of local web servers.
 type vhostRouter struct {
 	kind    string // "http" or "https"
@@ -29,8 +26,8 @@ type vhostRouter struct {
 	metrics *Metrics
 
 	mu        sync.RWMutex
-	exact     map[string]*Tunnel
-	wildcard  map[string]*Tunnel // key is the suffix including the leading dot
+	exact     map[string]*ProxyGroup
+	wildcard  map[string]*ProxyGroup // key is the suffix including the leading dot
 	subdomain string
 
 	listener net.Listener
@@ -54,8 +51,8 @@ func newVhostSet(cfg *config.Config, logger *log.Logger, metrics *Metrics) *vhos
 	return set
 }
 
-// start binds every configured listener. The certificate is loaded first so a
-// bad path is reported before any port is taken.
+// start binds every configured listener. The certificate is loaded first so a bad
+// path is reported before any port is taken.
 func (v *vhostSet) start() error {
 	if v.https != nil {
 		cert, err := tls.LoadX509KeyPair(v.https.cfg.Server.HTTPSCertFile, v.https.cfg.Server.HTTPSKeyFile)
@@ -97,8 +94,21 @@ func (v *vhostSet) domains() []string {
 	return out
 }
 
-func (v *vhostSet) routerFor(t *Tunnel) *vhostRouter {
-	switch t.Type {
+func (v *vhostSet) add(group *ProxyGroup) (*vhostBinding, error) {
+	router := v.routerFor(group)
+	if router == nil {
+		port := "http_port"
+		if group.Type == protocol.ProxyTypeHTTPS {
+			port = "https_port"
+		}
+		return nil, fmt.Errorf("proxy %q is type %s but server.%s is not configured",
+			group.Name, group.Type, port)
+	}
+	return router.add(group)
+}
+
+func (v *vhostSet) routerFor(group *ProxyGroup) *vhostRouter {
+	switch group.Type {
 	case protocol.ProxyTypeHTTP:
 		return v.http
 	case protocol.ProxyTypeHTTPS:
@@ -108,34 +118,22 @@ func (v *vhostSet) routerFor(t *Tunnel) *vhostRouter {
 	}
 }
 
-func (v *vhostSet) add(t *Tunnel) (*vhostBinding, error) {
-	router := v.routerFor(t)
-	if router == nil {
-		port := "http_port"
-		if t.Type == protocol.ProxyTypeHTTPS {
-			port = "https_port"
-		}
-		return nil, fmt.Errorf("proxy %q is type %s but server.%s is not configured", t.Name, t.Type, port)
-	}
-	return router.add(t)
-}
-
 func newVhostRouter(kind string, cfg *config.Config, logger *log.Logger, metrics *Metrics) *vhostRouter {
 	return &vhostRouter{
 		kind:      kind,
 		cfg:       cfg,
 		logger:    logger,
 		metrics:   metrics,
-		exact:     make(map[string]*Tunnel),
-		wildcard:  make(map[string]*Tunnel),
+		exact:     make(map[string]*ProxyGroup),
+		wildcard:  make(map[string]*ProxyGroup),
 		subdomain: strings.ToLower(cfg.Server.SubdomainHost),
 	}
 }
 
-// vhostBinding is one tunnel's registration on a router.
+// vhostBinding is one proxy's registration on a router.
 type vhostBinding struct {
 	router  *vhostRouter
-	tunnel  *Tunnel
+	group   *ProxyGroup
 	domains []string
 	once    sync.Once
 }
@@ -144,14 +142,38 @@ func (b *vhostBinding) remove() {
 	b.once.Do(func() { b.router.remove(b) })
 }
 
-// add registers a tunnel's domains, refusing a domain that is already taken by
-// another tunnel so two clients cannot silently share a hostname.
-func (v *vhostRouter) add(t *Tunnel) (*vhostBinding, error) {
+// extend adds hostnames a later member of a pool asked for.
+func (b *vhostBinding) extend(domains []string) error {
+	if len(domains) == 0 {
+		return nil
+	}
+
+	b.router.mu.Lock()
+	defer b.router.mu.Unlock()
+
+	for _, raw := range domains {
+		domain := strings.ToLower(strings.TrimSuffix(raw, "."))
+		if err := b.router.checkFreeLocked(domain, b.group); err != nil {
+			return err
+		}
+		if strings.HasPrefix(domain, "*.") {
+			b.router.wildcard[domain[1:]] = b.group
+		} else {
+			b.router.exact[domain] = b.group
+		}
+		b.domains = append(b.domains, domain)
+	}
+	return nil
+}
+
+// add registers a proxy's domains, refusing a domain that is already taken by
+// another proxy so two clients cannot silently share a hostname.
+func (v *vhostRouter) add(group *ProxyGroup) (*vhostBinding, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
-	binding := &vhostBinding{router: v, tunnel: t}
-	registered := make([]string, 0, len(t.Domains))
+	binding := &vhostBinding{router: v, group: group, domains: append([]string(nil), group.Domains...)}
+	registered := make([]string, 0, len(group.Domains))
 
 	rollback := func() {
 		for _, domain := range registered {
@@ -163,16 +185,16 @@ func (v *vhostRouter) add(t *Tunnel) (*vhostBinding, error) {
 		}
 	}
 
-	for _, raw := range t.Domains {
+	for _, raw := range group.Domains {
 		domain := strings.ToLower(strings.TrimSuffix(raw, "."))
-		if err := v.checkFreeLocked(domain, t); err != nil {
+		if err := v.checkFreeLocked(domain, group); err != nil {
 			rollback()
 			return nil, err
 		}
 		if strings.HasPrefix(domain, "*.") {
-			v.wildcard[domain[1:]] = t
+			v.wildcard[domain[1:]] = group
 		} else {
-			v.exact[domain] = t
+			v.exact[domain] = group
 		}
 		registered = append(registered, domain)
 	}
@@ -180,45 +202,43 @@ func (v *vhostRouter) add(t *Tunnel) (*vhostBinding, error) {
 	if len(registered) == 0 {
 		if v.subdomain == "" {
 			rollback()
-			return nil, fmt.Errorf("proxy %q has no domains and server.subdomain_host is not set", t.Name)
+			return nil, fmt.Errorf("proxy %q has no domains and server.subdomain_host is not set", group.Name)
 		}
-		if _, taken := v.exact[t.Name]; taken {
-			return nil, fmt.Errorf("the subdomain %q is already published by another tunnel", t.Name)
+		if _, taken := v.exact[group.Name]; taken {
+			return nil, fmt.Errorf("the subdomain %q is already published by another proxy", group.Name)
 		}
-		v.exact[t.Name] = t
-		registered = append(registered, t.Name)
+		v.exact[group.Name] = group
+		registered = append(registered, group.Name)
 	}
 
 	binding.domains = registered
 	return binding, nil
 }
 
-func (v *vhostRouter) checkFreeLocked(domain string, t *Tunnel) error {
-	lookup := domain
+func (v *vhostRouter) checkFreeLocked(domain string, group *ProxyGroup) error {
 	if strings.HasPrefix(domain, "*.") {
-		lookup = domain[1:]
-		if existing, ok := v.wildcard[lookup]; ok && existing != t {
-			return fmt.Errorf("the domain %q is already published by tunnel %q", domain, existing.Name)
+		if existing, ok := v.wildcard[domain[1:]]; ok && existing != group {
+			return fmt.Errorf("the domain %q is already published by proxy %q", domain, existing.Name)
 		}
 		return nil
 	}
-	if existing, ok := v.exact[domain]; ok && existing != t {
-		return fmt.Errorf("the domain %q is already published by tunnel %q", domain, existing.Name)
+	if existing, ok := v.exact[domain]; ok && existing != group {
+		return fmt.Errorf("the domain %q is already published by proxy %q", domain, existing.Name)
 	}
 	return nil
 }
 
-func (v *vhostRouter) remove(b *vhostBinding) {
+func (v *vhostRouter) remove(binding *vhostBinding) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	for _, domain := range b.domains {
+	for _, domain := range binding.domains {
 		if strings.HasPrefix(domain, "*.") {
-			if current, ok := v.wildcard[domain[1:]]; ok && current == b.tunnel {
+			if current, ok := v.wildcard[domain[1:]]; ok && current == binding.group {
 				delete(v.wildcard, domain[1:])
 			}
 			continue
 		}
-		if current, ok := v.exact[domain]; ok && current == b.tunnel {
+		if current, ok := v.exact[domain]; ok && current == binding.group {
 			delete(v.exact, domain)
 		}
 	}
@@ -239,26 +259,26 @@ func (v *vhostRouter) Domains() []string {
 	return out
 }
 
-// lookup finds the tunnel that owns a hostname: an exact match first, then the
+// lookup finds the proxy that owns a hostname: an exact match first, then the
 // longest matching wildcard, then the subdomain-host convention.
-func (v *vhostRouter) lookup(host string) *Tunnel {
+func (v *vhostRouter) lookup(host string) *ProxyGroup {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 
-	if tunnel, ok := v.exact[host]; ok {
-		return tunnel
+	if group, ok := v.exact[host]; ok {
+		return group
 	}
 
 	best := ""
-	var match *Tunnel
-	for suffix, tunnel := range v.wildcard {
+	var match *ProxyGroup
+	for suffix, group := range v.wildcard {
 		if len(host) <= len(suffix) || !strings.HasSuffix(host, suffix) {
 			continue
 		}
 		if len(suffix) > len(best) {
-			best, match = suffix, tunnel
+			best, match = suffix, group
 		}
 	}
 	if match != nil {
@@ -267,27 +287,27 @@ func (v *vhostRouter) lookup(host string) *Tunnel {
 
 	if v.subdomain != "" && strings.HasSuffix(host, "."+v.subdomain) {
 		name := strings.TrimSuffix(host, "."+v.subdomain)
-		if tunnel, ok := v.exact[name]; ok {
-			return tunnel
+		if group, ok := v.exact[name]; ok {
+			return group
 		}
 	}
 	return nil
 }
 
-// handler dispatches one request to the tunnel that owns its Host header.
+// handler dispatches one request to the proxy that owns its Host header.
 func (v *vhostRouter) handler(w http.ResponseWriter, r *http.Request) {
 	host := r.Host
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
 
-	tunnel := v.lookup(host)
-	if tunnel == nil {
-		v.logger.Printf("%s: no tunnel is registered for host %q", v.kind, host)
+	group := v.lookup(host)
+	if group == nil {
+		v.logger.Printf("%s: no proxy is registered for host %q", v.kind, host)
 		http.Error(w, fmt.Sprintf("no tunnel is registered for %s", host), http.StatusNotFound)
 		return
 	}
-	tunnel.serveHTTP(w, r)
+	group.serveHTTP(w, r)
 }
 
 // start binds the listener and serves in the background.
@@ -336,93 +356,6 @@ type prefixWriter struct {
 func (w *prefixWriter) Write(p []byte) (int, error) {
 	w.logger.Printf("%s%s", w.prefix, strings.TrimRight(string(p), "\n"))
 	return len(p), nil
-}
-
-// --- one tunnel's reverse proxy ----------------------------------------------
-
-// serveHTTP forwards one request to the client's local web server over a fresh
-// tunnelled connection.
-func (t *Tunnel) serveHTTP(w http.ResponseWriter, r *http.Request) {
-	proxy := t.httpProxy()
-	if proxy == nil {
-		http.Error(w, "this tunnel has no http handler", http.StatusInternalServerError)
-		return
-	}
-
-	t.metrics.httpRequests.Add(1)
-	t.metrics.tunnel(t.Name).httpRequests.Add(1)
-	t.Active.Add(1)
-	t.metrics.streamOpened(t.Name)
-	defer func() {
-		t.Active.Add(-1)
-		t.metrics.streamClosed(t.Name)
-	}()
-
-	counter := &countingResponseWriter{ResponseWriter: w}
-	proxy.ServeHTTP(counter, r)
-
-	toClient := r.ContentLength
-	if toClient < 0 {
-		toClient = 0
-	}
-	fromClient := counter.written
-	t.BytesOut.Add(toClient)
-	t.BytesIn.Add(fromClient)
-	t.Total.Add(1)
-	t.Session.RecordTraffic(toClient, fromClient)
-	t.metrics.recordStream(t.Name, toClient, fromClient)
-}
-
-// httpProxy builds the tunnel's reverse proxy once.
-func (t *Tunnel) httpProxy() *httputil.ReverseProxy {
-	t.proxyOnce.Do(func() {
-		if t.Type == protocol.ProxyTypeHTTP || t.Type == protocol.ProxyTypeHTTPS {
-			t.proxy = t.buildHTTPProxy()
-		}
-	})
-	return t.proxy
-}
-
-func (t *Tunnel) buildHTTPProxy() *httputil.ReverseProxy {
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			dc, release, err := t.openStream(false)
-			if err != nil {
-				return nil, err
-			}
-			return &tunnelHTTPConn{
-				Stream:  crypto.NewStream(dc.conn, t.cipher),
-				conn:    dc.conn,
-				tunnel:  t,
-				release: release,
-			}, nil
-		},
-		MaxIdleConns:          64,
-		MaxIdleConnsPerHost:   8,
-		IdleConnTimeout:       60 * time.Second,
-		ResponseHeaderTimeout: time.Duration(t.dialTimeout) * time.Second,
-		ExpectContinueTimeout: time.Second,
-		ForceAttemptHTTP2:     false,
-		// The client's web server chose the encoding; re-encoding here would
-		// change the body the visitor receives.
-		DisableCompression: true,
-	}
-
-	target := &url.URL{Scheme: "http", Host: "tunnel"}
-
-	return &httputil.ReverseProxy{
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.SetURL(target)
-			pr.Out.Host = pr.In.Host
-			pr.SetXForwarded()
-		},
-		Transport: transport,
-		ErrorLog:  log.New(&prefixWriter{logger: t.logger, prefix: "http " + t.Name + ": "}, "", 0),
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			t.logger.Printf("tunnel %q: http request for %s failed: %v", t.Name, r.Host, err)
-			w.WriteHeader(http.StatusBadGateway)
-		},
-	}
 }
 
 // tunnelHTTPConn presents a tunnelled data stream as a net.Conn for the HTTP

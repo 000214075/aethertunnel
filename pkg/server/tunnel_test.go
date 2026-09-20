@@ -121,6 +121,11 @@ type testClient struct {
 	framer  *protocol.Framer
 	cipher  *crypto.Cipher
 	session string
+
+	// kexState and sessionKey carry the post-quantum handshake between
+	// enablePostQuantum and finishPostQuantum.
+	kexState   []byte
+	sessionKey []byte
 }
 
 func newTestClient(t *testing.T, serverAddr string, encryption bool) (*testClient, error) {

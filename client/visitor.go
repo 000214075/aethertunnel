@@ -308,6 +308,10 @@ func (c *client) dialVisitor(cfg config.VisitorConfig) (net.Conn, *protocol.Fram
 	if cfg.AuthMethod == config.AuthMethodSecret {
 		request.Secret = cfg.SecretKey
 	}
+	if err := c.attachVisitorIdentity(&request); err != nil {
+		_ = conn.Close()
+		return nil, nil, nil, err
+	}
 
 	var kexState []byte
 	if c.cfg.PostQuantum() {
@@ -329,4 +333,23 @@ func (c *client) dialVisitor(cfg config.VisitorConfig) (net.Conn, *protocol.Fram
 // wrapWith applies the cipher's record layer to a byte-stream connection.
 func (c *client) wrapWith(conn net.Conn, cipher *crypto.Cipher) net.Conn {
 	return &cryptoStreamConn{Stream: crypto.NewStream(conn, cipher), conn: conn}
+}
+
+// attachVisitorIdentity adds the same Ed25519 assertion a control connection
+// carries, so a server that requires an identity requires it of visitors too.
+func (c *client) attachVisitorIdentity(request *protocol.VisitorConnect) error {
+	if c.identity == nil {
+		return nil
+	}
+	nonce, err := crypto.Nonce()
+	if err != nil {
+		return fmt.Errorf("identity assertion: %w", err)
+	}
+	now := time.Now().Unix()
+
+	request.Identity = c.identity.PublicKey()
+	request.IdentityNonce = nonce
+	request.IdentityTime = now
+	request.IdentitySignature = c.identity.SignChallenge(nonce, now)
+	return nil
 }

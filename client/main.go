@@ -52,6 +52,7 @@ func main() {
 		showVersion = flag.Bool("version", false, "print the version and exit")
 		configPath  = flag.String("config", "", "path to the client configuration file (default client.toml)")
 		checkConfig = flag.Bool("check", false, "validate the configuration and exit")
+		showID      = flag.Bool("identity", false, "print this client's public identity key and exit")
 	)
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [flags] [config-file]\n\n", os.Args[0])
@@ -85,6 +86,15 @@ func main() {
 	}
 	if *checkConfig {
 		fmt.Printf("%s is valid\n", path)
+		return
+	}
+
+	if *showID {
+		identity, err := crypto.LoadIdentity(cfg.Identity.KeyFile)
+		if err != nil {
+			logger.Fatalf("identity: %v", err)
+		}
+		fmt.Printf("%s\n", identity.PublicKeyHex())
 		return
 	}
 
@@ -355,6 +365,9 @@ func (c *client) registerProxies(framer *protocol.Framer) error {
 			RemotePort: proxy.RemotePort,
 			Domains:    proxy.Domains,
 			SecretKey:  proxy.SecretKey,
+			AuthMethod: proxy.AuthMethod,
+			Group:      proxy.Group,
+			Multipath:  proxy.Multipath,
 		}
 		if err := framer.WriteJSON(protocol.TypeRegisterProxy, spec); err != nil {
 			return fmt.Errorf("register proxy %q: %w", proxy.Name, err)

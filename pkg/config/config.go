@@ -97,6 +97,15 @@ type ProxyConfig struct {
 	// "secret" sends the secret key, "nizk" proves knowledge of it with a
 	// Schnorr proof so the key never leaves the visitor.
 	AuthMethod string `toml:"auth_method"`
+
+	// Group, when set, pools this proxy with every other proxy of the same name
+	// and group: the server publishes one endpoint and distributes visitors
+	// across the members according to [server].load_balance.
+	Group string `toml:"group"`
+	// Multipath opens this many parallel data connections for one datagram
+	// session and spreads the datagrams across them. It applies to udp and sudp
+	// proxies; a byte stream stays on one path.
+	Multipath int `toml:"multipath"`
 }
 
 // Proxy auth methods accepted in [[proxies]].auth_method.
@@ -417,6 +426,9 @@ const (
 	LoadBalanceFailover   = "failover"
 )
 
+// MaxMultipath bounds [[proxies]].multipath.
+const MaxMultipath = 8
+
 // EncryptionPassphrase returns the passphrase used for key derivation. An empty
 // [encryption].passphrase falls back to the auth token, so enabling encryption
 // does not require distributing a second secret.
@@ -647,8 +659,8 @@ func (c *Config) Validate(role string) error {
 	}
 	if c.Server.LoadBalance != LoadBalanceRoundRobin {
 		c.Warnings = append(c.Warnings,
-			"server.load_balance is set but load balancing across clients is not implemented yet; "+
-				"the value is ignored and a second client publishing the same proxy name is refused")
+			"server.load_balance is set; it applies to proxies that declare a group, "+
+				"and has no effect on a proxy published by a single client")
 	}
 	for _, cidr := range c.Server.AllowCIDRs {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
@@ -716,6 +728,20 @@ func (c *Config) Validate(role string) error {
 					"proxy %q: auth_method %q is not supported (use %q or %q)",
 					p.Name, p.AuthMethod, AuthMethodSecret, AuthMethodNIZK))
 			}
+		}
+		if p.Multipath < 0 || p.Multipath > MaxMultipath {
+			problems = append(problems, fmt.Sprintf(
+				"proxy %q: multipath must be 0-%d, got %d", p.Name, MaxMultipath, p.Multipath))
+		}
+		if p.Multipath > 1 && !IsDatagramProxyType(p.Type) {
+			c.Warnings = append(c.Warnings, fmt.Sprintf(
+				"proxy %q: multipath only spreads datagrams, so it has no effect on a %s proxy; "+
+					"a byte stream stays on the path it started on", p.Name, p.Type))
+		}
+		if p.RemotePort == 0 && p.Group == "" && p.Type != ProxyTypeHTTP && p.Type != ProxyTypeHTTPS &&
+			!IsPrivateProxyType(p.Type) {
+			c.Warnings = append(c.Warnings, fmt.Sprintf(
+				"proxy %q: it has no remote_port and no group, so nothing can reach it", p.Name))
 		}
 		for _, domain := range p.Domains {
 			if !ValidDomain(domain) {

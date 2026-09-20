@@ -37,6 +37,11 @@ type DatagramPump struct {
 	// IdleTimeout releases a session that has been quiet this long. A value of
 	// zero selects 2 minutes.
 	IdleTimeout time.Duration
+	// Paths is how many parallel streams carry one address's datagrams. Values
+	// below two select one path. Datagrams are spread over the paths in turn,
+	// which is safe because a datagram is independent of every other one; replies
+	// are accepted from any of them.
+	Paths int
 	// Logger receives diagnostics. It may be nil.
 	Logger *log.Logger
 
@@ -47,16 +52,19 @@ type DatagramPump struct {
 
 // datagramSession is one remote address using a datagram tunnel.
 type datagramSession struct {
-	pump   *DatagramPump
-	addr   net.Addr
-	framer *protocol.Framer
+	pump *DatagramPump
+	addr net.Addr
+
+	// framers holds one open stream per path; releases mirrors it.
+	framers  []*protocol.Framer
+	releases []func()
+	next     atomic.Uint64
 
 	lastSeen atomic.Int64
 	toPeer   atomic.Int64
 	fromPeer atomic.Int64
 
-	mu      sync.Mutex
-	release func()
+	mu sync.Mutex
 
 	once sync.Once
 	done chan struct{}
@@ -126,7 +134,7 @@ func (p *DatagramPump) deliver(addr net.Addr, datagram []byte) {
 		go p.establish(session, datagram)
 		return
 	}
-	if framer := session.current(); framer != nil {
+	if framer := session.pick(); framer != nil {
 		session.send(framer, datagram)
 	}
 	// While a session is still being established the datagram is dropped: UDP is
@@ -134,16 +142,43 @@ func (p *DatagramPump) deliver(addr net.Addr, datagram []byte) {
 	// every other address of the same tunnel.
 }
 
-func (s *datagramSession) current() *protocol.Framer {
+// pick returns the path that should carry the next datagram, or nil while the
+// session is still being established.
+func (s *datagramSession) pick() *protocol.Framer {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.framer
+	count := len(s.framers)
+	s.mu.Unlock()
+
+	if count == 0 {
+		return nil
+	}
+	if count == 1 {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.framers[0]
+	}
+	return s.pathAt(int(s.next.Add(1)-1) % count)
 }
 
-func (s *datagramSession) setFramer(framer *protocol.Framer, release func()) {
+func (s *datagramSession) pathAt(index int) *protocol.Framer {
 	s.mu.Lock()
-	s.framer = framer
-	s.release = release
+	defer s.mu.Unlock()
+	if index < 0 || index >= len(s.framers) {
+		return nil
+	}
+	return s.framers[index]
+}
+
+func (s *datagramSession) pathCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.framers)
+}
+
+func (s *datagramSession) setFramers(framers []*protocol.Framer, releases []func()) {
+	s.mu.Lock()
+	s.framers = framers
+	s.releases = releases
 	s.mu.Unlock()
 }
 
@@ -162,45 +197,80 @@ func (s *datagramSession) send(framer *protocol.Framer, datagram []byte) {
 	}
 }
 
-// establish opens the stream for a new session and starts carrying the peer's
+// establish opens the streams for a new session and starts carrying the peer's
 // replies back to the source address.
+//
+// A session needs at least one path; when some of the requested paths fail, the
+// session runs on the ones that came up rather than refusing the visitor
+// outright.
 func (p *DatagramPump) establish(s *datagramSession, first []byte) {
-	framer, release, err := p.Open(s.addr)
-	if err != nil {
-		p.logf("datagram pump: cannot open a session for %s: %v", s.addr, err)
+	paths := p.Paths
+	if paths < 1 {
+		paths = 1
+	}
+
+	framers := make([]*protocol.Framer, 0, paths)
+	releases := make([]func(), 0, paths)
+	var lastErr error
+
+	for i := 0; i < paths; i++ {
+		framer, release, err := p.Open(s.addr)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		framers = append(framers, framer)
+		releases = append(releases, release)
+	}
+
+	if len(framers) == 0 {
+		p.logf("datagram pump: cannot open a session for %s: %v", s.addr, lastErr)
 		s.fail()
 		return
 	}
-	s.setFramer(framer, release)
-	s.send(framer, first)
+	s.setFramers(framers, releases)
 
-	go func() {
-		for {
-			msg, err := framer.ReadFrame()
-			if err != nil {
-				break
-			}
-			if msg.Type != protocol.TypeUDPPacket {
-				continue
-			}
-			if _, err := p.Socket.WriteTo(msg.Payload, s.addr); err != nil {
-				break
-			}
-			s.touch()
-			s.fromPeer.Add(int64(len(msg.Payload)))
-			if p.OnDatagram != nil {
-				p.OnDatagram(false, len(msg.Payload))
-			}
+	// Replies may arrive on any path, so every one of them is read.
+	for _, framer := range framers {
+		go p.readReplies(s, framer)
+	}
+
+	s.send(framers[0], first)
+
+	if len(framers) > 1 {
+		p.logf("datagram session for %s is spread over %d paths", s.addr, len(framers))
+	}
+}
+
+// readReplies forwards one path's frames back to the source address. The first
+// path to fail ends the whole session, because a half-open multipath session
+// would silently drop the datagrams that were spread onto the failed path.
+func (p *DatagramPump) readReplies(s *datagramSession, framer *protocol.Framer) {
+	for {
+		msg, err := framer.ReadFrame()
+		if err != nil {
+			break
 		}
-		s.finish("session ended")
-	}()
+		if msg.Type != protocol.TypeUDPPacket {
+			continue
+		}
+		if _, err := p.Socket.WriteTo(msg.Payload, s.addr); err != nil {
+			break
+		}
+		s.touch()
+		s.fromPeer.Add(int64(len(msg.Payload)))
+		if p.OnDatagram != nil {
+			p.OnDatagram(false, len(msg.Payload))
+		}
+	}
+	s.finish("session ended")
 }
 
 // finish ends a session that carried traffic.
 func (s *datagramSession) finish(reason string) {
 	s.once.Do(func() {
 		close(s.done)
-		s.closeFramer()
+		s.closeFramers()
 		s.pump.remove(s)
 		if s.pump.OnSession != nil {
 			s.pump.OnSession(-1)
@@ -223,15 +293,19 @@ func (s *datagramSession) fail() {
 	})
 }
 
-func (s *datagramSession) closeFramer() {
+func (s *datagramSession) closeFramers() {
 	s.mu.Lock()
-	framer, release := s.framer, s.release
-	s.framer, s.release = nil, nil
+	framers, releases := s.framers, s.releases
+	s.framers, s.releases = nil, nil
 	s.mu.Unlock()
 
-	_ = framer.Close()
-	if release != nil {
-		release()
+	for _, framer := range framers {
+		_ = framer.Close()
+	}
+	for _, release := range releases {
+		if release != nil {
+			release()
+		}
 	}
 }
 

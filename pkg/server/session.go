@@ -202,7 +202,9 @@ func (s *Session) Close(reason string) {
 			close(ch)
 		}
 		for _, t := range tunnels {
-			t.Close(reason)
+			// Removing the member closes the endpoint only when it was the last
+			// one, so a pool survives the loss of one client.
+			t.group.remove(t)
 		}
 		_ = s.conn.Close()
 	})

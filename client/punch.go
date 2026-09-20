@@ -46,7 +46,7 @@ func (c *client) tryPunch(ctx context.Context, conn net.Conn, framer *protocol.F
 	defer cancel()
 
 	request := protocol.EncodePunchRequest(protocol.PunchRoleVisitor, offer.Token)
-	reply, _, err := socket.Exchange(ctx, rendezvous, request)
+	reply, _, err := socket.Exchange(ctx, rendezvous, request, rendezvousAccept(offer.Token))
 	if err != nil {
 		_ = socket.Close()
 		return nil, fmt.Errorf("the rendezvous server never answered: %w", err)
@@ -93,7 +93,7 @@ func (c *client) servePunch(prepare protocol.P2PPrepare) {
 	defer cancel()
 
 	request := protocol.EncodePunchRequest(protocol.PunchRoleOwner, prepare.Token)
-	reply, _, err := socket.Exchange(ctx, rendezvous, request)
+	reply, _, err := socket.Exchange(ctx, rendezvous, request, rendezvousAccept(prepare.Token))
 	if err != nil {
 		c.logger.Printf("punch for %q: the rendezvous server never answered: %v", prepare.Proxy, err)
 		_ = socket.Close()
@@ -160,6 +160,17 @@ func (c *client) rendezvousAddr() (net.Addr, error) {
 		return nil, fmt.Errorf("resolve the rendezvous address: %w", err)
 	}
 	return addr, nil
+}
+
+// rendezvousAccept selects the rendezvous server's answer out of the datagrams
+// arriving on a punch socket. The peer's hello datagrams arrive on the same
+// socket as soon as the server has told it where to send, so the reply has to be
+// recognised rather than taken as whatever comes first.
+func rendezvousAccept(token string) func([]byte) bool {
+	return func(datagram []byte) bool {
+		got, _, ok := protocol.DecodePunchResponse(datagram)
+		return ok && got == token
+	}
 }
 
 // punchPeer decodes a rendezvous reply into the peer's address.

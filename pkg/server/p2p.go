@@ -87,7 +87,7 @@ func (p *p2pRendezvous) Close() error {
 }
 
 // offer reserves a token for one hole-punch attempt.
-func (p *p2pRendezvous) offer(owner *Tunnel) (string, error) {
+func (p *p2pRendezvous) offer(group *ProxyGroup) (string, error) {
 	buf := make([]byte, 16)
 	if _, err := crand.Read(buf); err != nil {
 		return "", err
@@ -99,7 +99,7 @@ func (p *p2pRendezvous) offer(owner *Tunnel) (string, error) {
 	if len(p.attempts) >= maxPunchAttempts {
 		return "", errors.New("too many hole-punch attempts are in flight")
 	}
-	p.attempts[token] = &punchAttempt{token: token, proxy: owner.Name, created: time.Now()}
+	p.attempts[token] = &punchAttempt{token: token, proxy: group.Name, created: time.Now()}
 	return token, nil
 }
 

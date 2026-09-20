@@ -252,34 +252,40 @@ func (s *Server) Shutdown(reason string) {
 	}
 }
 
-// checkIdentity verifies the Ed25519 assertion a client may attach to its auth
-// request. It returns nil when no assertion was offered and none is required.
-func (s *Server) checkIdentity(req *protocol.AuthRequest) error {
+// identityAssertion is one client identity assertion in the wire form both the
+// control connection and a visitor connection carry.
+type identityAssertion struct {
+	PublicKey []byte
+	Nonce     []byte
+	Timestamp int64
+	Signature []byte
+}
+
+// checkIdentity verifies an Ed25519 assertion. It returns nil when no assertion
+// was offered and none is required.
+func (s *Server) checkIdentity(in identityAssertion) error {
 	if !s.cfg.Identity.Enabled {
 		return nil
 	}
-	if len(req.Identity) == 0 {
+	if len(in.PublicKey) == 0 {
 		if s.cfg.Identity.RequireIdentity {
 			return errors.New("this server requires a client identity; set [identity].enabled and [identity].key_file")
 		}
 		return nil
 	}
 
-	publicKey, err := crypto.ParseIdentityKey(hex.EncodeToString(req.Identity))
+	publicKey, err := crypto.ParseIdentityKey(hex.EncodeToString(in.PublicKey))
 	if err != nil {
 		return err
 	}
-	if err := crypto.VerifyIdentity(crypto.IdentityCheckInput{
+	return crypto.VerifyIdentity(crypto.IdentityCheckInput{
 		PublicKey: publicKey,
-		Nonce:     req.IdentityNonce,
-		Timestamp: req.IdentityTime,
-		Signature: req.IdentitySignature,
+		Nonce:     in.Nonce,
+		Timestamp: in.Timestamp,
+		Signature: in.Signature,
 		Allowed:   s.identities,
 		Seen:      s.nonces,
-	}); err != nil {
-		return err
-	}
-	return nil
+	})
 }
 
 // handleConn dispatches the first frame: an auth request opens a control session,
@@ -365,7 +371,12 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 		_ = conn.Close()
 	}
 
-	if err := s.checkIdentity(&req); err != nil {
+	if err := s.checkIdentity(identityAssertion{
+		PublicKey: req.Identity,
+		Nonce:     req.IdentityNonce,
+		Timestamp: req.IdentityTime,
+		Signature: req.IdentitySignature,
+	}); err != nil {
 		s.metrics.authFailures.Add(1)
 		s.metrics.controlRejected.Add(1)
 		s.auditor.Record(AuditEvent{
@@ -421,6 +432,12 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 		return
 	}
 	s.metrics.controlAccepted.Add(1)
+	s.auditor.Record(AuditEvent{
+		Event: EventControlAccepted, ClientID: session.ID, Remote: session.RemoteAddr,
+		Outcome: "ok",
+		Detail: fmt.Sprintf("client %s, protocol %d, encryption %s, post_quantum %v, identity %v",
+			req.ClientVersion, req.Protocol, s.Cipher(), len(sessionKey) > 0, len(req.Identity) > 0),
+	})
 
 	response := protocol.AuthResponse{
 		OK:               true,
@@ -509,7 +526,7 @@ func (s *Server) sessionLoop(session *Session) {
 				continue
 			}
 			if err := session.RegisterProxy(tunnel); err != nil {
-				s.tunnels.Unregister(spec.Name, "session closed during registration")
+				s.tunnels.Unregister(spec.Name, session, "session closed during registration")
 				s.replyError(session, err.Error())
 				continue
 			}
@@ -538,24 +555,27 @@ func (s *Server) replyError(session *Session, message string) {
 func (s *Server) sendProxyList(session *Session) {
 	statuses := make([]protocol.ProxyStatus, 0)
 
-	s.tunnels.mu.RLock()
-	for _, tunnel := range s.tunnels.tunnels {
+	for _, tunnel := range s.tunnels.List() {
 		if tunnel.Session != session {
 			continue
 		}
-		statuses = append(statuses, protocol.ProxyStatus{
+		status := protocol.ProxyStatus{
 			Name:        tunnel.Name,
 			Type:        tunnel.Spec.Type,
 			LocalAddr:   tunnel.Spec.LocalAddr,
 			RemotePort:  tunnel.RemotePort,
+			Domains:     tunnel.Spec.Domains,
 			ClientID:    session.ID,
 			Active:      tunnel.Active.Load(),
 			TotalOpened: tunnel.Total.Load(),
 			BytesIn:     tunnel.BytesIn.Load(),
 			BytesOut:    tunnel.BytesOut.Load(),
-		})
+		}
+		if tunnel.group != nil {
+			status.GroupMembers = tunnel.group.memberCount()
+		}
+		statuses = append(statuses, status)
 	}
-	s.tunnels.mu.RUnlock()
 
 	if err := session.framer.WriteJSON(protocol.TypeProxyList, statuses); err != nil {
 		s.logger.Printf("client %s: could not send proxy list: %v", session.ID, err)
