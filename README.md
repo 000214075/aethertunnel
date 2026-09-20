@@ -1,6 +1,6 @@
 # AetherTunnel
 
-**一个能把内网服务安全地发布到公网的小型隧道工具 · A small, honest TCP tunnel that publishes a service behind NAT.**
+**一个能把内网服务发布到公网的 TCP 隧道工具 · A small TCP tunnel that publishes a service behind NAT.**
 服务端 + 客户端 + 内置 Web 面板，纯 Go，无 CGO，六个平台开箱可用。
 Server, client and a built-in web panel. Pure Go, no CGO, cross-compiled for six platforms.
 
@@ -82,21 +82,27 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 | 面板 API | ✅ 可用 | `/api/health` `/api/status` `/api/clients` `/api/proxies` `/api/config`，可设 Bearer token |
 | 多平台 | ✅ 可用 | linux/darwin/windows × amd64/arm64，`scripts/build-release.*` 一键出 12 个产物 + SHA256 |
 | 配置校验 | ✅ 可用 | 未知配置项会**报出来**而不是静默忽略；`--check` 只校验不启动 |
+| 访问控制 | ✅ 可用 | `allow_cidrs` / `deny_cidrs` 在握手前执行；无法解析的来源在存在规则时按拒绝处理 |
+| 连接限流 | ✅ 可用 | 按来源地址的令牌桶，在握手前执行；空闲桶会被回收 |
+| 审计日志 | ✅ 可用 | JSON Lines，记录接入/拒绝、认证失败、上下线、代理注册与拒绝；按大小轮转 |
+| Prometheus 指标 | ✅ 可用 | `GET /metrics`（文本格式 0.0.4），含连接、认证失败、拒绝、流、双向字节与按隧道的序列 |
+| 健康探针 | ✅ 可用 | `GET /healthz` 恒 200；`GET /readyz` 在监听器未就绪或正在关闭时返回 503 |
+| 帧长度填充与抖动 | ✅ 可用 | `[obfuscation] pad_to` / `jitter_millis`，在加密之后补齐，隐藏负载的精确长度 |
 | 单元 + 端到端测试 | ✅ 可用 | 含"访问者→隧道→本地服务"的真实回环测试，明文与加密两种模式 |
 
-### 这一版没有什么（重要）
+### 这一版没有什么
 
-上一版（v3.0.0 及更早）的 README 宣称了 20 项"颠覆性功能"。**它们在代码里一个都不存在**——
-我逐个搜索过 Go 源码，`webrtc`、`dht`、`blockchain`、`kyber`、`dilithium`、`zk-snark`、`quic`、
-`mptcp`、`tun/tap` 的出现次数都是 **0**。这一版把那些描述删掉了，因为一份描述不存在功能的说明书
-比没有说明书更糟。当前**没有实现**的：
+v3.0.0 及更早版本的 README 列出了 20 项功能。对全部 Go 源码检索下列关键词，
+出现次数均为 **0**：`webrtc`、`dht`、`blockchain`、`kyber`、`dilithium`、`zk-snark`、
+`quic`、`mptcp`、`tun`、`tap`。相关描述已从文档中删除。当前**没有实现**的：
 
 - ❌ WebRTC / P2P 直连、去中心化 DHT、区块链与代币激励、零知识证明、抗量子加密（Kyber/Dilithium）
 - ❌ UDP / HTTP / HTTPS / STCP / XTCP / SUDP 等代理类型（只实现了 TCP；配成别的类型会被**明确拒绝**，不会静默失效）
-- ❌ TUN/TAP 虚拟网卡与 VPN 数据面、多路径传输、流量伪装/混淆、AI 路由、移动端 App
-- ❌ 负载均衡、Prometheus 指标、Kubernetes 部署清单
+- ❌ TUN/TAP 虚拟网卡与 VPN 数据面、多路径传输、移动端 App
+- ❌ 负载均衡（`load_balance` 设为非默认值时会打印"尚未实现"警告）、Kubernetes 部署清单
+- ❌ TLS 传输层：`enable_tls` 属于未知键，会被报告而不是被忽略；负载加密由 `[encryption]` 提供
 
-`[obfuscation]` 与 `[vpn]` 两个配置段**能解析但会被忽略**，启动时会打印警告说明这一点。
+`[vpn]` 配置段会被解析并忽略，启动时打印警告。
 
 ### 加密怎么开
 
@@ -143,7 +149,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 -Version v3.1
 旧版命令行参数与配置键有一部分已经不同，请读 [`docs/MIGRATION.md`](docs/MIGRATION.md)。
 一句话版本：`auth_token`、`bind_port`、`[[proxies]]` 的写法保持不变，其余请按新示例重写。
 
-### 安全模型（如实说明）
+### 安全模型
 
 - 认证是**共享密钥**（`auth_token`），不是证书；token 用常数时间比较，失败时**不会**把 token 写进日志。
 - 没有 TLS 传输层加密：要么只在可信网络里跑，要么打开 `[encryption]`（它保护的是负载，不含协议外观）。

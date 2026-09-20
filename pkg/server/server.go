@@ -44,6 +44,9 @@ type Server struct {
 
 	sessions *SessionManager
 	tunnels  *TunnelManager
+	metrics  *Metrics
+	acl      *AccessControl
+	auditor  *Auditor
 
 	listener net.Listener
 
@@ -64,6 +67,15 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	acl, err := NewAccessControl(cfg.Server.AllowCIDRs, cfg.Server.DenyCIDRs,
+		cfg.Server.RateLimitPerSecond, cfg.Server.RateLimitBurst)
+	if err != nil {
+		return nil, err
+	}
+	auditor, err := NewAuditor(cfg.Audit.Enabled, cfg.Audit.Path, cfg.Audit.MaxBytes)
+	if err != nil {
+		return nil, fmt.Errorf("open audit log: %w", err)
+	}
 
 	s := &Server{
 		cfg:       cfg,
@@ -73,11 +85,31 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		buildTime: opts.BuildTime,
 		gitCommit: opts.GitCommit,
 		startedAt: time.Now(),
+		metrics:   newMetrics(),
+		acl:       acl,
+		auditor:   auditor,
 	}
 	sessions := newSessionManager(cfg.Server.MaxConnections)
 	s.sessions = sessions
-	s.tunnels = newTunnelManager(cfg, logger, cipher, sessions)
+	s.tunnels = newTunnelManager(cfg, logger, cipher, sessions, s.metrics)
 	return s, nil
+}
+
+// Metrics exposes the counter set for the dashboard endpoint.
+func (s *Server) Metrics() *Metrics { return s.metrics }
+
+// Auditor exposes the audit log for call sites outside the accept path.
+func (s *Server) Auditor() *Auditor { return s.auditor }
+
+// framerOptions maps the [obfuscation] section onto frame-level padding and
+// jitter. The receiver unpads from the frame flag alone, so the two ends do not
+// have to agree on these values.
+func (s *Server) framerOptions() protocol.FramerOptions {
+	return protocol.FramerOptions{
+		MaxPayload: protocol.DefaultMaxPayload,
+		PadTo:      s.cfg.Obfuscation.PadTo,
+		Jitter:     time.Duration(s.cfg.Obfuscation.JitterMillis) * time.Millisecond,
+	}
 }
 
 // Cipher reports the encryption algorithm in use ("none" when disabled).
@@ -121,6 +153,33 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 }
 
+// admit applies the access-control rules to a freshly accepted connection. It
+// returns false when the connection has already been closed.
+func (s *Server) admit(conn net.Conn) bool {
+	switch s.acl.Check(conn) {
+	case DenyCIDR:
+		s.metrics.aclDenied.Add(1)
+		s.auditor.Record(AuditEvent{
+			Event: EventACLDenied, Remote: conn.RemoteAddr().String(),
+			Outcome: "denied", Detail: "source address rejected by allow/deny lists",
+		})
+		s.logger.Printf("connection from %s denied by access control", conn.RemoteAddr())
+		_ = conn.Close()
+		return false
+	case DenyRate:
+		s.metrics.rateLimited.Add(1)
+		s.auditor.Record(AuditEvent{
+			Event: EventRateLimited, Remote: conn.RemoteAddr().String(),
+			Outcome: "denied", Detail: "source address exceeded its connection rate",
+		})
+		s.logger.Printf("connection from %s denied by rate limit", conn.RemoteAddr())
+		_ = conn.Close()
+		return false
+	default:
+		return true
+	}
+}
+
 // Shutdown stops the listener and disconnects every client.
 func (s *Server) Shutdown(reason string) {
 	if s.closing.Swap(true) {
@@ -131,6 +190,9 @@ func (s *Server) Shutdown(reason string) {
 		_ = s.listener.Close()
 	}
 	s.sessions.CloseAll(reason)
+	if err := s.auditor.Close(); err != nil {
+		s.logger.Printf("closing the audit log: %v", err)
+	}
 }
 
 // handleConn dispatches the first frame: an auth request opens a control session,
@@ -144,12 +206,16 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 	}()
 
+	if !s.admit(conn) {
+		return
+	}
+
 	handshakeTimeout := time.Duration(s.cfg.Server.HandshakeTimeoutSecs) * time.Second
 	if handshakeTimeout > 0 {
 		_ = conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
 	}
 
-	framer := protocol.NewFramer(conn, s.cipher, protocol.DefaultMaxPayload)
+	framer := protocol.NewFramerWithOptions(conn, s.cipher, s.framerOptions())
 	msg, err := framer.ReadFrame()
 	if err != nil {
 		s.logger.Printf("handshake from %s failed: %v", conn.RemoteAddr(), err)
@@ -187,6 +253,12 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 	// Constant-time comparison so the token cannot be recovered byte by byte from
 	// response timing, and never log the offered token.
 	if !crypto.EqualTokens(req.Token, s.cfg.Server.AuthToken) {
+		s.metrics.authFailures.Add(1)
+		s.metrics.controlRejected.Add(1)
+		s.auditor.Record(AuditEvent{
+			Event: EventAuthFailed, Remote: conn.RemoteAddr().String(),
+			Outcome: "denied", Detail: "invalid auth token",
+		})
 		s.logger.Printf("authentication failed for %s (client %s)", conn.RemoteAddr(), req.ClientVersion)
 		_ = framer.WriteJSON(protocol.TypeAuthResponse, protocol.AuthResponse{
 			OK: false, ServerVersion: s.version, Protocol: protocol.ProtocolVersion,
@@ -203,6 +275,11 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 
 	session := newSession(conn, framer, &req, s.cipher.Enabled(), s.cfg.Server.HeartbeatSeconds)
 	if err := s.sessions.Add(session); err != nil {
+		s.metrics.controlRejected.Add(1)
+		s.auditor.Record(AuditEvent{
+			Event: EventControlRejected, Remote: conn.RemoteAddr().String(),
+			Outcome: "denied", Detail: err.Error(),
+		})
 		s.logger.Printf("rejecting %s: %v", conn.RemoteAddr(), err)
 		_ = framer.WriteJSON(protocol.TypeAuthResponse, protocol.AuthResponse{
 			OK: false, ServerVersion: s.version, Protocol: protocol.ProtocolVersion,
@@ -211,6 +288,7 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 		_ = conn.Close()
 		return
 	}
+	s.metrics.controlAccepted.Add(1)
 
 	response := protocol.AuthResponse{
 		OK:               true,
@@ -234,6 +312,11 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 		s.tunnels.RemoveSessionTunnels(session, "client disconnected")
 		s.sessions.Remove(session.ID)
 		session.Close("control connection ended")
+		s.auditor.Record(AuditEvent{
+			Event: EventClientGone, ClientID: session.ID, Remote: session.RemoteAddr,
+			Outcome: "closed",
+			Detail:  fmt.Sprintf("connected for %s", session.Uptime().Round(time.Second)),
+		})
 		s.logger.Printf("client %s (%s) disconnected after %s",
 			session.ID, session.RemoteAddr, session.Uptime().Round(time.Second))
 	}()
@@ -278,6 +361,10 @@ func (s *Server) sessionLoop(session *Session) {
 			tunnel, err := s.tunnels.Register(session, spec)
 			if err != nil {
 				s.logger.Printf("client %s: cannot register proxy %q: %v", session.ID, spec.Name, err)
+				s.auditor.Record(AuditEvent{
+					Event: EventProxyRejected, ClientID: session.ID, Proxy: spec.Name,
+					Outcome: "denied", Detail: err.Error(),
+				})
 				s.replyError(session, err.Error())
 				continue
 			}
@@ -286,6 +373,11 @@ func (s *Server) sessionLoop(session *Session) {
 				s.replyError(session, err.Error())
 				continue
 			}
+			s.auditor.Record(AuditEvent{
+				Event: EventProxyRegistered, ClientID: session.ID, Proxy: spec.Name,
+				Outcome: "ok",
+				Detail:  fmt.Sprintf("type=%s local=%s remote_port=%d", spec.Type, spec.LocalAddr, spec.RemotePort),
+			})
 			s.sendProxyList(session)
 
 		case protocol.TypeError:
@@ -339,6 +431,7 @@ func (s *Server) handleData(conn net.Conn, framer *protocol.Framer, msg *protoco
 		_ = conn.Close()
 		return
 	}
+	s.metrics.dataConnections.Add(1)
 
 	fail := func(reason string) {
 		s.logger.Printf("data connection from %s rejected: %s", conn.RemoteAddr(), reason)

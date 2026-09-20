@@ -23,7 +23,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"sync"
+	"time"
 
 	"github.com/aethertunnel/aethertunnel/pkg/crypto"
 )
@@ -78,6 +80,7 @@ func (t MessageType) String() string {
 
 const (
 	flagEncrypted uint8 = 1 << 0
+	flagPadded    uint8 = 1 << 1
 )
 
 // DefaultMaxPayload bounds a single frame. Data is streamed after a DataOpen
@@ -95,6 +98,19 @@ type Message struct {
 	Payload   []byte
 }
 
+// FramerOptions configures frame-level encryption and length padding.
+type FramerOptions struct {
+	// MaxPayload bounds a single frame payload. Zero selects DefaultMaxPayload.
+	MaxPayload uint32
+	// PadTo rounds the on-wire payload up to a multiple of this many bytes, so a
+	// passive observer learns less from the frame length. Zero disables padding.
+	// The receiver unpads from the flag alone, so the two ends do not have to
+	// agree on this value.
+	PadTo int
+	// Jitter adds a random delay in [0, Jitter) before each write.
+	Jitter time.Duration
+}
+
 // Framer reads and writes frames on a single connection.
 //
 // WriteFrame is safe for concurrent use (the client sends heartbeats while
@@ -103,6 +119,8 @@ type Framer struct {
 	conn       io.ReadWriter
 	cipher     *crypto.Cipher
 	maxPayload uint32
+	padTo      int
+	jitter     time.Duration
 
 	writeMu sync.Mutex
 	header  [6]byte
@@ -110,10 +128,24 @@ type Framer struct {
 
 // NewFramer wraps conn. cipher may be nil to disable encryption.
 func NewFramer(conn io.ReadWriter, cipher *crypto.Cipher, maxPayload uint32) *Framer {
-	if maxPayload == 0 {
-		maxPayload = DefaultMaxPayload
+	return NewFramerWithOptions(conn, cipher, FramerOptions{MaxPayload: maxPayload})
+}
+
+// NewFramerWithOptions wraps conn with encryption, padding and jitter.
+func NewFramerWithOptions(conn io.ReadWriter, cipher *crypto.Cipher, opts FramerOptions) *Framer {
+	if opts.MaxPayload == 0 {
+		opts.MaxPayload = DefaultMaxPayload
 	}
-	return &Framer{conn: conn, cipher: cipher, maxPayload: maxPayload}
+	if opts.PadTo < 0 {
+		opts.PadTo = 0
+	}
+	return &Framer{
+		conn:       conn,
+		cipher:     cipher,
+		maxPayload: opts.MaxPayload,
+		padTo:      opts.PadTo,
+		jitter:     opts.Jitter,
+	}
 }
 
 // MaxPayload returns the configured frame limit.
@@ -134,6 +166,15 @@ func (f *Framer) WriteFrame(msg *Message) error {
 		flags |= flagEncrypted
 	}
 
+	if f.padTo > 0 && len(payload) > 0 {
+		padded, err := pad(payload, f.padTo)
+		if err != nil {
+			return err
+		}
+		payload = padded
+		flags |= flagPadded
+	}
+
 	if uint32(len(payload)) > f.maxPayload {
 		return fmt.Errorf("protocol: refusing to send %d byte frame (limit %d)", len(payload), f.maxPayload)
 	}
@@ -147,6 +188,10 @@ func (f *Framer) WriteFrame(msg *Message) error {
 	f.writeMu.Lock()
 	defer f.writeMu.Unlock()
 
+	if f.jitter > 0 {
+		time.Sleep(time.Duration(rand.Int63n(int64(f.jitter))))
+	}
+
 	n, err := f.conn.Write(frame)
 	if err != nil {
 		return err
@@ -155,6 +200,35 @@ func (f *Framer) WriteFrame(msg *Message) error {
 		return io.ErrShortWrite
 	}
 	return nil
+}
+
+// pad prefixes the real length and fills up to a multiple of padTo.
+//
+// The prefix is inside the padded region, so the frame length carries no
+// information about the payload size beyond which bucket it fell into.
+func pad(payload []byte, padTo int) ([]byte, error) {
+	body := make([]byte, 4+len(payload))
+	binary.BigEndian.PutUint32(body, uint32(len(payload)))
+	copy(body[4:], payload)
+
+	remainder := len(body) % padTo
+	if remainder == 0 {
+		return body, nil
+	}
+	return append(body, make([]byte, padTo-remainder)...), nil
+}
+
+// unpad reverses pad.
+func unpad(payload []byte) ([]byte, error) {
+	if len(payload) < 4 {
+		return nil, errors.New("protocol: padded frame is too short to contain a length prefix")
+	}
+	length := binary.BigEndian.Uint32(payload[:4])
+	if int(length) > len(payload)-4 {
+		return nil, fmt.Errorf("protocol: padded frame declares %d bytes but carries %d",
+			length, len(payload)-4)
+	}
+	return payload[4 : 4+length], nil
 }
 
 // WriteJSON marshals v and sends it as a frame of the given type.
@@ -193,6 +267,15 @@ func (f *Framer) ReadFrame() (*Message, error) {
 			"protocol: encryption mismatch: frame says encrypted=%v but this side has encryption=%v; "+
 				"both peers must use the same [encryption] configuration",
 			encrypted, f.cipher.Enabled())
+	}
+	// The sender seals first and pads second, so the receiver must strip the
+	// padding before it can authenticate the ciphertext.
+	if flags&flagPadded != 0 {
+		unpadded, err := unpad(payload)
+		if err != nil {
+			return nil, err
+		}
+		payload = unpadded
 	}
 	if encrypted {
 		plaintext, err := f.cipher.Open(payload)

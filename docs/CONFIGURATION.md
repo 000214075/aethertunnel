@@ -1,10 +1,8 @@
 # 配置参考 · Configuration reference
 
 **English summary.** Only the keys listed here are read by v3.1.0. Any other key is
-reported at startup (and makes `--check` fail if you pass `RejectUnknownKeys`), which is
-deliberate: earlier releases shipped examples full of keys that were silently ignored, so
-people believed features were on when they were not. Every key below is exercised by a test
-or by the example files that CI validates.
+reported at startup (and makes `--check` fail if you pass `RejectUnknownKeys`). Every key
+below is exercised by a test or by the example files that CI validates.
 
 用 `--check` 校验而不启动：
 
@@ -26,6 +24,11 @@ aethertunnel-client --config client.toml --check
 | `heartbeat_seconds` | int | 30 | 期望客户端的心跳间隔；连续 3 次未收到即断开 |
 | `dial_timeout_seconds` | int | 10 | 访问者到来后，等待客户端回拨数据连接的时限 |
 | `graceful_shutdown_seconds` | int | 5 | 收到信号后用于收尾的时间 |
+| `allow_cidrs` | []string | 空 | CIDR 白名单。非空时只有匹配的来源可以连接 |
+| `deny_cidrs` | []string | 空 | CIDR 黑名单，优先级高于白名单 |
+| `rate_limit_per_second` | float | 0 | 按来源地址的连接速率（每秒），0 表示关闭 |
+| `rate_limit_burst` | int | 20 | 令牌桶容量 |
+| `load_balance` | string | `round-robin` | **尚未实现**：设为非默认值时会打印警告，行为不变 |
 
 ## `[client]`（客户端）
 
@@ -70,12 +73,49 @@ aethertunnel-client --config client.toml --check
 密钥 = `HKDF-SHA256(passphrase, salt, info="aethertunnel/v3/aead")` 取 32 字节。
 两端配置不一致时，握手阶段会返回 `encryption mismatch`，而不是让每条消息都失败。
 
+## `[metrics]`（服务端）
+
+| 键 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `enabled` | bool | false | 是否提供 `GET /metrics`（Prometheus 文本格式 0.0.4），由面板监听器提供 |
+| `token` | string | 空 | 该 token 与面板 token 任一可用；两者都未设置时 `/metrics` 不需要鉴权 |
+
+指标序列：控制连接、被拒绝的控制连接、认证失败、ACL 拒绝、限流拒绝、数据连接、
+活动与累计流数、双向字节、UDP 数据报与活动会话，以及按 `tunnel` 标签的活动流、
+累计流与双向字节。
+
+## `[audit]`（服务端）
+
+| 键 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `enabled` | bool | false | 是否写审计日志 |
+| `path` | string | `aethertunnel-audit.jsonl` | 日志路径 |
+| `max_bytes` | int | 33554432 | 超过该大小后轮转，旧文件保留为 `<path>.1` |
+
+每行一个 JSON 对象，字段为 `time`、`event`、`client_id`、`remote`、`proxy`、`detail`、`outcome`；
+`event` 取值为 `control_accepted`、`control_rejected`、`auth_failed`、`client_disconnected`、
+`proxy_registered`、`proxy_rejected`、`proxy_removed`、`acl_denied`、`rate_limited`、
+`dashboard_action`。
+
+## `[obfuscation]`（两端）
+
+| 键 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `enabled` | bool | false | 打开后下列两项才会生效 |
+| `pad_to` | int | 256 | 帧负载补齐到该值的整数倍；0 表示不补齐 |
+| `jitter_millis` | int | 0 | 每次写入前插入 `[0, 该值)` 毫秒的随机延迟 |
+| `default_type` | string | 空 | 保留键，当前未被使用 |
+
+补齐在加密之后进行，帧内保留真实长度前缀；接收端仅凭帧标志位去补齐，两端不需要配置一致。
+填充与抖动不改变加密强度，也不使流量呈现为其他协议。
+
 ## 已知但不生效的段（会打印警告）
 
 | 段 | 行为 |
 |---|---|
-| `[obfuscation]` | 解析但忽略。数据包混淆未实现，旧的 `[obfuscation]` 配置不会带来任何保护 |
 | `[vpn]` | 解析但忽略。没有 TUN/TAP 与 VPN 数据面 |
+| `[obfuscation] default_type` | 保留键，不影响行为 |
+| `[server] load_balance` 的非默认值 | 打印"尚未实现"警告，行为不变 |
 
 `[server].enable_tls`、`cert_file`、`key_file` 属于**未知键**：会被列在启动警告里，
 `--check` 也会提示。本项目没有 TLS 传输层加密，请用 `[encryption]` 或把隧道限制在可信网络。

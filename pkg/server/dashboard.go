@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -61,7 +62,69 @@ func NewDashboard(srv *Server, logger *log.Logger) (*Dashboard, error) {
 	d.handle("GET /api/proxies", d.withAuth(true, d.apiProxies))
 	d.handle("GET /api/config", d.withAuth(true, d.apiConfig))
 	d.handle("DELETE /api/clients/", d.withAuth(true, d.apiDisconnect))
+	// Health probes are always public and cheap: orchestrators poll them often.
+	d.handle("GET /healthz", d.withAuth(false, d.healthz))
+	d.handle("GET /readyz", d.withAuth(false, d.readyz))
+	if srv.cfg.Metrics.Enabled {
+		d.handle("GET /metrics", d.withMetricsAuth(d.metrics))
+	}
 	return d, nil
+}
+
+// withMetricsAuth protects /metrics. When [metrics].token is set, either that token
+// or the dashboard token is accepted: a Prometheus scraper should not need the
+// dashboard credential, and an operator who already holds the dashboard token
+// should not need a second one. With no metrics token, the dashboard rule applies.
+func (d *Dashboard) withMetricsAuth(next http.HandlerFunc) http.HandlerFunc {
+	metricsToken := d.cfg.Metrics.Token
+	dashboardToken := d.cfg.Dashboard.Token
+
+	if metricsToken == "" {
+		return d.withAuth(true, next)
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		header := r.Header.Get("Authorization")
+		presented := strings.TrimPrefix(header, "Bearer ")
+		if presented == header ||
+			(!crypto.EqualTokens(presented, metricsToken) && !crypto.EqualTokens(presented, dashboardToken)) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return
+		}
+		next(w, r)
+	}
+}
+
+// healthz reports that the process is running and serving.
+func (d *Dashboard) healthz(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":         "ok",
+		"version":        d.server.version,
+		"protocol":       protocol.ProtocolVersion,
+		"uptime_seconds": int64(time.Since(d.server.startedAt).Seconds()),
+	})
+}
+
+// readyz reports that the server is listening and accepting control connections.
+func (d *Dashboard) readyz(w http.ResponseWriter, r *http.Request) {
+	ready := d.server.listener != nil && !d.server.closing.Load()
+	status := http.StatusOK
+	if !ready {
+		status = http.StatusServiceUnavailable
+	}
+	writeJSON(w, status, map[string]any{
+		"ready":        ready,
+		"listening":    d.server.listener != nil,
+		"shuttingDown": d.server.closing.Load(),
+	})
+}
+
+// metrics serves the Prometheus text exposition format.
+func (d *Dashboard) metrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, d.server.metrics.Render())
 }
 
 // handle registers a pattern exactly as written, reusing the path from the

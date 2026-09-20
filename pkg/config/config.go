@@ -9,6 +9,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -30,6 +31,20 @@ type ServerConfig struct {
 	HeartbeatSeconds     int `toml:"heartbeat_seconds"`
 	DialTimeoutSecs      int `toml:"dial_timeout_seconds"`
 	GracefulShutdownSecs int `toml:"graceful_shutdown_seconds"`
+
+	// Access control applied to every incoming connection before the handshake.
+	AllowCIDRs []string `toml:"allow_cidrs"`
+	DenyCIDRs  []string `toml:"deny_cidrs"`
+
+	// Per-source-IP connection rate limit applied before the handshake. Zero
+	// disables the limiter.
+	RateLimitPerSecond float64 `toml:"rate_limit_per_second"`
+	RateLimitBurst     int     `toml:"rate_limit_burst"`
+
+	// LoadBalance selects how visitors are distributed when several clients
+	// publish the same proxy name: "round-robin", "random", "latency" or
+	// "failover" (first healthy client only).
+	LoadBalance string `toml:"load_balance"`
 }
 
 // ClientConfig is the [client] section.
@@ -82,11 +97,34 @@ type EncryptionConfig struct {
 	Salt       string `toml:"salt"`
 }
 
-// ObfuscationConfig is kept so old configuration files still parse. The packet
-// obfuscator is not implemented in this version; see docs/SECURITY.md.
+// MetricsConfig is the [metrics] section. The endpoint is served by the dashboard
+// listener, so it is only reachable when the dashboard is enabled.
+type MetricsConfig struct {
+	Enabled bool `toml:"enabled"`
+	// Token, when set, is required on /metrics in addition to the dashboard token.
+	Token string `toml:"token"`
+}
+
+// AuditConfig is the [audit] section: an append-only JSONL record of security
+// relevant events.
+type AuditConfig struct {
+	Enabled bool   `toml:"enabled"`
+	Path    string `toml:"path"`
+	// MaxBytes rotates the file once it exceeds this size. Zero disables rotation.
+	MaxBytes int64 `toml:"max_bytes"`
+}
+
+// ObfuscationConfig is the [obfuscation] section. Padding hides exact frame
+// lengths; it does not make the traffic look like TLS.
 type ObfuscationConfig struct {
 	Enabled     bool   `toml:"enabled"`
 	DefaultType string `toml:"default_type"`
+	// PadTo rounds every frame payload up to a multiple of this many bytes, so
+	// observing the frame length reveals less about the payload. Zero disables
+	// padding even when Enabled is true.
+	PadTo int `toml:"pad_to"`
+	// JitterMillis adds a random delay in [0, JitterMillis) before each write.
+	JitterMillis int `toml:"jitter_millis"`
 }
 
 // VPNConfig is kept so old configuration files still parse. The VPN data path is
@@ -106,6 +144,8 @@ type Config struct {
 	Dashboard   DashboardConfig   `toml:"dashboard"`
 	Encryption  EncryptionConfig  `toml:"encryption"`
 	Obfuscation ObfuscationConfig `toml:"obfuscation"`
+	Metrics     MetricsConfig     `toml:"metrics"`
+	Audit       AuditConfig       `toml:"audit"`
 	VPN         VPNConfig         `toml:"vpn"`
 	Proxies     []ProxyConfig     `toml:"proxies"`
 
@@ -175,12 +215,35 @@ func (c *Config) applyDefaults() {
 	if c.Encryption.Salt == "" {
 		c.Encryption.Salt = "aethertunnel"
 	}
+	if c.Server.RateLimitBurst == 0 {
+		c.Server.RateLimitBurst = 20
+	}
+	if c.Server.LoadBalance == "" {
+		c.Server.LoadBalance = LoadBalanceRoundRobin
+	}
+	if c.Audit.Enabled && c.Audit.Path == "" {
+		c.Audit.Path = "aethertunnel-audit.jsonl"
+	}
+	if c.Audit.MaxBytes == 0 {
+		c.Audit.MaxBytes = 32 << 20
+	}
+	if c.Obfuscation.Enabled && c.Obfuscation.PadTo == 0 {
+		c.Obfuscation.PadTo = 256
+	}
 	for i := range c.Proxies {
 		if c.Proxies[i].Type == "" {
 			c.Proxies[i].Type = "tcp"
 		}
 	}
 }
+
+// Load-balancing strategies accepted by [server].load_balance.
+const (
+	LoadBalanceRoundRobin = "round-robin"
+	LoadBalanceRandom     = "random"
+	LoadBalanceLatency    = "latency"
+	LoadBalanceFailover   = "failover"
+)
 
 // EncryptionPassphrase returns the passphrase used for key derivation. An empty
 // [encryption].passphrase falls back to the auth token, so enabling encryption
@@ -216,8 +279,16 @@ func (c *Config) DashboardAddr() string {
 
 // Validate checks the configuration for the given role and returns every problem
 // it finds, so the user can fix them in one pass.
+//
+// Validate also normalises the settings that have a default and are validated
+// against a fixed set, so a Config built in code (tests, embedders) does not have
+// to call applyDefaults itself.
 func (c *Config) Validate(role string) error {
 	var problems []string
+
+	if c.Server.LoadBalance == "" {
+		c.Server.LoadBalance = LoadBalanceRoundRobin
+	}
 
 	switch role {
 	case RoleServer:
@@ -267,8 +338,37 @@ func (c *Config) Validate(role string) error {
 		}
 	}
 
-	if c.Obfuscation.Enabled {
-		c.Warnings = append(c.Warnings, "obfuscation.enabled is true but packet obfuscation is not implemented in this version; it will be ignored")
+	if c.Obfuscation.Enabled && c.Obfuscation.PadTo < 0 {
+		problems = append(problems, "obfuscation.pad_to cannot be negative")
+	}
+	if c.Obfuscation.JitterMillis < 0 {
+		problems = append(problems, "obfuscation.jitter_millis cannot be negative")
+	}
+	if c.Server.RateLimitPerSecond < 0 {
+		problems = append(problems, "server.rate_limit_per_second cannot be negative")
+	}
+	switch c.Server.LoadBalance {
+	case LoadBalanceRoundRobin, LoadBalanceRandom, LoadBalanceLatency, LoadBalanceFailover:
+	default:
+		problems = append(problems, fmt.Sprintf(
+			"server.load_balance %q is not supported (use %s, %s, %s or %s)",
+			c.Server.LoadBalance, LoadBalanceRoundRobin, LoadBalanceRandom,
+			LoadBalanceLatency, LoadBalanceFailover))
+	}
+	if c.Server.LoadBalance != LoadBalanceRoundRobin {
+		c.Warnings = append(c.Warnings,
+			"server.load_balance is set but load balancing across clients is not implemented yet; "+
+				"the value is ignored and a second client publishing the same proxy name is refused")
+	}
+	for _, cidr := range c.Server.AllowCIDRs {
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			problems = append(problems, fmt.Sprintf("server.allow_cidrs entry %q is not a CIDR: %v", cidr, err))
+		}
+	}
+	for _, cidr := range c.Server.DenyCIDRs {
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			problems = append(problems, fmt.Sprintf("server.deny_cidrs entry %q is not a CIDR: %v", cidr, err))
+		}
 	}
 	if c.VPN.Enabled {
 		c.Warnings = append(c.Warnings, "vpn.enabled is true but the VPN data path is not implemented in this version; it will be ignored")

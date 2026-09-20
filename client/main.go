@@ -161,7 +161,7 @@ func (c *client) runSession(ctx context.Context) error {
 	}
 	defer conn.Close()
 
-	framer := protocol.NewFramer(conn, c.cipher, protocol.DefaultMaxPayload)
+	framer := protocol.NewFramerWithOptions(conn, c.cipher, c.framerOptions())
 
 	_ = conn.SetDeadline(time.Now().Add(dialTimeout))
 	request := protocol.AuthRequest{
@@ -273,6 +273,17 @@ func (c *client) logProxyList(payload []byte) {
 	c.logger.Printf("server confirms %d tunnel(s): %v", len(names), names)
 }
 
+// framerOptions maps the client's [obfuscation] section onto frame padding and
+// jitter. The server unpads from the frame flag alone, so the two ends do not have
+// to agree on these values.
+func (c *client) framerOptions() protocol.FramerOptions {
+	return protocol.FramerOptions{
+		MaxPayload: protocol.DefaultMaxPayload,
+		PadTo:      c.cfg.Obfuscation.PadTo,
+		Jitter:     time.Duration(c.cfg.Obfuscation.JitterMillis) * time.Millisecond,
+	}
+}
+
 // heartbeatLoop sends heartbeats until done is closed. It only writes, so it does
 // not race with the session's reader.
 func (c *client) heartbeatLoop(done <-chan struct{}, framer *protocol.Framer, seconds int) {
@@ -311,7 +322,7 @@ func (c *client) serveStream(session string, request protocol.DataRequest) {
 		return
 	}
 
-	framer := protocol.NewFramer(conn, c.cipher, protocol.DefaultMaxPayload)
+	framer := protocol.NewFramerWithOptions(conn, c.cipher, c.framerOptions())
 	fail := func(reason string) {
 		c.logger.Printf("stream for %q: %s", request.Proxy, reason)
 		_ = conn.Close()

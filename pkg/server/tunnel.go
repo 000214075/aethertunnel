@@ -30,6 +30,7 @@ type Tunnel struct {
 
 	logger      *log.Logger
 	cipher      *crypto.Cipher
+	metrics     *Metrics
 	listener    net.Listener
 	idleTimeout time.Duration
 	dialTimeout time.Duration
@@ -102,7 +103,11 @@ func (t *Tunnel) handleVisit(public net.Conn) {
 	}
 
 	t.Active.Add(1)
-	defer t.Active.Add(-1)
+	t.metrics.streamOpened(t.Name)
+	defer func() {
+		t.Active.Add(-1)
+		t.metrics.streamClosed(t.Name)
+	}()
 
 	var data net.Conn
 	select {
@@ -129,6 +134,7 @@ func (t *Tunnel) handleVisit(public net.Conn) {
 	t.BytesIn.Add(fromClient)
 	t.Total.Add(1)
 	t.Session.RecordTraffic(toClient, fromClient)
+	t.metrics.recordStream(t.Name, toClient, fromClient)
 
 	t.logger.Printf("tunnel %q: stream from %s finished (%d bytes out, %d bytes in)",
 		t.Name, public.RemoteAddr(), toClient, fromClient)
@@ -158,15 +164,17 @@ type TunnelManager struct {
 	logger   *log.Logger
 	cipher   *crypto.Cipher
 	sessions *SessionManager
+	metrics  *Metrics
 }
 
-func newTunnelManager(cfg *config.Config, logger *log.Logger, cipher *crypto.Cipher, sessions *SessionManager) *TunnelManager {
+func newTunnelManager(cfg *config.Config, logger *log.Logger, cipher *crypto.Cipher, sessions *SessionManager, metrics *Metrics) *TunnelManager {
 	return &TunnelManager{
 		tunnels:  make(map[string]*Tunnel),
 		cfg:      cfg,
 		logger:   logger,
 		cipher:   cipher,
 		sessions: sessions,
+		metrics:  metrics,
 	}
 }
 
@@ -215,6 +223,7 @@ func (m *TunnelManager) Register(session *Session, spec protocol.ProxySpec) (*Tu
 		Session:     session,
 		logger:      m.logger,
 		cipher:      m.cipher,
+		metrics:     m.metrics,
 		idleTimeout: time.Duration(m.cfg.Server.ReadTimeoutSecs) * time.Second,
 		dialTimeout: time.Duration(m.cfg.Server.DialTimeoutSecs) * time.Second,
 		done:        make(chan struct{}),
