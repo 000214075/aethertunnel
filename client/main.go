@@ -1,119 +1,285 @@
+// Command aethertunnel-client connects to an AetherTunnel server, publishes the
+// tunnels listed in its configuration and forwards each visiting connection to the
+// matching local service.
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/aethertunnel/aethertunnel/pkg/config"
 	"github.com/aethertunnel/aethertunnel/pkg/crypto"
+	flynet "github.com/aethertunnel/aethertunnel/pkg/net"
+	"github.com/aethertunnel/aethertunnel/pkg/protocol"
 )
 
+// Stamped at build time; see the server's main.go for the ldflags form.
 var (
-	version   = "0.1.1-alpha"
-	buildTime = "2026-02-21"
-	gitCommit = "latest"
+	version   = "dev"
+	buildTime = "unknown"
+	gitCommit = "unknown"
 )
+
+type client struct {
+	cfg    *config.Config
+	cipher *crypto.Cipher
+	logger *log.Logger
+
+	mu              sync.Mutex
+	session         string
+	activeStreams   sync.WaitGroup
+	registeredNames []string
+}
 
 func main() {
-	fmt.Printf("AetherTunnel Client v%s\n", version)
-	fmt.Printf("Build Time: %s\n", buildTime)
-	fmt.Printf("Git Commit: %s\n", gitCommit)
+	var (
+		showVersion = flag.Bool("version", false, "print the version and exit")
+		configPath  = flag.String("config", "", "path to the client configuration file (default client.toml)")
+		checkConfig = flag.Bool("check", false, "validate the configuration and exit")
+	)
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [flags] [config-file]\n\n", os.Args[0])
+		flag.PrintDefaults()
+	}
+	flag.Parse()
 
-	if len(os.Args) < 2 {
-		fmt.Printf("Usage: %s <config-file>\n", os.Args[0])
-		fmt.Println("\nConfig file example:")
-		fmt.Print(client_simple_example)
-		os.Exit(1)
+	if *showVersion {
+		fmt.Printf("aethertunnel-client %s (protocol %d, built %s, commit %s)\n",
+			version, protocol.ProtocolVersion, buildTime, gitCommit)
+		return
 	}
 
-	configFile := os.Args[1]
-	cfg, err := config.LoadClient(configFile)
+	path := *configPath
+	if path == "" {
+		if flag.NArg() > 0 {
+			path = flag.Arg(0)
+		} else {
+			path = "client.toml"
+		}
+	}
+
+	logger := log.New(os.Stderr, "", log.LstdFlags)
+
+	cfg, err := config.Load(path, config.ValidateOptions{Role: config.RoleClient})
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		logger.Fatalf("%v", err)
+	}
+	for _, warning := range cfg.Warnings {
+		logger.Printf("warning: %s", warning)
+	}
+	if *checkConfig {
+		fmt.Printf("%s is valid\n", path)
+		return
 	}
 
-	// 创建加密器
-	encryption := crypto.NewEncryption(cfg.Client.AuthToken)
-
-	// 创建混淆器
-	// var obfuscator *obfuscation.Obfuscation
-	if cfg.Obfuscation.Enabled {
-		// obfuscator = obfuscation.NewObfuscation(encryption)
-		log.Printf("Obfuscation enabled")
+	cipher, err := cfg.Cipher(config.RoleClient)
+	if err != nil {
+		logger.Fatalf("encryption configuration: %v", err)
 	}
 
-	// VPN客户端功能暂未实现
-	// var vpnClient *vpn.VPNClient
-	// if cfg.VPN.Enabled {
-	// 	vpnEncryption := crypto.NewEncryption(cfg.VPN.AuthToken)
-	// 	vpnClient = vpn.NewVPNClient(cfg, vpnEncryption)
-	// 	go func() {
-	// 		if err := vpnClient.Connect(); err != nil {
-	// 			log.Printf("VPN connection failed: %v", err)
-	// 		}
-	// 	}()
-	// 	log.Printf("VPN client enabled")
-	// }
-	log.Printf("VPN client feature not implemented yet")
+	c := &client{cfg: cfg, cipher: cipher, logger: logger}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	// 连接到服务器
+	logger.Printf("AetherTunnel client %s (protocol %d) -> %s, encryption %s, %d tunnel(s) configured",
+		version, protocol.ProtocolVersion, cfg.Client.ServerAddr, cipher.Algorithm(), len(cfg.Proxies))
+
+	c.run(ctx)
+	c.logger.Printf("client stopped")
+}
+
+// run keeps a session alive, reconnecting with exponential backoff.
+func (c *client) run(ctx context.Context) {
+	backoff := time.Duration(c.cfg.Client.ReconnectSeconds) * time.Second
+	maxBackoff := time.Duration(c.cfg.Client.MaxReconnectSeconds) * time.Second
+
 	for {
-		conn, err := connectToServer(cfg, encryption)
-		if err != nil {
-			log.Printf("Failed to connect: %v", err)
-			time.Sleep(5 * time.Second)
-			continue
+		if ctx.Err() != nil {
+			return
 		}
 
-		log.Printf("Connected to server: %s", cfg.Client.ServerAddr)
+		startedAt := time.Now()
+		err := c.runSession(ctx)
+		if ctx.Err() != nil {
+			return
+		}
 
-		// 启动心跳
-		done := make(chan struct{})
-		go startHeartbeat(conn, encryption, done)
+		// A session that lasted a while is a success as far as backoff is
+		// concerned: the next failure is a new incident, not a retry storm.
+		if time.Since(startedAt) > 60*time.Second {
+			backoff = time.Duration(c.cfg.Client.ReconnectSeconds) * time.Second
+		}
 
-		// 处理代理
-		handleProxies(conn, cfg, encryption, done)
+		wait := jitter(backoff)
+		if err != nil {
+			c.logger.Printf("session ended: %v; reconnecting in %s", err, wait.Round(time.Second))
+		} else {
+			c.logger.Printf("session ended; reconnecting in %s", wait.Round(time.Second))
+		}
 
-		// 等待断开
-		<-done
-		log.Println("Connection lost, reconnecting...")
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
 	}
 }
 
-func connectToServer(cfg *config.Config, encryption *crypto.Encryption) (net.Conn, error) {
-	conn, err := net.DialTimeout("tcp", cfg.Client.ServerAddr, 10*time.Second)
-	if err != nil {
-		return nil, err
+// jitter spreads reconnects out by ±20% so a fleet of clients does not retry in
+// lockstep after a server restart.
+func jitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return time.Second
 	}
-
-	// 简单的认证消息
-	authMsg := "AUTH:" + cfg.Client.AuthToken
-	if _, err := conn.Write([]byte(authMsg)); err != nil {
-		conn.Close()
-		return nil, err
-	}
-
-	// 读取认证响应
-	response, err := readLine(conn)
-	if err != nil {
-		conn.Close()
-		return nil, err
-	}
-
-	if response != "OK" {
-		conn.Close()
-		return nil, fmt.Errorf("authentication failed: %s", response)
-	}
-
-	return conn, nil
+	delta := float64(d) * 0.2
+	return d + time.Duration((rand.Float64()*2-1)*delta)
 }
 
-func startHeartbeat(conn net.Conn, encryption *crypto.Encryption, done chan struct{}) {
-	ticker := time.NewTicker(30 * time.Second)
+// session runs one control connection until it fails or ctx is cancelled.
+func (c *client) runSession(ctx context.Context) error {
+	dialTimeout := time.Duration(c.cfg.Client.DialTimeoutSecs) * time.Second
+	conn, err := net.DialTimeout("tcp", c.cfg.Client.ServerAddr, dialTimeout)
+	if err != nil {
+		return fmt.Errorf("dial %s: %w", c.cfg.Client.ServerAddr, err)
+	}
+	defer conn.Close()
+
+	framer := protocol.NewFramer(conn, c.cipher, protocol.DefaultMaxPayload)
+
+	_ = conn.SetDeadline(time.Now().Add(dialTimeout))
+	request := protocol.AuthRequest{
+		Token:         c.cfg.Client.AuthToken,
+		ClientVersion: version,
+		Protocol:      protocol.ProtocolVersion,
+		Encryption:    c.cipher.Algorithm(),
+	}
+	if err := framer.WriteJSON(protocol.TypeAuthRequest, request); err != nil {
+		return fmt.Errorf("send auth request: %w", err)
+	}
+
+	var response protocol.AuthResponse
+	if err := framer.ReadJSON(protocol.TypeAuthResponse, &response); err != nil {
+		return fmt.Errorf("read auth response: %w", err)
+	}
+	if !response.OK {
+		return fmt.Errorf("authentication rejected: %s", response.Error)
+	}
+	if response.ProtocolMismatch {
+		c.logger.Printf("warning: server speaks protocol %d, this client speaks %d", response.Protocol, protocol.ProtocolVersion)
+	}
+	if response.Encryption != c.cipher.Algorithm() {
+		return fmt.Errorf("encryption mismatch: server uses %q, this client uses %q", response.Encryption, c.cipher.Algorithm())
+	}
+	_ = conn.SetDeadline(time.Time{})
+
+	c.mu.Lock()
+	c.session = response.Session
+	c.mu.Unlock()
+
+	c.logger.Printf("connected to %s as session %s (server %s)", c.cfg.Client.ServerAddr, response.Session, response.ServerVersion)
+
+	if err := c.registerProxies(framer); err != nil {
+		return err
+	}
+
+	heartbeatDone := make(chan struct{})
+	go c.heartbeatLoop(heartbeatDone, framer, response.HeartbeatSecs)
+
+	defer close(heartbeatDone)
+
+	// One reader: this loop owns the control framer for the life of the session.
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		msg, err := framer.ReadFrame()
+		if err != nil {
+			return err
+		}
+
+		switch msg.Type {
+		case protocol.TypeHeartbeatAck:
+			// nothing to do; the ack proves the link is alive
+		case protocol.TypeDataRequest:
+			var request protocol.DataRequest
+			if err := json.Unmarshal(msg.Payload, &request); err != nil {
+				c.logger.Printf("malformed data request: %v", err)
+				continue
+			}
+			go c.serveStream(response.Session, request)
+		case protocol.TypeProxyList:
+			c.logProxyList(msg.Payload)
+		case protocol.TypeError:
+			var payload protocol.ErrorPayload
+			_ = json.Unmarshal(msg.Payload, &payload)
+			c.logger.Printf("server reported: %s", payload.Error)
+		default:
+			c.logger.Printf("ignoring unexpected control frame %s", msg.Type)
+		}
+	}
+}
+
+// registerProxies publishes every configured tunnel on the current session.
+func (c *client) registerProxies(framer *protocol.Framer) error {
+	if len(c.cfg.Proxies) == 0 {
+		c.logger.Printf("no [[proxies]] configured: the connection is up but publishes nothing")
+		return nil
+	}
+	for _, proxy := range c.cfg.Proxies {
+		spec := protocol.ProxySpec{
+			Name:       proxy.Name,
+			Type:       proxy.Type,
+			LocalAddr:  proxy.LocalAddr(),
+			RemotePort: proxy.RemotePort,
+		}
+		if err := framer.WriteJSON(protocol.TypeRegisterProxy, spec); err != nil {
+			return fmt.Errorf("register proxy %q: %w", proxy.Name, err)
+		}
+		c.logger.Printf("requested tunnel %q -> %s (public port %d)", proxy.Name, spec.LocalAddr, proxy.RemotePort)
+	}
+	return nil
+}
+
+func (c *client) logProxyList(payload []byte) {
+	var statuses []protocol.ProxyStatus
+	if err := json.Unmarshal(payload, &statuses); err != nil {
+		c.logger.Printf("malformed proxy list: %v", err)
+		return
+	}
+	names := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		names = append(names, status.Name)
+	}
+	c.mu.Lock()
+	c.registeredNames = names
+	c.mu.Unlock()
+	c.logger.Printf("server confirms %d tunnel(s): %v", len(names), names)
+}
+
+// heartbeatLoop sends heartbeats until done is closed. It only writes, so it does
+// not race with the session's reader.
+func (c *client) heartbeatLoop(done <-chan struct{}, framer *protocol.Framer, seconds int) {
+	if seconds <= 0 {
+		seconds = 30
+	}
+	ticker := time.NewTicker(time.Duration(seconds) * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -121,81 +287,88 @@ func startHeartbeat(conn net.Conn, encryption *crypto.Encryption, done chan stru
 		case <-done:
 			return
 		case <-ticker.C:
-			heartbeat := "HEARTBEAT"
-			if _, err := conn.Write([]byte(heartbeat)); err != nil {
-				log.Printf("Failed to send heartbeat: %v", err)
+			if err := framer.WriteFrame(&protocol.Message{Type: protocol.TypeHeartbeat}); err != nil {
 				return
 			}
 		}
 	}
 }
 
-func handleProxies(conn net.Conn, cfg *config.Config, encryption *crypto.Encryption, done chan struct{}) {
-	for _, proxy := range cfg.Proxies {
-		log.Printf("Proxy feature not implemented: %s (%s:%d -> :%d)",
-			proxy.Name, proxy.LocalIP, proxy.LocalPort, proxy.RemotePort)
-		// TODO: Implement proxy functionality
-	}
-}
+// serveStream opens a second connection to the server for one visiting connection
+// and forwards it to the local service.
+func (c *client) serveStream(session string, request protocol.DataRequest) {
+	dialTimeout := time.Duration(c.cfg.Client.DialTimeoutSecs) * time.Second
 
-func forwardData(clientConn, localConn net.Conn) {
-	buffer := make([]byte, 4096)
-
-	for {
-		n, err := clientConn.Read(buffer)
-		if err != nil {
-			break
-		}
-
-		if _, err := localConn.Write(buffer[:n]); err != nil {
-			break
-		}
-	}
-}
-
-func readLine(conn net.Conn) (string, error) {
-	buf := make([]byte, 1024)
-	n, err := conn.Read(buf)
+	proxy, err := c.findProxy(request.Proxy)
 	if err != nil {
-		return "", err
+		c.logger.Printf("cannot serve stream for %q: %v", request.Proxy, err)
+		return
 	}
-	return string(buf[:n]), nil
+
+	conn, err := net.DialTimeout("tcp", c.cfg.Client.ServerAddr, dialTimeout)
+	if err != nil {
+		c.logger.Printf("stream for %q: cannot reach the server: %v", request.Proxy, err)
+		return
+	}
+
+	framer := protocol.NewFramer(conn, c.cipher, protocol.DefaultMaxPayload)
+	fail := func(reason string) {
+		c.logger.Printf("stream for %q: %s", request.Proxy, reason)
+		_ = conn.Close()
+	}
+
+	_ = conn.SetDeadline(time.Now().Add(dialTimeout))
+	if err := framer.WriteJSON(protocol.TypeDataOpen, protocol.DataOpen{
+		Session:  session,
+		Proxy:    request.Proxy,
+		StreamID: request.StreamID,
+	}); err != nil {
+		fail(fmt.Sprintf("cannot send data-open: %v", err))
+		return
+	}
+
+	var ack protocol.DataOpenAck
+	if err := framer.ReadJSON(protocol.TypeDataOpenAck, &ack); err != nil {
+		fail(fmt.Sprintf("cannot read data-open ack: %v", err))
+		return
+	}
+	if !ack.OK {
+		fail(fmt.Sprintf("server refused the stream: %s", ack.Error))
+		return
+	}
+	_ = conn.SetDeadline(time.Time{})
+
+	local, err := net.DialTimeout("tcp", proxy.LocalAddr(), dialTimeout)
+	if err != nil {
+		c.logger.Printf("stream for %q: cannot reach the local service %s: %v", request.Proxy, proxy.LocalAddr(), err)
+		_ = conn.Close()
+		return
+	}
+
+	serverSide := &cryptoStreamConn{Stream: crypto.NewStream(conn, c.cipher), conn: conn}
+	idle := time.Duration(c.cfg.Client.IdleTimeoutSecs) * time.Second
+	toServer, fromServer := flynet.Pipe(local, serverSide, idle)
+	c.logger.Printf("stream for %q finished (sent %d bytes to the server, received %d)",
+		request.Proxy, toServer, fromServer)
 }
 
-// client_simple_example 客户端简单配置示例
-const client_simple_example = `[client]
-# 服务器地址
-server_addr = "127.0.0.1:7001"
+func (c *client) findProxy(name string) (config.ProxyConfig, error) {
+	for _, proxy := range c.cfg.Proxies {
+		if proxy.Name == name {
+			return proxy, nil
+		}
+	}
+	return config.ProxyConfig{}, errors.New("not in this client's configuration")
+}
 
-# 认证令牌
-auth_token = "your-auth-token-here"
+// cryptoStreamConn presents a crypto.Stream as a net.Conn for the pipe helper.
+type cryptoStreamConn struct {
+	*crypto.Stream
+	conn net.Conn
+}
 
-# 代理配置
-[[proxies]]
-name = "ssh"
-type = "tcp"
-local_ip = "127.0.0.1"
-local_port = 22
-remote_port = 2222
-
-[[proxies]]
-name = "web"
-type = "http"
-local_ip = "127.0.0.1"
-local_port = 8080
-remote_port = 8081
-
-[[proxies]]
-name = "database"
-type = "tcp"
-local_ip = "127.0.0.1"
-local_port = 3306
-remote_port = 3307
-
-[[proxies]]
-name = "dns"
-type = "udp"
-local_ip = "127.0.0.1"
-local_port = 53
-remote_port = 53
-`
+func (c *cryptoStreamConn) LocalAddr() net.Addr                { return c.conn.LocalAddr() }
+func (c *cryptoStreamConn) RemoteAddr() net.Addr               { return c.conn.RemoteAddr() }
+func (c *cryptoStreamConn) SetDeadline(t time.Time) error      { return c.conn.SetDeadline(t) }
+func (c *cryptoStreamConn) SetReadDeadline(t time.Time) error  { return c.conn.SetReadDeadline(t) }
+func (c *cryptoStreamConn) SetWriteDeadline(t time.Time) error { return c.conn.SetWriteDeadline(t) }

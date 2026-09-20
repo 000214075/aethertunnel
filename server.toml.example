@@ -1,45 +1,52 @@
-# AetherTunnel Server 配置示例
-# 复制此文件为 server.toml 并修改相应配置
+# AetherTunnel server configuration — v3.1.0
+#
+# Every key in this file is understood by this version. Unknown keys are reported
+# on startup instead of being silently ignored, so a typo or a setting carried over
+# from an older release cannot pretend to work.
+#
+# Start with:  aethertunnel-server --config server.toml
+# Validate:    aethertunnel-server --config server.toml --check
 
 [server]
 bind_addr = "0.0.0.0"
-bind_port = 8080
-auth_token = "your-secret-token-here"
-enable_tls = false
-cert_file = ""
-key_file = ""
-max_connections = 1000
-graceful_shutdown_timeout = 30
+bind_port = 7001
+
+# Shared secret between the server and its clients. Use at least 16 random
+# characters; a weak or placeholder value produces a warning at startup.
+# Generate one with:  openssl rand -hex 32
+auth_token = "CHANGE-ME-use-at-least-16-random-characters"
+
+# Refuse new clients beyond this many concurrent sessions.
+max_connections = 512
+
+# Seconds. The handshake timeout bounds how long a connection may take to send its
+# first frame; the read timeout is the idle limit applied to a tunnelled stream;
+# the heartbeat interval is what clients are expected to send, and a client that
+# misses three of them is disconnected.
+handshake_timeout_seconds = 10
+read_timeout_seconds = 120
+heartbeat_seconds = 30
+
+# How long the server waits for a client to open the data stream for a visiting
+# connection.
+dial_timeout_seconds = 10
+graceful_shutdown_seconds = 5
 
 [dashboard]
 enabled = true
-port = 8081
+# Keep this on loopback unless you also set a token: the dashboard exposes client
+# addresses, tunnel names and traffic counters.
+bind_addr = "127.0.0.1"
+port = 7500
+# When set, /api/* requires "Authorization: Bearer <token>". /api/health stays open.
+token = ""
 
-[vpn]
+[encryption]
+# Optional AEAD protection for control messages and tunnelled bytes. When enabled,
+# every client must use the same algorithm, salt and passphrase.
 enabled = false
-bind_addr = "0.0.0.0"
-port = 8082
-local_ip = "10.0.0.1"
-remote_ip = "10.0.0.2"
-netmask = "255.255.255.0"
-protocol = "tcp"
-obfuscation = false
-auth_token = "your-vpn-token"
-max_peers = 10
-mtu = 1500
-
-[obfuscation]
-enabled = false
-default_type = "xor"
-allowed_types = ["xor", "xor2", "xor4"]
-adaptive_enabled = false
-key_rotation = 60
-packet_padding = false
-traffic_morphing = false
-
-[[proxies]]
-name = "http-proxy"
-type = "http"
-local_ip = "127.0.0.1"
-local_port = 8080
-remote_port = 8080
+algorithm = "xchacha20-poly1305"   # or "aes-256-gcm"
+# Empty means "derive from auth_token", so you do not have to distribute a second
+# secret. Both ends must agree on this value.
+passphrase = ""
+salt = "aethertunnel"

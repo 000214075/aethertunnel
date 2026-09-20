@@ -1,0 +1,81 @@
+name: Release
+
+# Triggered by pushing a version tag, e.g.:
+#   git tag v3.1.0 && git push origin v3.1.0
+#
+# The v1 setup had two workflows (one on `release: created`, one on
+# `release: published`) that both uploaded the same asset names to the same
+# release, so the second one always failed with a 422, and it also used the
+# archived actions/upload-release-asset@v1 with wrong download-artifact paths.
+# Here a single job builds the matrix, verifies it, and creates the release with
+# the `gh` CLI that is already on the runner.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'tag to release (must already exist)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: tests must pass before a release
+        run: go test ./... -count=1 -timeout 180s
+
+      - name: cross-compile the matrix
+        run: |
+          chmod +x scripts/build-release.sh
+          ./scripts/build-release.sh "${GITHUB_REF_NAME}"
+
+      - name: verify every artifact is a real binary of the right format
+        run: |
+          set -e
+          check() {
+            file --brief "$1" | grep -qi "$2" || { echo "$1 is not $2"; exit 1; }
+          }
+          check dist/aethertunnel-server-linux-amd64           'ELF 64-bit'
+          check dist/aethertunnel-server-linux-arm64           'ELF 64-bit'
+          check dist/aethertunnel-client-linux-amd64           'ELF 64-bit'
+          check dist/aethertunnel-client-linux-arm64           'ELF 64-bit'
+          check dist/aethertunnel-server-darwin-amd64          'Mach-O'
+          check dist/aethertunnel-server-darwin-arm64          'Mach-O'
+          check dist/aethertunnel-client-darwin-amd64          'Mach-O'
+          check dist/aethertunnel-client-darwin-arm64          'Mach-O'
+          check dist/aethertunnel-server-windows-amd64.exe     'PE32+'
+          check dist/aethertunnel-server-windows-arm64.exe     'PE32+'
+          check dist/aethertunnel-client-windows-amd64.exe     'PE32+'
+          check dist/aethertunnel-client-windows-arm64.exe     'PE32+'
+          echo "all 12 artifacts look correct"
+
+      - name: record the version the binaries report
+        run: |
+          ./dist/aethertunnel-server-linux-amd64 --version
+          ./dist/aethertunnel-client-linux-amd64 --version
+
+      - name: create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release create "$tag" \
+            --title "AetherTunnel $tag" \
+            --notes-file CHANGELOG.md \
+            dist/aethertunnel-* dist/SHA256SUMS \
+            server.toml.example client.toml.example
+          echo "released $tag"

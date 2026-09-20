@@ -1,141 +1,108 @@
+// Command aethertunnel-server runs the AetherTunnel server: it accepts client
+// control sessions, publishes the tunnels they register and serves the dashboard.
 package main
 
 import (
+	"context"
+	"flag"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/aethertunnel/aethertunnel/pkg/config"
-	"github.com/aethertunnel/aethertunnel/pkg/crypto"
+	"github.com/aethertunnel/aethertunnel/pkg/protocol"
 	"github.com/aethertunnel/aethertunnel/pkg/server"
-	"github.com/aethertunnel/aethertunnel/pkg/vpn"
 )
 
+// These are stamped at build time with
+//
+//	-ldflags "-X main.version=v3.1.0 -X main.buildTime=... -X main.gitCommit=..."
+//
+// and fall back to the values below when the binary is built with plain
+// "go build".
 var (
-	version   = "v1.0.2"
-	buildTime = "2026-02-21T08:14:57Z"
-	gitCommit = "eeb217d"
+	version   = "dev"
+	buildTime = "unknown"
+	gitCommit = "unknown"
 )
 
 func main() {
-	// 打印版本信息
-	fmt.Printf("AetherTunnel Server v%s\n", version)
-	fmt.Printf("Build Time: %s\n", buildTime)
-	fmt.Printf("Git Commit: %s\n", gitCommit)
+	var (
+		showVersion = flag.Bool("version", false, "print the version and exit")
+		configPath  = flag.String("config", "", "path to the server configuration file (default server.toml)")
+		checkConfig = flag.Bool("check", false, "validate the configuration and exit")
+	)
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [flags] [config-file]\n\n", os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "Flags:\n")
+		flag.PrintDefaults()
+		fmt.Fprintf(flag.CommandLine.Output(), "\nThe positional config-file form is kept for compatibility with older releases.\n")
+	}
+	flag.Parse()
 
-	// 加载配置
-	if len(os.Args) < 2 {
-		fmt.Printf("Usage: %s <config-file>\n", os.Args[0])
-		fmt.Println("\nConfig file example:")
-		exampleConfig, _ := os.ReadFile("config.example.toml")
-		fmt.Println(string(exampleConfig))
-		os.Exit(1)
+	if *showVersion {
+		fmt.Printf("aethertunnel-server %s (protocol %d, built %s, commit %s)\n",
+			version, protocol.ProtocolVersion, buildTime, gitCommit)
+		return
 	}
 
-	configFile := os.Args[1]
-	cfg, err := config.LoadServer(configFile)
-	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
-	}
-
-	// 创建加密器
-	encryption := crypto.NewEncryption(cfg.Server.AuthToken)
-
-	// 创建混淆器
-	// var obfuscator *obfuscation.Obfuscation
-	if cfg.Obfuscation.Enabled {
-		// obfuscator = obfuscation.NewObfuscation(encryption)
-		log.Printf("Obfuscation enabled with default type: %s", cfg.Obfuscation.DefaultType)
-	}
-
-	// 创建VPN管理器
-	var vpnManager *vpn.VPN
-	if cfg.VPN.Enabled {
-		vpnEncryption := crypto.NewEncryption(cfg.VPN.AuthToken)
-		vpnManager = vpn.NewVPN(cfg, vpnEncryption)
-		go func() {
-			if err := vpnManager.Start(); err != nil {
-				log.Printf("Failed to start VPN: %v", err)
-			}
-		}()
-		log.Printf("VPN enabled on port %d", cfg.VPN.Port)
-	}
-
-	// 创建监听器
-	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", cfg.Server.BindAddr, cfg.Server.BindPort))
-	if err != nil {
-		log.Fatalf("Failed to listen: %v", err)
-	}
-
-	log.Printf("Server started on %s:%d", cfg.Server.BindAddr, cfg.Server.BindPort)
-	log.Printf("Auth Token: %s", maskToken(cfg.Server.AuthToken))
-
-	// 启动 Web 面板（如果启用）
-	if cfg.Dashboard.Enabled {
-		go func() {
-			if err := server.StartDashboard(cfg.Dashboard.Port, cfg); err != nil {
-				log.Printf("Failed to start dashboard: %v", err)
-			}
-		}()
-	}
-
-	// 启动控制连接监听
-	controlAddr := fmt.Sprintf("%s:%d", cfg.Server.BindAddr, cfg.Server.BindPort)
-	controlListener, err := net.Listen("tcp", controlAddr)
-	if err != nil {
-		log.Fatalf("Failed to listen on control port: %v", err)
-	}
-
-	log.Printf("Control listener started on %s", controlAddr)
-
-	// 创建代理管理器
-	proxyManager := server.NewProxyManager(cfg, encryption)
-
-	// 优雅关闭处理
-	done := make(chan os.Signal, 1)
-	signal.Notify(done, os.Interrupt, syscall.SIGTERM)
-
-	go func() {
-		<-done
-		log.Println("\nShutting down server...")
-		listener.Close()
-		controlListener.Close()
-		// Note: VPN shutdown not implemented yet
-	}()
-
-	// 主循环
-	connections := 0
-	for {
-		select {
-		case <-done:
-			log.Printf("Server shutdown complete. Connections: %d", connections)
-			return
-		default:
-			conn, err := listener.Accept()
-			if err != nil {
-				log.Printf("Accept error: %v", err)
-				time.Sleep(time.Second)
-				continue
-			}
-
-			connections++
-			log.Printf("New connection from %s (total: %d)", conn.RemoteAddr(), connections)
-
-			go func() {
-				proxyManager.HandleConnection(conn)
-			}()
+	path := *configPath
+	if path == "" {
+		if flag.NArg() > 0 {
+			path = flag.Arg(0)
+		} else {
+			path = "server.toml"
 		}
 	}
-}
 
-// maskToken 隐藏认证令牌的一部分
-func maskToken(token string) string {
-	if len(token) <= 8 {
-		return token
+	logger := log.New(os.Stderr, "", log.LstdFlags)
+
+	cfg, err := config.Load(path, config.ValidateOptions{Role: config.RoleServer})
+	if err != nil {
+		logger.Fatalf("%v", err)
 	}
-	return token[:4] + "****" + token[len(token)-4:]
+	for _, warning := range cfg.Warnings {
+		logger.Printf("warning: %s", warning)
+	}
+
+	if *checkConfig {
+		fmt.Printf("%s is valid\n", path)
+		return
+	}
+
+	srv, err := server.New(cfg, server.Options{
+		Version:   version,
+		BuildTime: buildTime,
+		GitCommit: gitCommit,
+		Logger:    logger,
+	})
+	if err != nil {
+		logger.Fatalf("cannot start server: %v", err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	var dashboard *server.Dashboard
+	if cfg.Dashboard.Enabled {
+		dashboard, err = server.NewDashboard(srv, logger)
+		if err != nil {
+			logger.Fatalf("cannot prepare dashboard: %v", err)
+		}
+		if err := dashboard.Start(); err != nil {
+			// A busy dashboard port should not stop the tunnel service.
+			logger.Printf("dashboard disabled: %v", err)
+			dashboard = nil
+		}
+	}
+
+	if err := srv.Run(ctx); err != nil {
+		logger.Fatalf("server stopped: %v", err)
+	}
+	if dashboard != nil {
+		dashboard.Stop()
+	}
+	logger.Printf("AetherTunnel server %s stopped", version)
 }

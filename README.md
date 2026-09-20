@@ -1,665 +1,301 @@
-# AetherTunnel 🚀
+# AetherTunnel
 
-> 下一代内网穿透工具 - 不是 frp 的改进版，而是一个全新的物种！
+**一个能把内网服务安全地发布到公网的小型隧道工具 · A small, honest TCP tunnel that publishes a service behind NAT.**
+服务端 + 客户端 + 内置 Web 面板，纯 Go，无 CGO，六个平台开箱可用。
+Server, client and a built-in web panel. Pure Go, no CGO, cross-compiled for six platforms.
 
-![GitHub Actions](https://img.shields.io/github/actions/workflow/000214075/aethertunnel/badge.svg?branch=main)
-![GitHub release](https://img.shields.io/github/v/tag/000214075/aethertunnel?label=release)
-![GitHub license](https://img.shields.io/github/license/000214075/aethertunnel?label=MIT)
-![GitHub stars](https://img.shields.io/github/stars/000214075/aethertunnel?style=social)
-![GitHub forks](https://img.shields.io/github/forks/000214075/aethertunnel?style=social)
-
----
-
-## 🎉 简介
-
-**AetherTunnel** 是一个功能强大、配置丰富、Web 界面精美、文档齐全的下一代内网穿透工具。
-
-它集成了 **20 项颠覆性创新功能**，包括 **AI 智能路由**、**WebRTC 真正 P2P 直连**、**去中心化 DHT 网络**、**量子抗性加密**、**区块链认证和激励**、**边缘计算集成**等。
-
-与传统 frp 相比：
-- **配置项**: 650+ vs ~70（**9 倍**）
-- **功能模块**: 35+ vs ~10（**3.5 倍**）
-- **代理类型**: 15+ vs 7（**2 倍**）
-- **安全特性**: 25+ vs 5（**5 倍**）
-- **平台支持**: 14 vs ~5（**2.8 倍**）
-- **文档字数**: 100,000+ vs ~5,000（**20 倍**）
-- **创新程度**: 100x vs 1x（**100 倍**）
+[![CI](https://github.com/000214075/aethertunnel/actions/workflows/ci.yml/badge.svg)](https://github.com/000214075/aethertunnel/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/tag/000214075/aethertunnel?label=release)](https://github.com/000214075/aethertunnel/releases)
+[![License](https://img.shields.io/github/license/000214075/aethertunnel?label=license)](LICENSE)
 
 ---
 
-## ✨ 核心特性
+## 中文说明
 
-### 🚀 主要特性
+### 这是什么
 
-1. **🤖 AI 智能路由** - 机器学习驱动，自动选择最佳路由
-2. **🌐 WebRTC 真正 P2P 直连** - 零中 relay，延迟 < 10ms
-3. **⛓️ 去中心化 DHT 网络** - 无中心服务器，抗审查
-4. **🔬 量子抗性加密** - NIST PQC 标准，对抗未来量子计算机
-5. **🔗 区块链认证和激励** - DID 和智能合约，带宽市场
-6. **🌍 边缘计算集成** - 全球分布式，就近访问
-7. **📡 虚拟网卡** - TUN/TAP 设备，全协议栈支持
-8. **🚀 多路径传输** - MPTCP，带宽聚合，速度倍增
-9. **🎭 流量伪装** - 完全混淆，规避检测
-10. **🧠 自适应协议** - 智能选择最佳协议
-11. **📊 实时流量可视化** - Web 界面，拓扑图
-12. **🔮 预测性维护** - AI 预测故障，提前切换
-13. **💰 带宽市场** - P2P 带宽交易，代币激励
-14. **🎮 游戏优化模式** - < 10ms 延迟，UDP 优先，FEC 丢包恢复
-15. **📱 移动端完整支持** - iOS/Android 原生应用，后台运行
-16. **🔒 零知识证明** - zk-SNARKs/zk-STARKs，隐私保护验证
-17. **🌐 IPv6 原生支持** - 完整 IPv6 协议栈，双栈优化
-18. **🤝 协作共享网络** - Mesh 网络架构，多跳路由
-19. **📡 卫星网络支持** - Starlink 集成，高延迟网络优化
-20. **🎯 智能负载均衡** - AI 驱动，实时优化
+AetherTunnel 让一台没有公网 IP 的机器（家里的 NAS、公司的开发机、树莓派）把本地端口
+发布到一台有公网 IP 的服务器上。访问者连服务器的端口，流量通过隧道回到你的本地服务。
 
----
-
-## 📦 代理类型
-
-AetherTunnel 支持 **15+ 种代理类型**：
-
-### TCP 代理
-- **用途**: SSH、数据库、远程桌面等
-- **特点**: 可靠连接，适用于大多数场景
-
-### UDP 代理
-- **用途**: DNS、游戏、视频流等
-- **特点**: 低延迟，适用于实时应用
-
-### HTTP 代理
-- **用途**: Web 网站、Web 服务
-- **特点**: 域名路由，支持虚拟主机
-
-### HTTPS 代理
-- **用途**: 加密网站、HTTPS 服务
-- **特点**: TLS 加密，支持 SNI
-
-### STCP (Secure TCP)
-- **用途**: 需要访问控制的代理
-- **特点**: 双向验证，更安全
-
-### XTCP (X隧道 TCP)
-- **用途**: P2P 直连，中转代理
-- **特点**: 智能路由，更快的连接
-
-### SUDP
-- **用途**: 安全 UDP
-- **特点**: 加密传输
-
-### 其他代理
-- 更多高级代理类型正在开发中...
-
----
-
-## 🚀 快速开始
-
-### 1. 下载
-
-**源代码**: https://github.com/000214075/aethertunnel/archive/refs/tags/v0.1.0.tar.gz
-
-**克隆仓库**:
-```bash
-git clone https://github.com/000214075/aethertunnel.git
-cd aethertunnel
-git checkout v0.1.0
+```
+访问者 ──► 服务器公网端口 ──► [隧道] ──► 客户端 ──► 本地服务 127.0.0.1:22
 ```
 
-### 2. 配置
+真正的转发、加密、面板数据统计都在这一版里**可用**；这一点请对照下面「这一版有什么 / 没有什么」，
+它是本版本最重要的部分。
 
-**服务端配置**:
+### 30 秒上手
+
 ```bash
-cp server.toml.example server.toml
-vim server.toml
+# 1. 下载对应平台的二进制（Release 页面），或在源码目录自己构建
+go build -o aethertunnel-server .          # 服务端
+go build -o aethertunnel-client ./client   # 客户端
 ```
 
-**客户端配置**:
-```bash
-cp client.toml.example client.toml
-vim client.toml
-```
+服务端 `server.toml`：
 
-**最小配置示例**:
 ```toml
-# 服务端配置
 [server]
 bind_addr = "0.0.0.0"
 bind_port = 7001
+auth_token = "把这里换成一串至少 16 位的随机字符"
 
 [dashboard]
 enabled = true
+bind_addr = "127.0.0.1"   # 想对外暴露就必须设置 token
 port = 7500
 ```
 
+客户端 `client.toml`：
+
 ```toml
-# 客户端配置
 [client]
-server_addr = "127.0.0.1:7001"
-auth_token = "your-auth-token"
+server_addr = "你的服务器IP:7001"
+auth_token = "与服务端完全一致"
 
 [[proxies]]
 name = "ssh"
 type = "tcp"
 local_ip = "127.0.0.1"
 local_port = 22
-remote_port = 2222
+remote_port = 6022        # 服务器上对外开放的端口
 ```
-
-### 3. 运行
-
-**服务端**:
-```bash
-./aethertunnel-server -c server.toml
-```
-
-**客户端**:
-```bash
-./aethertunnel-client -c client.toml
-```
-
-### 4. 访问
-
-**Web 管理面板**:
-- 通用版: `http://127.0.0.1:7500/dashboard/index.html`
-- 服务端版: `http://127.0.0.1:7500/dashboard/server.html`
-- 客户端版: `http://127.0.0.1:7500/dashboard/client.html`
-
----
-
-## 📚 文档
-
-### 核心文档
-
-- **[README.md](README.md)** - 项目首页（本文档）
-- **[QUICK_START.md](QUICK_START.md)** - 快速开始指南
-- **[QUICK_START_GUIDE.md](QUICK_START_GUIDE.md)** - 5 分钟快速上手指南
-
-### 测试报告
-
-- **[TEST_REPORT.md](TEST_REPORT.md)** - 测试报告和质量评估
-- **[BUILD_CONFIG_REPORT.md](BUILD_CONFIG_REPORT.md)** - 构建配置报告
-- **[FINAL_TEST_REPORT.md](FINAL_TEST_REPORT.md)** - 最终测试总结
-
-### 发布文档
-
-- **[RELEASE_PLAN.md](RELEASE_PLAN.md)** - 发布计划
-- **[PROJECT_FILES_CHECKLIST.md](PROJECT_FILES_CHECKLIST.md)** - 文件清单
-- **[FINAL_PUBLISH_SUMMARY.md](FINAL_PUBLISH_SUMMARY.md)** - 最终发布总结
-- **[CHANGELOG.md](CHANGELOG.md)** - 版本变更记录
-
-### 配置文档
-
-- **[docs/CONFIG_COMPARISON.md](docs/CONFIG_COMPARISON.md)** - 配置对比文档（vs frp）
-- **[docs/INNOVATIVE_FEATURES.md](docs/INNOVATIVE_FEATURES.md)** - 创新功能详解
-- **[docs/DASHBOARD_CONFIG.md](docs/DASHBOARD_CONFIG.md)** - Web 面板配置
-- **[docs/CONFIG_OPTIMIZATION.md](docs/CONFIG_OPTIMIZATION.md)** - 配置优化说明
-
-### 技术文档
-
-- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** - 架构设计文档
-- **[docs/SECURITY.md](docs/SECURITY.md)** - 安全最佳实践
-- **[docs/USAGE.md](docs/USAGE.md)** - 使用指南
-- **[docs/BUILD.md](docs/BUILD.md)** - 编译指南
-
----
-
-## 🎨 Web 管理界面
-
-AetherTunnel 包含 **3 套精美的 Web 管理界面**：
-
-### 通用版
-- **文件**: `web/dashboard/index.html`
-- **特点**: 完整功能，适合所有人
-- **主要功能**:
-  - 首次配置向导
-  - 总览页面
-  - 代理管理
-  - 客户端管理
-  - 服务器配置
-  - 安全设置
-  - 传输配置
-  - 监控
-  - 日志
-  - 设置
-
-### 服务端版
-- **文件**: `web/dashboard/server.html`
-- **特点**: 深邃主题，更专业
-- **主要功能**:
-  - 服务器总览
-  - 客户端管理（详细）
-  - 代理管理
-  - 实时流量监控
-  - 日志查看（高级）
-  - 服务器操作（重启、关闭、更新）
-  - 安全设置
-  - 网络配置
-
-### 客户端版
-- **文件**: `web/dashboard/client.html`
-- **特点**: 轻盈明亮，更亲切
-- **主要功能**:
-  - 我的隧道（代理管理）
-  - 连接状态（详细）
-  - 客户端设置
-  - 流量统计
-  - 日志查看
-  - 快速操作（全部启动、全部停止、全部重启）
-
----
-
-## 🎯 与 frp 对比
-
-| 维度 | frp | AetherTunnel | 提升 |
-|------|-----|--------------|------|
-| **配置项** | ~70 | 650+ | **9x** |
-| **功能模块** | ~10 | 35+ | **3.5x** |
-| **代理类型** | 7 | 15+ | **2x** |
-| **安全特性** | 5 | 25+ | **5x** |
-| **平台支持** | ~5 | 14 | **2.8x** |
-| **文档字数** | ~5K | 100K+ | **20x** |
-| **Web 界面** | 基础 | 3 套独立版本 | **∞** |
-| **UI 设计** | 一般 | 现代化、统一风格 | **∞** |
-| **自动化程度** | 低 | 完全 CI/CD | **∞** |
-| **创新程度** | 1x | 100x | **100x** |
-
----
-
-## 🔧 开发
-
-### 项目结构
-
-```
-aethertunnel/
-├── server/              # 服务端代码
-│   ├── main.go         # 服务端主程序
-│   ├── control.go       # 控制连接管理
-│   └── proxy.go         # 代理转发逻辑
-├── client/              # 客户端代码
-│   └── main.go         # 客户端主程序
-├── pkg/                 # 公共包
-│   ├── webrtc/          # WebRTC P2P 直连实现
-│   ├── dht/              # DHT 去中心化网络
-│   ├── obfuscation/      # 流量伪装和混淆
-│   ├── visualization/    # 实时流量可视化
-│   ├── routing/          # AI 智能路由
-│   ├── adaptive/         # 自适应协议
-│   ├── ipv6/             # IPv6 原生支持
-│   ├── config/           # 配置管理
-│   ├── crypto/           # 加密和签名模块
-│   ├── net/              # 网络工具
-│   ├── protocol/         # 协议定义
-│   └── util/             # 工具函数
-├── scripts/             # 构建和测试脚本
-├── web/                 # Web 界面
-│   └── dashboard/      # 管理面板
-├── docs/                # 项目文档
-└── .github/             # GitHub Actions 配置
-```
-
-### 编译
-
-**本地编译**:
-```bash
-# 编译服务端
-go build -o aethertunnel-server ./server
-
-# 编译客户端
-go build -o aethertunnel-client ./client
-```
-
-**跨平台编译**:
-```bash
-bash scripts/build.sh
-```
-
-**Docker 编译**:
-```bash
-docker build -f Dockerfile.build -t aethertunnel .
-```
-
-**Makefile**:
-```bash
-make build          # 编译所有平台
-make test           # 运行测试
-make lint           # 运行代码检查
-make docker          # Docker 编译
-```
-
----
-
-## 📊 统计
-
-### 代码统计
-
-| 类别 | 数量 | 说明 |
-|------|------|------|
-| **Go 源文件** | 17 | 7,701 行代码 |
-| **配置文件** | 11 | 650+ 配置项 |
-| **Web 界面** | 3 | 3 套独立版本 |
-| **Markdown 文档** | 22 | 100,000+ 字 |
-| **构建脚本** | 8 | 跨平台编译 |
-| **其他文件** | 8 | LICENSE, .gitignore 等 |
-| **总计** | **69** | **~500KB** |
-
-### 平台支持
-
-**Linux**:
-- AMD64, ARM64, ARM v7, 386, PPC64LE, S390X, MIPS64, MIPS64LE (8 个)
-
-**Windows**:
-- AMD64, ARM64 (2 个)
-
-**macOS**:
-- AMD64, ARM64 (2 个)
-
-**FreeBSD**:
-- AMD64, ARM64 (2 个)
-
-**总计**: 14 个主流服务器平台
-
----
-
-## 🤝 贡献
-
-欢迎所有形式的贡献！
-
-### 贡献指南
-
-1. Fork 本项目
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 创建 Pull Request
-
-### 行为准则
-
-- **尊重**: 尊重所有贡献者
-- **清晰**: 清晰的提交信息和文档
-- **测试**: 确保所有更改都经过测试
-- **开放**: 开放的讨论和协作
-
----
-
-## 📄 License
-
-MIT License
-
-Copyright (c) 2026 AetherTunnel Team
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-IN THE SOFTWARE.
-
----
-
-## 📞 联系方式
-
-### GitHub
-
-- **主页**: https://github.com/000214075/aethertunnel
-- **Issues**: https://github.com/000214075/aethertunnel/issues
-- **Pull Requests**: https://github.com/000214075/aethertunnel/pulls
-- **Discussions**: https://github.com/000214075/aethertunnel/discussions
-- **Wiki**: https://github.com/000214075/aethertunnel/wiki
-
-### 邮箱
-
-- **联系**: support@aethertunnel.io
-
----
-
-## 🙏 致谢
-
-感谢所有参与 AetherTunnel 项目的设计和开发的贡献者！
-
----
-
-## 🌟 颠覆性功能详解
-
-AetherTunnel 包含 20 项颠覆性创新功能，完全超越了传统 frp 的能力范围：
-
-### 1. 🤖 AI 智能路由
-- **描述**: 机器学习驱动的智能路由选择
-- **优势**: 根据网络状况实时优化，自动选择最佳路径
-- **应用**: 视频会议、直播、实时数据传输
-
-### 2. 🌐 WebRTC 真正 P2P 直连
-- **描述**: 使用 WebRTC 建立直接 P2P 连接，绕过中继服务器
-- **优势**: 零中 relay，延迟 < 10ms，节省服务器带宽
-- **应用**: 低延迟应用（游戏、视频会议）
-
-### 3. ⛓️ 去中心化 DHT 网络
-- **描述**: 使用 DHT（分布式哈希表）构建去中心化网络
-- **优势**: 无中心服务器，抗审查，高可用
-- **应用**: 抗审查环境、高可用性要求
-
-### 4. 🔬 量子抗性加密
-- **描述**: 使用 NIST PQC 标准的量子抗性加密算法
-- **优势**: 对抗未来量子计算机，长期安全
-- **应用**: 高安全性要求的场景
-
-### 5. 🔗 区块链认证和激励
-- **描述**: 使用 DID（去中心化身份）和智能合约进行认证和激励
-- **优势**: 无需第三方 CA，可审计，可激励
-- **应用**: 需要激励机制的带宽共享场景
-
-### 6. 🌍 边缘计算集成
-- **描述**: 与全球边缘计算网络集成，就近访问
-- **优势**: 就近访问，低延迟，高可用
-- **应用**: 全球化应用、CDN 集成
-
-### 7. 📡 虚拟网卡
-- **描述**: 使用 TUN/TAP 设备创建虚拟网卡
-- **优势**: 支持完整的协议栈，透明代理
-- **应用**: 需要透明代理的场景
-
-### 8. 🚀 多路径传输
-- **描述**: 使用 MPTCP（多路径 TCP）进行多路径传输
-- **优势**: 带宽聚合，速度倍增，提高可靠性
-- **应用**: 高带宽需求的场景
-
-### 9. 🎭 流量伪装
-- **描述**: 完全混淆流量，使其看起来像正常流量
-- **优势**: 规避检测，提高隐蔽性
-- **应用**: 规避流量检测的场景
-
-### 10. 🧠 自适应协议
-- **描述**: 根据网络状况智能选择最佳协议
-- **优势**: 自动优化，无需手动配置
-- **应用**: 复杂网络环境
-
-### 11. 📊 实时流量可视化
-- **描述**: Web 界面实时显示流量拓扑和统计
-- **优势**: 直观监控，快速发现问题
-- **应用**: 需要流量监控的场景
-
-### 12. 🔮 预测性维护
-- **描述**: AI 预测潜在故障，提前切换
-- **优势**: 提前预防，减少故障影响
-- **应用**: 高可用性要求的场景
-
-### 13. 💰 带宽市场
-- **描述**: P2P 带宽交易市场，代币激励
-- **优势**: 激励共享，提高带宽利用率
-- **应用**: 带宽共享场景
-
-### 14. 🎮 游戏优化模式
-- **描述**: 专为游戏优化的模式，延迟 < 10ms
-- **优势**: UDP 优先，FEC 丢包恢复，低延迟
-- **应用**: 在线游戏、实时游戏
-
-### 15. 📱 移动端完整支持
-- **描述**: iOS/Android 原生应用，支持后台运行
-- **优势**: 原生体验，后台服务，省电优化
-- **应用**: 移动端使用场景
-
-### 16. 🔒 零知识证明
-- **描述**: 使用 zk-SNARKs/zk-STARKs 进行隐私保护验证
-- **优势**: 隐私保护，可验证，不可伪造
-- **应用**: 需要隐私保护的场景
-
-### 17. 🌐 IPv6 原生支持
-- **描述**: 完整的 IPv6 协议栈支持，双栈优化
-- **优势**: 支持 IPv6 网络，未来网络
-- **应用**: IPv6 网络、双栈网络
-
-### 18. 🤝 协作共享网络
-- **描述**: Mesh 网络架构，多跳路由
-- **优势**: 提高网络利用率，提高可用性
-- **应用**: 分布式网络、协作场景
-
-### 19. 📡 卫星网络支持
-- **描述**: 集成 Starlink 等卫星网络，优化高延迟网络
-- **优势**: 支持卫星网络，优化高延迟
-- **应用**: 卫星网络、高延迟网络
-
-### 20. 🎯 智能负载均衡
-- **描述**: AI 驱动的实时负载均衡
-- **优势**: 实时优化，自动调整，提高性能
-- **应用**: 高并发场景、分布式系统
-
----
-
-## 🎉 项目状态
-
-**项目版本**: v0.1.0 (Proof of Concept)  
-**发布日期**: 2026-02-21  
-**项目类型**: 概念验证（展示设计理念，非完整实现）
-
-### 说明
-
-这是一个**概念验证（Proof of Concept）**版本，展示：
-- ✅ AetherTunnel 的完整架构设计
-- ✅ 650+ 配置项的组织方式
-- ✅ 20 项颠覆性功能的设计理念
-- ✅ 3 套精美的 Web 管理界面
-- ✅ 100,000+ 字的详细文档
-
-### 下一步计划
-
-1. **完善源代码实现**（v0.2.0）
-   - 实现所有占位符模块的实际代码
-   - 确保所有依赖都是真实的 Go 模块
-   - 补充单元测试和集成测试
-   - 目标覆盖率 ≥ 80%
-
-2. **补充真实二进制文件**（v0.2.0）
-   - 为所有 14 个平台编译真实的二进制文件
-   - 确保 SHA256 校验和正确
-   - 确保所有二进制文件都可以正常运行
-
-3. **补充完整功能实现**（v0.3.0）
-   - 实现所有 20 项颠覆性功能
-   - 实现所有 15+ 种代理类型
-   - 实现所有 650+ 配置项
-   - 确保所有功能都经过充分测试
-
----
-
-## 🚀 立即开始
-
-### 1. 下载源代码
-
-**方式 1：克隆仓库**
-```bash
-git clone https://github.com/000214075/aethertunnel.git
-cd aethertunnel
-git checkout v0.1.0
-```
-
-**方式 2：下载 Release**
-- 访问：https://github.com/000214075/aethertunnel/releases/tag/v0.1.0
-- 下载：`aethertunnel-v0.1.0.tar.gz`
-
-### 2. 配置
 
 ```bash
-# 复制配置文件
-cp server.toml.example server.toml
-cp client.toml.example client.toml
-
-# 编辑配置
-vim server.toml
-vim client.toml
+./aethertunnel-server --config server.toml      # 服务端
+./aethertunnel-client --config client.toml      # 客户端（放在内网机器上）
+ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 ```
 
-### 3. 运行
+打开 `http://服务器IP:7500/` 就是面板，显示在线客户端、已注册的隧道、实时流量。
+
+### 这一版有什么
+
+| 能力 | 状态 | 说明 |
+|---|---|---|
+| TCP 隧道转发 | ✅ 可用 | 访问者 → 服务器公网端口 → 客户端 → 本地服务，支持半关闭，不截断响应 |
+| 控制连接与会话 | ✅ 可用 | 认证、心跳、断线自动重连（指数退避 + 抖动）、连接数上限 |
+| 隧道注册与端口发布 | ✅ 可用 | 客户端启动时注册；服务器真正监听 `remote_port` 并转发 |
+| 可选的数据包加密 | ✅ 可用 | XChaCha20-Poly1305 或 AES-256-GCM，默认**关闭**；控制消息与隧道字节都加密 |
+| 密钥派生 | ✅ 可用 | 口令经 HKDF-SHA256 派生 32 字节密钥，任意长度口令都可用；口令留空则用 auth_token |
+| Web 面板 | ✅ 可用 | 单页、自带资源（编译进二进制，不依赖工作目录）、中英双语、手机可用 |
+| 面板 API | ✅ 可用 | `/api/health` `/api/status` `/api/clients` `/api/proxies` `/api/config`，可设 Bearer token |
+| 多平台 | ✅ 可用 | linux/darwin/windows × amd64/arm64，`scripts/build-release.*` 一键出 12 个产物 + SHA256 |
+| 配置校验 | ✅ 可用 | 未知配置项会**报出来**而不是静默忽略；`--check` 只校验不启动 |
+| 单元 + 端到端测试 | ✅ 可用 | 含"访问者→隧道→本地服务"的真实回环测试，明文与加密两种模式 |
+
+### 这一版没有什么（重要）
+
+上一版（v3.0.0 及更早）的 README 宣称了 20 项"颠覆性功能"。**它们在代码里一个都不存在**——
+我逐个搜索过 Go 源码，`webrtc`、`dht`、`blockchain`、`kyber`、`dilithium`、`zk-snark`、`quic`、
+`mptcp`、`tun/tap` 的出现次数都是 **0**。这一版把那些描述删掉了，因为一份描述不存在功能的说明书
+比没有说明书更糟。当前**没有实现**的：
+
+- ❌ WebRTC / P2P 直连、去中心化 DHT、区块链与代币激励、零知识证明、抗量子加密（Kyber/Dilithium）
+- ❌ UDP / HTTP / HTTPS / STCP / XTCP / SUDP 等代理类型（只实现了 TCP；配成别的类型会被**明确拒绝**，不会静默失效）
+- ❌ TUN/TAP 虚拟网卡与 VPN 数据面、多路径传输、流量伪装/混淆、AI 路由、移动端 App
+- ❌ 负载均衡、Prometheus 指标、Kubernetes 部署清单
+
+`[obfuscation]` 与 `[vpn]` 两个配置段**能解析但会被忽略**，启动时会打印警告说明这一点。
+
+### 加密怎么开
+
+两端必须配置一致，否则连接会在握手阶段报明确的 `encryption mismatch`：
+
+```toml
+[encryption]
+enabled = true
+algorithm = "xchacha20-poly1305"   # 或 "aes-256-gcm"
+passphrase = ""                     # 留空 = 用 auth_token 派生
+salt = "aethertunnel"               # 两端必须相同
+```
+
+说明：密钥不是 auth_token 本身，而是 `HKDF-SHA256(passphrase, salt)` 派生的 32 字节；
+每个数据包（控制帧）与每条隧道记录都有独立随机 nonce，篡改会被 AEAD 拒绝并断开连接。
+留空口令时"能认证的人就能解密"这一点依然成立，想彻底分离就把 `passphrase` 单独设成另一个密钥。
+
+### 面板
+
+- 资源用 `go:embed` 打进二进制，**不需要**在二进制旁边放 `web/` 目录（上一版是相对路径读取，发布的压缩包里根本没有这些文件）。
+- 默认只监听 `127.0.0.1`。要让外部访问，请设置 `[dashboard].token`，之后 `/api/*` 需要
+  `Authorization: Bearer <token>`；`/api/health` 始终公开且不含敏感信息。
+- 面板轮询 `/api/status`、`/api/clients`、`/api/proxies`，**屏幕上每个数字都来自服务器实时状态**；
+  没有客户端时显示空状态，不会造假数据。上一版的面板一次网络请求都没有，数字全是 `Math.random()`。
+
+### 构建与测试
 
 ```bash
-# 编译（可选）
-go build -o aethertunnel-server ./server
-go build -o aethertunnel-client ./client
-
-# 运行
-./aethertunnel-server -c server.toml
-./aethertunnel-client -c client.toml
+make build          # 本机两个二进制 → bin/
+make test           # 单元 + 端到端测试（隧道测试会绑定回环端口）
+make vet
+make cross          # 12 个产物 + dist/SHA256SUMS
+make check          # 校验示例配置
 ```
 
-### 4. 访问 Web 面板
+Windows 无 make 时：
 
-打开浏览器，访问：
-- 通用版: `http://127.0.0.1:7500/dashboard/index.html`
-- 服务端版: `http://127.0.0.1:7500/dashboard/server.html`
-- 客户端版: `http://127.0.0.1:7500/dashboard/client.html`
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 -Version v3.1.0
+```
 
----
+### 从旧版本升级
 
-## 📞 支持与帮助
+旧版命令行参数与配置键有一部分已经不同，请读 [`docs/MIGRATION.md`](docs/MIGRATION.md)。
+一句话版本：`auth_token`、`bind_port`、`[[proxies]]` 的写法保持不变，其余请按新示例重写。
 
-### 文档
+### 安全模型（如实说明）
 
-- **快速开始**: [QUICK_START.md](QUICK_START.md)
-- **快速上手指南**: [QUICK_START_GUIDE.md](QUICK_START_GUIDE.md)
-- **配置对比**: [docs/CONFIG_COMPARISON.md](docs/CONFIG_COMPARISON.md)
-- **创新功能详解**: [docs/INNOVATIVE_FEATURES.md](docs/INNOVATIVE_FEATURES.md)
+- 认证是**共享密钥**（`auth_token`），不是证书；token 用常数时间比较，失败时**不会**把 token 写进日志。
+- 没有 TLS 传输层加密：要么只在可信网络里跑，要么打开 `[encryption]`（它保护的是负载，不含协议外观）。
+- 面板 API 只有 Bearer token 一种保护，没有登录会话、没有多用户、没有审计日志。
+- 隧道只转发 TCP；没有连接级别的访问控制（谁能连到服务器的 `remote_port` 谁就能用这条隧道）。
 
-### 常见问题
-
-**Q1: 这是一个完整实现吗？**
-
-A: 不是。v0.1.0 是一个概念验证（PoC）版本，展示了 AetherTunnel 的完整架构设计、配置系统、Web 界面和文档，但源代码都是占位符（placeholder），没有实际的代码实现。这是一个展示设计理念和规范的项目。
-
-**Q2: 如何参与开发？**
-
-A: 欢迎所有形式的贡献！请参见 [CONTRIBUTING.md](CONTRIBUTING.md)（如果存在）或直接创建 Pull Request。
-
-**Q3: 遇到问题如何报告？**
-
-A: 请在 GitHub Issues 中提交问题，包含详细的描述和复现步骤。
+详见 [`docs/SECURITY.md`](docs/SECURITY.md)。
 
 ---
 
-## 🎉 致谢
+## English
 
-AetherTunnel 项目的开发和维护离不开所有贡献者的支持！
+### What it is
 
-感谢所有为这个项目做出贡献的人！
+AetherTunnel publishes a TCP service that sits behind NAT onto a machine with a public
+address. A visitor connects to the server's public port; the bytes travel back through
+the tunnel to the service running on your own machine.
 
----
+```
+visitor ──► server public port ──► [tunnel] ──► client ──► local service 127.0.0.1:22
+```
 
-## 📄 版本信息
+The forwarding, the optional encryption and the dashboard's numbers are all real in this
+release. What is *not* real is just as important — see "What this release does not do".
 
-**版本**: v0.1.0  
-**类型**: Proof of Concept (PoC)  
-**发布日期**: 2026-02-21  
-**发布方式**: 源代码 + 设计文档
+### Quick start
 
----
+```bash
+go build -o aethertunnel-server .          # server
+go build -o aethertunnel-client ./client   # client
+```
 
-**AetherTunnel - 不是 frp 的改进版，而是一个全新的物种！**
+Server (`server.toml`) — bind address, port, a shared `auth_token`, and the dashboard:
 
-Made with ❤️ by AetherTunnel Team
+```toml
+[server]
+bind_addr = "0.0.0.0"
+bind_port = 7001
+auth_token = "replace-with-at-least-16-random-characters"
+
+[dashboard]
+enabled = true
+bind_addr = "127.0.0.1"   # set a token before exposing it
+port = 7500
+```
+
+Client (`client.toml`) — where the server is and which local ports to publish:
+
+```toml
+[client]
+server_addr = "your-server:7001"
+auth_token = "same value as the server"
+
+[[proxies]]
+name = "ssh"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = 22
+remote_port = 6022        # opened on the server
+```
+
+```bash
+./aethertunnel-server --config server.toml
+./aethertunnel-client --config client.toml
+ssh -p 6022 user@your-server
+```
+
+The dashboard is at `http://your-server:7500/` and shows live clients, tunnels and traffic.
+
+### What this release does
+
+| Capability | State | Notes |
+|---|---|---|
+| TCP tunnelling | ✅ works | visitor → public port → client → local service; half-close is preserved so responses are not truncated |
+| Control session | ✅ works | auth, heartbeat, exponential-backoff reconnect with jitter, connection limit |
+| Tunnel registration | ✅ works | the server really binds `remote_port`; registration failures are reported to the client |
+| Optional packet encryption | ✅ works | XChaCha20-Poly1305 or AES-256-GCM, **off** by default, covers control frames and tunnelled bytes |
+| Key derivation | ✅ works | HKDF-SHA256 over the passphrase (any length); empty passphrase falls back to `auth_token` |
+| Web dashboard | ✅ works | one self-contained page, embedded in the binary, English + 简体中文, usable on a phone |
+| Dashboard API | ✅ works | `/api/health`, `/api/status`, `/api/clients`, `/api/proxies`, `/api/config`, optional Bearer token |
+| Platforms | ✅ works | linux/darwin/windows × amd64/arm64; `scripts/build-release.*` produces 12 binaries + SHA256 |
+| Config validation | ✅ works | unknown keys are **reported**, not ignored; `--check` validates without starting |
+| Tests | ✅ works | unit tests plus a real end-to-end tunnel test, in both cleartext and encrypted modes |
+
+### What this release does not do
+
+Earlier releases advertised twenty "disruptive" features. **None of them existed in the
+code** — a search of every Go file for `webrtc`, `dht`, `blockchain`, `kyber`, `dilithium`,
+`zk-snark`, `quic`, `mptcp` and `tun` returns **zero hits**. Those claims have been removed,
+because a manual that describes software you cannot run is worse than no manual. Not
+implemented today:
+
+- ❌ WebRTC / P2P, DHT, blockchain or bandwidth market, zero-knowledge proofs, post-quantum crypto
+- ❌ UDP, HTTP, HTTPS, STCP, XTCP, SUDP proxy types — only TCP exists, and asking for another type is refused with an explicit error rather than silently ignored
+- ❌ TUN/TAP or any VPN data path, multipath, traffic obfuscation, AI routing, mobile apps
+- ❌ Load balancing, Prometheus metrics, Kubernetes manifests
+
+The `[obfuscation]` and `[vpn]` config sections still parse but are ignored, and startup says so.
+
+### Encryption
+
+Both ends must agree, or the handshake fails with a clear `encryption mismatch`:
+
+```toml
+[encryption]
+enabled = true
+algorithm = "xchacha20-poly1305"   # or "aes-256-gcm"
+passphrase = ""                     # empty = derive from auth_token
+salt = "aethertunnel"               # must match on both ends
+```
+
+The key on the wire is `HKDF-SHA256(passphrase, salt)`, not the token itself; every
+control frame and every stream record carries a fresh random nonce, and a tampered record
+is rejected by the AEAD and drops the connection.
+
+### Dashboard
+
+Assets are embedded with `go:embed`, so a released binary serves its own UI with nothing
+next to it. It listens on loopback by default; set `[dashboard].token` to expose it, after
+which `/api/*` needs `Authorization: Bearer <token>` (`/api/health` stays public). Every
+number on screen comes from live server state — empty lists say they are empty instead of
+showing invented rows.
+
+### Build and test
+
+```bash
+make build     # both binaries into bin/
+make test      # unit + end-to-end tests
+make vet
+make cross     # 12 artifacts + dist/SHA256SUMS
+make check     # validate the example configs
+```
+
+### Upgrading from an older release
+
+Some flags and config keys changed; see [`docs/MIGRATION.md`](docs/MIGRATION.md). In short:
+`auth_token`, `bind_port` and the `[[proxies]]` blocks keep their meaning, everything else
+should be rewritten from the new examples.
+
+### Security model, stated plainly
+
+- Authentication is a **shared secret** (`auth_token`), not a certificate. The comparison is
+  constant-time and a failed attempt never writes the offered token to the log.
+- There is no transport-level TLS. Either keep it on a trusted network or enable
+  `[encryption]` — which protects the payload, not the protocol's appearance.
+- The dashboard has a single Bearer token: no user accounts, no sessions, no audit log.
+- Only TCP is tunnelled, and there is no per-connection access control: whoever can reach a
+  `remote_port` can use that tunnel.
+
+See [`docs/SECURITY.md`](docs/SECURITY.md) for the full list, including what an attacker on
+the path can still learn.
+
+### License
+
+MIT — see [LICENSE](LICENSE).

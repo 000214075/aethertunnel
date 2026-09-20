@@ -1,144 +1,62 @@
-# AetherTunnel Makefile
-# 简化编译和开发流程
+# AetherTunnel — build and test entry points.
+#
+# On Windows without make, use scripts\build-release.ps1 for the same cross-build.
 
-.PHONY: all build test clean lint fmt vet help
+MODULE   := github.com/aethertunnel/aethertunnel
+BINDIR   := bin
+VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+DATE     ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS  := -s -w \
+            -X main.version=$(VERSION) \
+            -X main.buildTime=$(DATE) \
+            -X main.gitCommit=$(COMMIT)
 
-# 项目信息
-PROJECT_NAME := aethertunnel
-VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "v0.1.0-dev")
-BUILD_TIME := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
-GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+GO       ?= go
+GOFLAGS  :=
 
-# 编译参数
-LDFLAGS := -s -w -X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME) -X main.GitCommit=$(GIT_COMMIT)
+.PHONY: all build test vet fmt lint tidy clean cross release check run-server run-client
 
-# 输出目录
-DIST_DIR := ./dist
-BUILD_DIR := ./build
-
-# 默认目标
 all: fmt vet test build
 
-## help: 显示帮助信息
-help:
-	@echo "AetherTunnel 构建系统"
-	@echo ""
-	@echo "可用命令:"
-	@echo "  make build       - 编译所有平台的二进制文件"
-	@echo "  make build-local - 编译本地平台"
-	@echo "  make test        - 运行测试"
-	@echo "  make fmt         - 格式化代码"
-	@echo "  make vet         - 运行 go vet"
-	@echo "  make lint        - 运行 golangci-lint"
-	@echo "  make clean       - 清理构建文件"
-	@echo "  make docker      - 使用 Docker 编译"
-	@echo "  make release     - 创建发布包"
-	@echo ""
-
-## build-local: 编译本地平台
-build-local: fmt
-	@echo "编译本地平台..."
-	@mkdir -p $(DIST_DIR)
-	@go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/$(PROJECT_NAME)-server main.go
-	@go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/$(PROJECT_NAME)-client ./client/main.go
-	@echo "✅ 编译完成: $(DIST_DIR)"
-
-## build: 编译所有平台
+## build: native binaries into bin/
 build:
-	@echo "编译所有平台..."
-	@chmod +x scripts/build.sh
-	@./scripts/build.sh
+	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/aethertunnel-server .
+	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/aethertunnel-client ./client
 
-## test: 运行测试
+## test: unit and integration tests (the tunnel test binds loopback ports)
 test:
-	@echo "运行测试..."
-	@go test -v -race -coverprofile=coverage.out ./...
-	@go tool cover -html=coverage.out -o coverage.html
-	@echo "✅ 测试完成，覆盖率报告: coverage.html"
+	$(GO) test ./... -count=1 -timeout 180s
 
-## fmt: 格式化代码
-fmt:
-	@echo "格式化代码..."
-	@gofmt -w .
-	@echo "✅ 代码已格式化"
-
-## vet: 运行 go vet
+## vet: static checks
 vet:
-	@echo "运行 go vet..."
-	@go vet ./...
-	@echo "✅ vet 检查通过"
+	$(GO) vet ./...
 
-## lint: 运行 golangci-lint
-lint:
-	@echo "运行 golangci-lint..."
-	@golangci-lint run
-	@echo "✅ lint 检查通过"
+## fmt: format every Go file
+fmt:
+	$(GO) fmt ./...
 
-## clean: 清理构建文件
+## tidy: synchronise go.mod and go.sum
+tidy:
+	$(GO) mod tidy
+
+## check: validate the example configurations through the binaries
+check: build
+	$(BINDIR)/aethertunnel-server --config server.toml.example --check
+	$(BINDIR)/aethertunnel-client --config client.toml.example --check
+
+## cross: build the release matrix into dist/ with checksums
+cross:
+	./scripts/build-release.sh
+
+## clean: remove build output
 clean:
-	@echo "清理构建文件..."
-	@rm -rf $(DIST_DIR)
-	@rm -rf $(BUILD_DIR)
-	@rm -f coverage.out coverage.html
-	@echo "✅ 清理完成"
+	rm -rf $(BINDIR) dist
 
-## docker: 使用 Docker 编译
-docker:
-	@echo "使用 Docker 编译..."
-	@docker build -f Dockerfile.build -t aethertunnel-builder .
-	@docker run --rm -v $(PWD)/dist:/output aethertunnel-builder
-	@echo "✅ Docker 编译完成"
+## run-server: run the server with the example configuration
+run-server: build
+	$(BINDIR)/aethertunnel-server --config server.toml.example
 
-## release: 创建发布包
-release: build
-	@echo "创建发布包..."
-	@mkdir -p release
-	@for dir in $(DIST_DIR)/*; do \
-		base=$$(basename $$dir); \
-		mkdir -p release/$(PROJECT_NAME)-$(VERSION)-$$base; \
-		cp $$dir release/$(PROJECT_NAME)-$(VERSION)-$$base/; \
-		cp server.toml.example release/$(PROJECT_NAME)-$(VERSION)-$$base/; \
-		cp client.toml.example release/$(PROJECT_NAME)-$(VERSION)-$$base/; \
-		cp README.md release/$(PROJECT_NAME)-$(VERSION)-$$base/; \
-		cd release && tar -czf $(PROJECT_NAME)-$(VERSION)-$$base.tar.gz $(PROJECT_NAME)-$(VERSION)-$$base && rm -rf $(PROJECT_NAME)-$(VERSION)-$$base; \
-	done
-	@echo "✅ 发布包已创建: release/"
-
-## check: 检查依赖和配置
-check:
-	@echo "检查 Go 版本..."
-	@go version
-	@echo ""
-	@echo "检查依赖..."
-	@go mod verify
-	@go mod tidy
-	@echo ""
-	@echo "✅ 检查完成"
-
-## deps: 更新依赖
-deps:
-	@echo "更新依赖..."
-	@go get -u ./...
-	@go mod tidy
-	@echo "✅ 依赖已更新"
-
-## version: 显示版本信息
-version:
-	@echo "项目: $(PROJECT_NAME)"
-	@echo "版本: $(VERSION)"
-	@echo "构建时间: $(BUILD_TIME)"
-	@echo "Git 提交: $(GIT_COMMIT)"
-
-## install: 安装到本地
-install: build-local
-	@echo "安装到本地..."
-	@cp $(DIST_DIR)/$(PROJECT_NAME)-server $$(go env GOPATH)/bin/
-	@cp $(DIST_DIR)/$(PROJECT_NAME)-client $$(go env GOPATH)/bin/
-	@echo "✅ 安装完成"
-
-## uninstall: 从本地卸载
-uninstall:
-	@echo "从本地卸载..."
-	@rm -f $$(go env GOPATH)/bin/$(PROJECT_NAME)-server
-	@rm -f $$(go env GOPATH)/bin/$(PROJECT_NAME)-client
-	@echo "✅ 卸载完成"
+## run-client: run the client with the example configuration
+run-client: build
+	$(BINDIR)/aethertunnel-client --config client.toml.example

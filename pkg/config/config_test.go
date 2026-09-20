@@ -2,143 +2,273 @@ package config
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func TestLoadServer(t *testing.T) {
-	// Create a temporary config file
-	configContent := `
+func writeConfig(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return path
+}
+
+func TestServerDefaultsAreApplied(t *testing.T) {
+	path := writeConfig(t, `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+`)
+	cfg, err := LoadServer(path)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+
+	if cfg.Server.MaxConnections != 512 {
+		t.Errorf("MaxConnections = %d, want 512", cfg.Server.MaxConnections)
+	}
+	if cfg.Server.HeartbeatSeconds != 30 {
+		t.Errorf("HeartbeatSeconds = %d, want 30", cfg.Server.HeartbeatSeconds)
+	}
+	if cfg.Server.HandshakeTimeoutSecs != 10 {
+		t.Errorf("HandshakeTimeoutSecs = %d, want 10", cfg.Server.HandshakeTimeoutSecs)
+	}
+	if cfg.Encryption.Algorithm != "xchacha20-poly1305" {
+		t.Errorf("Algorithm = %q, want the default cipher", cfg.Encryption.Algorithm)
+	}
+	if cfg.ListenAddr() != "127.0.0.1:7001" {
+		t.Errorf("ListenAddr = %q", cfg.ListenAddr())
+	}
+}
+
+func TestValidationRejectsBrokenServers(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "missing token",
+			body: "[server]\nbind_addr = \"127.0.0.1\"\nbind_port = 7001\n",
+			want: "auth_token is required",
+		},
+		{
+			name: "port out of range",
+			body: "[server]\nbind_addr = \"127.0.0.1\"\nbind_port = 70000\nauth_token = \"0123456789abcdef0123456789abcdef\"\n",
+			want: "bind_port must be 1-65535",
+		},
+		{
+			name: "missing bind address",
+			body: "[server]\nbind_port = 7001\nauth_token = \"0123456789abcdef0123456789abcdef\"\n",
+			want: "bind_addr is required",
+		},
+		{
+			name: "unsupported proxy type",
+			body: `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[[proxies]]
+name = "web"
+type = "udp"
+local_port = 80
+`,
+			want: `type "udp" is not implemented`,
+		},
+		{
+			name: "duplicate proxy names",
+			body: `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[[proxies]]
+name = "web"
+local_port = 80
+
+[[proxies]]
+name = "web"
+local_port = 81
+`,
+			want: `duplicate proxy name "web"`,
+		},
+		{
+			name: "unsupported cipher",
+			body: `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[encryption]
+enabled = true
+algorithm = "rot13"
+`,
+			want: `algorithm "rot13" is not supported`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadServer(writeConfig(t, tc.body))
+			if err == nil {
+				t.Fatalf("expected an error containing %q, got nil", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func TestUnknownKeysAreReportedNotIgnored(t *testing.T) {
+	path := writeConfig(t, `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[webrtc]
+enabled = true
+`)
+	cfg, err := LoadServer(path)
+	if err != nil {
+		t.Fatalf("unknown keys should warn, not fail: %v", err)
+	}
+	joined := strings.Join(cfg.Warnings, "\n")
+	if !strings.Contains(joined, "webrtc") {
+		t.Fatalf("expected a warning naming the unknown key, got %q", joined)
+	}
+
+	_, err = Load(path, ValidateOptions{Role: RoleServer, RejectUnknownKeys: true})
+	if err == nil || !strings.Contains(err.Error(), "does not understand") {
+		t.Fatalf("RejectUnknownKeys should fail, got %v", err)
+	}
+}
+
+func TestWeakTokenWarns(t *testing.T) {
+	path := writeConfig(t, `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "change-me"
+`)
+	cfg, err := LoadServer(path)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if !strings.Contains(strings.Join(cfg.Warnings, "\n"), "auth_token is short") {
+		t.Fatalf("expected a weak-token warning, got %v", cfg.Warnings)
+	}
+}
+
+func TestExposedDashboardWithoutTokenWarns(t *testing.T) {
+	path := writeConfig(t, `
 [server]
 bind_addr = "0.0.0.0"
-bind_port = 8080
-auth_token = "test-token"
-enable_tls = false
-cert_file = ""
-key_file = ""
-max_connections = 1000
-graceful_shutdown_timeout = 30
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
 
 [dashboard]
 enabled = true
-port = 8081
-
-[vpn]
-enabled = false
 bind_addr = "0.0.0.0"
-port = 8082
-local_ip = "10.0.0.1"
-remote_ip = "10.0.0.2"
-netmask = "255.255.255.0"
-protocol = "tcp"
-obfuscation = false
-auth_token = "test-vpn-token"
-max_peers = 10
-mtu = 1500
-
-[obfuscation]
-enabled = false
-default_type = "xor"
-allowed_types = ["xor", "xor2", "xor4"]
-adaptive_enabled = false
-key_rotation = 60
-packet_padding = false
-traffic_morphing = false
-
-[[proxies]]
-name = "test-proxy"
-type = "http"
-local_ip = "127.0.0.1"
-local_port = 8080
-remote_port = 8080
-`
-	
-	// Write to temp file
-	err := os.WriteFile("test-config.toml", []byte(configContent), 0644)
+port = 7500
+`)
+	cfg, err := LoadServer(path)
 	if err != nil {
-		t.Fatalf("Failed to create test config file: %v", err)
+		t.Fatalf("LoadServer: %v", err)
 	}
-	defer os.Remove("test-config.toml")
-
-	// Test loading config
-	cfg, err := LoadServer("test-config.toml")
-	if err != nil {
-		t.Fatalf("Failed to load config: %v", err)
-	}
-
-	// Verify config values
-	if cfg.Server.BindAddr != "0.0.0.0" {
-		t.Errorf("Expected BindAddr '0.0.0.0', got '%s'", cfg.Server.BindAddr)
-	}
-	if cfg.Server.BindPort != 8080 {
-		t.Errorf("Expected BindPort 8080, got %d", cfg.Server.BindPort)
-	}
-	if cfg.Server.AuthToken != "test-token" {
-		t.Errorf("Expected AuthToken 'test-token', got '%s'", cfg.Server.AuthToken)
-	}
-	if cfg.Dashboard.Port != 8081 {
-		t.Errorf("Expected Dashboard port 8081, got %d", cfg.Dashboard.Port)
-	}
-	if len(cfg.Proxies) != 1 {
-		t.Errorf("Expected 1 proxy, got %d", len(cfg.Proxies))
+	if !strings.Contains(strings.Join(cfg.Warnings, "\n"), "dashboard.token is empty") {
+		t.Fatalf("expected a dashboard warning, got %v", cfg.Warnings)
 	}
 }
 
-func TestLoadClient(t *testing.T) {
-	// Create a temporary config file
-	configContent := `
+func TestEncryptionPassphraseFallsBackToToken(t *testing.T) {
+	path := writeConfig(t, `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[encryption]
+enabled = true
+`)
+	cfg, err := LoadServer(path)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if got := cfg.EncryptionPassphrase(RoleServer); got != cfg.Server.AuthToken {
+		t.Fatalf("passphrase %q should fall back to the auth token", got)
+	}
+
+	cipher, err := cfg.Cipher(RoleServer)
+	if err != nil {
+		t.Fatalf("Cipher: %v", err)
+	}
+	if !cipher.Enabled() || cipher.Algorithm() != "xchacha20-poly1305" {
+		t.Fatalf("cipher = %v/%s, want an enabled xchacha20-poly1305", cipher.Enabled(), cipher.Algorithm())
+	}
+}
+
+func TestDisabledEncryptionYieldsNoCipher(t *testing.T) {
+	path := writeConfig(t, `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+`)
+	cfg, err := LoadServer(path)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	cipher, err := cfg.Cipher(RoleServer)
+	if err != nil {
+		t.Fatalf("Cipher: %v", err)
+	}
+	if cipher.Enabled() {
+		t.Fatal("encryption is disabled in the file but the cipher is enabled")
+	}
+	if got := cipher.Algorithm(); got != "none" {
+		t.Fatalf("Algorithm = %q, want none", got)
+	}
+}
+
+func TestClientValidation(t *testing.T) {
+	path := writeConfig(t, `
 [client]
-server_addr = "127.0.0.1:7001"
-auth_token = "test-client-token"
+server_addr = "127.0.0.1"
+auth_token = "0123456789abcdef0123456789abcdef"
+`)
+	_, err := LoadClient(path)
+	if err == nil || !strings.Contains(err.Error(), "is not host:port") {
+		t.Fatalf("expected a server_addr format error, got %v", err)
+	}
+
+	path = writeConfig(t, `
+[client]
+server_addr = "example.com:7001"
+auth_token = "0123456789abcdef0123456789abcdef"
 
 [[proxies]]
 name = "ssh"
-type = "tcp"
-local_ip = "127.0.0.1"
 local_port = 22
-remote_port = 2222
-`
-	
-	// Write to temp file
-	err := os.WriteFile("test-client-config.toml", []byte(configContent), 0644)
+remote_port = 6022
+`)
+	cfg, err := LoadClient(path)
 	if err != nil {
-		t.Fatalf("Failed to create test client config file: %v", err)
+		t.Fatalf("LoadClient: %v", err)
 	}
-	defer os.Remove("test-client-config.toml")
-
-	// Test loading config
-	cfg, err := LoadClient("test-client-config.toml")
-	if err != nil {
-		t.Fatalf("Failed to load client config: %v", err)
+	if cfg.Proxies[0].LocalAddr() != "127.0.0.1:22" {
+		t.Fatalf("LocalAddr = %q, want 127.0.0.1:22", cfg.Proxies[0].LocalAddr())
 	}
-
-	// Verify config values
-	if cfg.Client.ServerAddr != "127.0.0.1:7001" {
-		t.Errorf("Expected ServerAddr '127.0.0.1:7001', got '%s'", cfg.Client.ServerAddr)
-	}
-	if cfg.Client.AuthToken != "test-client-token" {
-		t.Errorf("Expected AuthToken 'test-client-token', got '%s'", cfg.Client.AuthToken)
-	}
-	if len(cfg.Proxies) != 1 {
-		t.Errorf("Expected 1 proxy, got %d", len(cfg.Proxies))
-	}
-}
-
-func TestDefaultConfig(t *testing.T) {
-	// Test creating a basic VPN config
-	vpnConfig := VPNConfig{
-		Enabled:     false,
-		Protocol:    "tcp",
-		MaxPeers:    10,
-		MTU:         1500,
-		MaxPoolSize: 10,
-	}
-	if vpnConfig.Protocol != "tcp" {
-		t.Errorf("Expected protocol 'tcp', got '%s'", vpnConfig.Protocol)
-	}
-	if vpnConfig.MaxPeers != 10 {
-		t.Errorf("Expected MaxPeers 10, got %d", vpnConfig.MaxPeers)
-	}
-	if vpnConfig.MTU != 1500 {
-		t.Errorf("Expected MTU 1500, got %d", vpnConfig.MTU)
+	if cfg.Proxies[0].Type != "tcp" {
+		t.Fatalf("proxy type default = %q, want tcp", cfg.Proxies[0].Type)
 	}
 }

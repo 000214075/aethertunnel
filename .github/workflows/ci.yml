@@ -1,0 +1,67 @@
+name: CI
+
+# Runs on every push and pull request. The old test workflow ran gosec/golint with
+# `@latest` (both unmaintained, and gosec fails the job on any finding), and the
+# build workflow tried `go get` on a module that go.mod replaced with a local stub.
+# This workflow runs only what the project actually needs: fmt check, vet, tests,
+# and a native build on all three supported systems.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: gofmt
+        if: runner.os == 'Linux'
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./... -count=1 -timeout 180s
+
+      - name: build
+        run: |
+          go build -o bin/aethertunnel-server .
+          go build -o bin/aethertunnel-client ./client
+
+      - name: configuration examples are valid
+        run: |
+          ./bin/aethertunnel-server --config server.toml.example --check
+          ./bin/aethertunnel-client --config client.toml.example --check
+        shell: bash
+        if: runner.os != 'Windows'
+
+      - name: configuration examples are valid (windows)
+        run: |
+          .\bin\aethertunnel-server.exe --config server.toml.example --check
+          .\bin\aethertunnel-client.exe --config client.toml.example --check
+        if: runner.os == 'Windows'

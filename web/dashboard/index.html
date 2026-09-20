@@ -1,3230 +1,1500 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AetherTunnel Web 管理面板</title>
-    <style>
-        /* ===== 全局样式 ===== */
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        :root {
-            /* 主题色 */
-            --primary-color: #6366f1;
-            --primary-dark: #4f46e5;
-            --primary-light: #818cf8;
-            --secondary-color: #ec4899;
-            --success-color: #10b981;
-            --warning-color: #f59e0b;
-            --danger-color: #ef4444;
-            
-            /* 中性色 */
-            --bg-primary: #ffffff;
-            --bg-secondary: #f8fafc;
-            --bg-tertiary: #f1f5f9;
-            --text-primary: #1e293b;
-            --text-secondary: #64748b;
-            --border-color: #e2e8f0;
-            
-            /* 阴影 */
-            --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
-            --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
-            --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
-            
-            /* 过渡 */
-            --transition: all 0.3s ease;
-        }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            color: var(--text-primary);
-        }
-
-        /* ===== 容器样式 ===== */
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-
-        /* ===== 卡片样式 ===== */
-        .card {
-            background: var(--bg-primary);
-            border-radius: 16px;
-            box-shadow: var(--shadow-lg);
-            padding: 30px;
-            margin-bottom: 20px;
-            transition: var(--transition);
-        }
-
-        .card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 20px 25px rgba(0, 0, 0, 0.15);
-        }
-
-        /* ===== 首次配置向导 ===== */
-        .wizard-container {
-            min-height: 80vh;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-        }
-
-        .wizard-header {
-            text-align: center;
-            margin-bottom: 40px;
-        }
-
-        .wizard-logo {
-            width: 120px;
-            height: 120px;
-            margin: 0 auto 30px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 48px;
-            color: white;
-            font-weight: bold;
-            box-shadow: var(--shadow-lg);
-            animation: pulse 2s ease-in-out infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% { transform: scale(1); }
-            50% { transform: scale(1.05); }
-        }
-
-        .wizard-title {
-            font-size: 32px;
-            font-weight: 700;
-            margin-bottom: 10px;
-            color: var(--text-primary);
-        }
-
-        .wizard-subtitle {
-            font-size: 16px;
-            color: var(--text-secondary);
-            margin-bottom: 40px;
-        }
-
-        /* ===== 语言选择卡片 ===== */
-        .language-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-
-        .language-card {
-            background: var(--bg-secondary);
-            border: 2px solid transparent;
-            border-radius: 12px;
-            padding: 30px;
-            cursor: pointer;
-            transition: var(--transition);
-            text-align: center;
-        }
-
-        .language-card:hover {
-            border-color: var(--primary-color);
-            background: var(--bg-primary);
-            transform: translateY(-4px);
-            box-shadow: var(--shadow-lg);
-        }
-
-        .language-card.selected {
-            border-color: var(--primary-color);
-            background: linear-gradient(135deg, #667eea15, #764ba215);
-        }
-
-        .language-flag {
-            font-size: 48px;
-            margin-bottom: 15px;
-        }
-
-        .language-name {
-            font-size: 18px;
-            font-weight: 600;
-            margin-bottom: 5px;
-            color: var(--text-primary);
-        }
-
-        .language-native-name {
-            font-size: 14px;
-            color: var(--text-secondary);
-        }
-
-        /* ===== 按钮样式 ===== */
-        .btn {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            padding: 14px 32px;
-            font-size: 16px;
-            font-weight: 600;
-            border-radius: 10px;
-            border: none;
-            cursor: pointer;
-            transition: var(--transition);
-            text-decoration: none;
-            gap: 8px;
-        }
-
-        .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
-        }
-
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
-        }
-
-        .btn-primary:active {
-            transform: translateY(0);
-        }
-
-        .btn-secondary {
-            background: var(--bg-secondary);
-            color: var(--text-primary);
-            border: 2px solid var(--border-color);
-        }
-
-        .btn-secondary:hover {
-            background: var(--bg-tertiary);
-            border-color: var(--primary-color);
-        }
-
-        .btn-large {
-            padding: 18px 48px;
-            font-size: 18px;
-            min-width: 200px;
-        }
-
-        .btn-icon {
-            font-size: 20px;
-        }
-
-        /* ===== 进度指示器 ===== */
-        .progress-container {
-            margin-bottom: 30px;
-        }
-
-        .progress-steps {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 10px;
-            margin-bottom: 20px;
-        }
-
-        .progress-step {
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            background: var(--bg-secondary);
-            border: 3px solid var(--border-color);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 700;
-            color: var(--text-secondary);
-            transition: var(--transition);
-        }
-
-        .progress-step.active {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border-color: transparent;
-            color: white;
-            box-shadow: 0 4px 10px rgba(102, 126, 234, 0.3);
-        }
-
-        .progress-step.completed {
-            background: var(--success-color);
-            border-color: transparent;
-            color: white;
-        }
-
-        .progress-line {
-            flex: 1;
-            height: 3px;
-            background: var(--border-color);
-            border-radius: 2px;
-        }
-
-        /* ===== 表单样式 ===== */
-        .form-group {
-            margin-bottom: 24px;
-        }
-
-        .form-label {
-            display: block;
-            font-size: 14px;
-            font-weight: 600;
-            color: var(--text-primary);
-            margin-bottom: 8px;
-        }
-
-        .form-label.required::after {
-            content: " *";
-            color: var(--danger-color);
-        }
-
-        .form-input {
-            width: 100%;
-            padding: 14px 18px;
-            font-size: 15px;
-            border: 2px solid var(--border-color);
-            border-radius: 10px;
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            transition: var(--transition);
-        }
-
-        .form-input:focus {
-            outline: none;
-            border-color: var(--primary-color);
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-        }
-
-        .form-input::placeholder {
-            color: var(--text-secondary);
-        }
-
-        .form-hint {
-            font-size: 13px;
-            color: var(--text-secondary);
-            margin-top: 6px;
-            line-height: 1.5;
-        }
-
-        .form-error {
-            font-size: 13px;
-            color: var(--danger-color);
-            margin-top: 6px;
-            display: none;
-        }
-
-        .form-group.error .form-error {
-            display: block;
-        }
-
-        .form-group.error .form-input {
-            border-color: var(--danger-color);
-        }
-
-        /* ===== 主面板布局 ===== */
-        .main-layout {
-            display: grid;
-            grid-template-columns: 250px 1fr;
-            min-height: 100vh;
-            background: var(--bg-secondary);
-        }
-
-        /* ===== 侧边栏 ===== */
-        .sidebar {
-            background: var(--bg-primary);
-            border-right: 1px solid var(--border-color);
-            padding: 20px 0;
-            overflow-y: auto;
-        }
-
-        .sidebar-brand {
-            padding: 20px;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-bottom: 30px;
-            border-bottom: 1px solid var(--border-color);
-        }
-
-        .sidebar-logo {
-            width: 40px;
-            height: 40px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border-radius: 10px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-weight: bold;
-            font-size: 18px;
-        }
-
-        .sidebar-title {
-            font-size: 18px;
-            font-weight: 700;
-            color: var(--text-primary);
-        }
-
-        .sidebar-nav {
-            list-style: none;
-            padding: 10px;
-        }
-
-        .sidebar-nav-item {
-            display: flex;
-            align-items: center;
-            padding: 14px 18px;
-            margin-bottom: 5px;
-            border-radius: 10px;
-            cursor: pointer;
-            transition: var(--transition);
-            color: var(--text-secondary);
-            gap: 12px;
-        }
-
-        .sidebar-nav-item:hover {
-            background: var(--bg-secondary);
-            color: var(--text-primary);
-        }
-
-        .sidebar-nav-item.active {
-            background: linear-gradient(135deg, #667eea15, #764ba215);
-            color: white;
-        }
-
-        .sidebar-nav-icon {
-            font-size: 20px;
-            width: 24px;
-            text-align: center;
-        }
-
-        .sidebar-nav-text {
-            font-weight: 500;
-        }
-
-        .sidebar-section {
-            margin: 30px 0 15px 0;
-            padding: 0 20px;
-        }
-
-        .sidebar-section-title {
-            font-size: 12px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: var(--text-secondary);
-            padding-left: 18px;
-            margin-bottom: 10px;
-        }
-
-        /* ===== 主内容区域 ===== */
-        .main-content {
-            padding: 30px;
-            overflow-y: auto;
-        }
-
-        .main-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 30px;
-            padding-bottom: 20px;
-            border-bottom: 1px solid var(--border-color);
-        }
-
-        .main-title {
-            font-size: 28px;
-            font-weight: 700;
-            color: var(--text-primary);
-        }
-
-        .main-actions {
-            display: flex;
-            gap: 12px;
-            align-items: center;
-        }
-
-        /* ===== 配置分类卡片 ===== */
-        .config-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
-            gap: 24px;
-            margin-bottom: 30px;
-        }
-
-        .config-category {
-            background: var(--bg-primary);
-            border-radius: 16px;
-            padding: 0;
-            overflow: hidden;
-            box-shadow: var(--shadow-md);
-            transition: var(--transition);
-        }
-
-        .config-category:hover {
-            box-shadow: var(--shadow-lg);
-            transform: translateY(-2px);
-        }
-
-        .config-category-header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 20px 30px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-
-        .config-category-title {
-            font-size: 18px;
-            font-weight: 700;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .config-category-icon {
-            font-size: 24px;
-        }
-
-        .config-category-toggle {
-            font-size: 24px;
-            cursor: pointer;
-            opacity: 0.8;
-            transition: var(--transition);
-        }
-
-        .config-category-toggle:hover {
-            opacity: 1;
-        }
-
-        .config-category-body {
-            padding: 30px;
-        }
-
-        /* ===== 配置项样式 ===== */
-        .config-item {
-            margin-bottom: 24px;
-            padding-bottom: 24px;
-            border-bottom: 1px solid var(--bg-secondary);
-        }
-
-        .config-item:last-child {
-            border-bottom: none;
-            margin-bottom: 0;
-            padding-bottom: 0;
-        }
-
-        .config-item-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            margin-bottom: 10px;
-        }
-
-        .config-item-title {
-            font-size: 16px;
-            font-weight: 600;
-            color: var(--text-primary);
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .config-item-description {
-            font-size: 14px;
-            color: var(--text-secondary);
-            line-height: 1.5;
-        }
-
-        .config-item-actions {
-            display: flex;
-            gap: 8px;
-        }
-
-        .config-toggle {
-            width: 50px;
-            height: 28px;
-            background: var(--border-color);
-            border-radius: 14px;
-            position: relative;
-            cursor: pointer;
-            transition: var(--transition);
-        }
-
-        .config-toggle::after {
-            content: '';
-            position: absolute;
-            top: 2px;
-            left: 2px;
-            width: 24px;
-            height: 24px;
-            background: white;
-            border-radius: 50%;
-            transition: var(--transition);
-        }
-
-        .config-toggle.active {
-            background: var(--success-color);
-        }
-
-        .config-toggle.active::after {
-            transform: translateX(22px);
-        }
-
-        /* ===== 实时状态监控 ===== */
-        .status-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 24px;
-            margin-bottom: 30px;
-        }
-
-        .status-card {
-            background: var(--bg-primary);
-            border-radius: 16px;
-            padding: 24px;
-            box-shadow: var(--shadow-md);
-            transition: var(--transition);
-        }
-
-        .status-card:hover {
-            box-shadow: var(--shadow-lg);
-            transform: translateY(-2px);
-        }
-
-        .status-card-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 20px;
-        }
-
-        .status-card-title {
-            font-size: 14px;
-            font-weight: 600;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-
-        .status-card-value {
-            font-size: 32px;
-            font-weight: 700;
-            color: var(--text-primary);
-        }
-
-        .status-card-label {
-            font-size: 14px;
-            color: var(--text-secondary);
-            margin-top: 8px;
-        }
-
-        .status-indicator {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            background: var(--border-color);
-        }
-
-        .status-indicator.online {
-            background: var(--success-color);
-            box-shadow: 0 0 10px rgba(16, 185, 129, 0.5);
-        }
-
-        .status-indicator.offline {
-            background: var(--danger-color);
-            box-shadow: 0 0 10px rgba(239, 68, 68, 0.5);
-        }
-
-        .status-indicator.warning {
-            background: var(--warning-color);
-            box-shadow: 0 0 10px rgba(245, 158, 11, 0.5);
-        }
-
-        /* ===== 图表容器 ===== */
-        .chart-container {
-            background: var(--bg-primary);
-            border-radius: 16px;
-            padding: 24px;
-            box-shadow: var(--shadow-md);
-            margin-bottom: 30px;
-        }
-
-        .chart-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-            padding-bottom: 20px;
-            border-bottom: 1px solid var(--bg-secondary);
-        }
-
-        .chart-title {
-            font-size: 18px;
-            font-weight: 700;
-            color: var(--text-primary);
-        }
-
-        .chart-actions {
-            display: flex;
-            gap: 10px;
-        }
-
-        .chart-body {
-            height: 300px;
-            position: relative;
-        }
-
-        /* ===== 加载动画 ===== */
-        .loading-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(255, 255, 255, 0.9);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 1000;
-            opacity: 0;
-            visibility: hidden;
-            transition: var(--transition);
-        }
-
-        .loading-overlay.show {
-            opacity: 1;
-            visibility: visible;
-        }
-
-        .loading-spinner {
-            width: 60px;
-            height: 60px;
-            border: 4px solid var(--border-color);
-            border-top-color: var(--primary-color);
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-
-        /* ===== 响应式设计 ===== */
-        @media (max-width: 1024px) {
-            .main-layout {
-                grid-template-columns: 1fr;
-            }
-
-            .sidebar {
-                display: none;
-            }
-
-            .main-content {
-                padding: 15px;
-            }
-
-            .config-grid {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        /* ===== 工具类 ===== */
-        .text-center { text-align: center; }
-        .text-right { text-align: right; }
-        .mt-4 { margin-top: 1rem; }
-        .mb-4 { margin-bottom: 1rem; }
-        .flex { display: flex; }
-        .flex-center { display: flex; align-items: center; justify-content: center; }
-        .hidden { display: none !important; }
-        .visible { display: block !important; }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="referrer" content="no-referrer">
+<title>AetherTunnel Dashboard</title>
+<!-- Inline empty icon: browsers must not request a favicon that is not served. -->
+<link rel="icon" href="data:,">
+<style>
+/* ---------- 1. Design tokens ---------- */
+:root {
+  --bg:            #0d1117;
+  --bg-soft:       #111721;
+  --panel:         #151c27;
+  --panel-2:       #1a2230;
+  --border:        #243041;
+  --border-strong: #33425a;
+  --text:          #e6edf3;
+  --muted:         #93a1b1;
+  --dim:           #6b7a8d;
+  --accent:        #4d9fff;
+  --accent-soft:   rgba(77, 159, 255, 0.14);
+  --ok:            #3fb950;
+  --warn:          #d29922;
+  --err:           #f85149;
+  --radius:        10px;
+  --radius-sm:     6px;
+  --gap:           16px;
+  --sidebar-w:     224px;
+  --topbar-h:      56px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+          "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+/* ---------- 2. Base ---------- */
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 var(--sans);
+  -webkit-text-size-adjust: 100%;
+}
+
+[hidden] { display: none !important; }
+
+h1, h2, h3 { margin: 0; font-weight: 600; }
+h1 { font-size: 15px; }
+h2 { font-size: 17px; }
+h3 { font-size: 13px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+
+p { margin: 0; }
+
+a { color: var(--accent); }
+
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+.skip-link {
+  position: absolute; left: -9999px; top: 0; z-index: 60;
+  background: var(--accent); color: #04101f; padding: 8px 12px; border-radius: 0 0 var(--radius-sm) 0;
+}
+.skip-link:focus { left: 0; }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- 3. App shell ---------- */
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  grid-template-rows: var(--topbar-h) minmax(0, 1fr);
+  grid-template-areas:
+    "topbar topbar"
+    "sidebar main";
+  min-height: 100vh;
+}
+
+/* --- topbar --- */
+.topbar {
+  grid-area: topbar;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  background: var(--bg-soft);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 30;
+}
+
+.brand { display: flex; flex-direction: column; min-width: 0; }
+.brand-name { font-weight: 600; letter-spacing: .01em; }
+.brand-sub { color: var(--dim); font-size: 11px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.topbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+
+.icon-btn {
+  display: inline-flex; flex-direction: column; justify-content: center;
+  width: 36px; height: 36px; padding: 0 9px;
+  background: transparent; color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.icon-btn:hover { background: var(--panel-2); }
+.icon-btn .bar { display: block; height: 2px; background: currentColor; border-radius: 2px; }
+.icon-btn .bar + .bar { margin-top: 4px; }
+
+#menuToggle { display: none; }
+
+/* --- connection badge --- */
+.badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  font-size: 12px; white-space: nowrap;
+}
+.badge .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: none; }
+.badge.is-ok   { color: var(--ok);   border-color: rgba(63,185,80,.4); }
+.badge.is-ok   .dot { background: var(--ok); }
+.badge.is-warn { color: var(--warn); border-color: rgba(210,153,34,.4); }
+.badge.is-warn .dot { background: var(--warn); }
+.badge.is-err  { color: var(--err);  border-color: rgba(248,81,73,.4); }
+.badge.is-err  .dot { background: var(--err); }
+
+/* --- language select --- */
+.select {
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 5px 8px; font: inherit; font-size: 12px;
+}
+
+/* --- sidebar --- */
+.sidebar {
+  grid-area: sidebar;
+  background: var(--bg-soft);
+  border-right: 1px solid var(--border);
+  padding: 14px 10px;
+  display: flex; flex-direction: column; gap: 14px;
+  overflow-y: auto;
+}
+
+.nav-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.nav-item {
+  display: block; width: 100%; text-align: left;
+  padding: 9px 12px;
+  background: transparent; color: var(--muted);
+  border: 1px solid transparent; border-radius: var(--radius-sm);
+  font: inherit; font-size: 14px; cursor: pointer;
+}
+.nav-item:hover { background: var(--panel); color: var(--text); }
+.nav-item[aria-current="page"] {
+  background: var(--accent-soft); color: var(--text); border-color: rgba(77,159,255,.35);
+}
+
+.sidebar-foot { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
+.sidebar-note { color: var(--dim); font-size: 11px; line-height: 1.4; }
+
+.scrim { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 40; }
+
+/* --- main --- */
+.main {
+  grid-area: main;
+  padding: var(--gap);
+  display: flex; flex-direction: column; gap: var(--gap);
+  min-width: 0;
+}
+
+.view { display: flex; flex-direction: column; gap: var(--gap); }
+.count { color: var(--dim); font-size: 12px; }
+
+/* ---------- 4. Banners ---------- */
+.banner {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 12px; border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  font-size: 13px;
+}
+.banner-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.banner-btn {
+  flex: none; background: transparent; color: inherit; border: 1px solid currentColor;
+  border-radius: var(--radius-sm); padding: 2px 8px; font: inherit; font-size: 12px; cursor: pointer;
+  opacity: .8;
+}
+.banner-btn:hover { opacity: 1; }
+.banner.is-warn  { border-color: rgba(210,153,34,.5); color: var(--warn); background: rgba(210,153,34,.08); }
+.banner.is-error { border-color: rgba(248,81,73,.5);  color: var(--err);  background: rgba(248,81,73,.08); }
+
+/* ---------- 5. Panels, key/value, metrics, traffic ---------- */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  min-width: 0;
+}
+.panel-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.panel-head .spacer { margin-left: auto; }
+.panel-note { color: var(--dim); font-size: 12px; margin-top: 10px; }
+.kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px 18px; margin: 0; }
+.kv > div { min-width: 0; }
+.kv dt { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.kv dd { margin: 2px 0 0; font-family: var(--mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.metric {
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px 12px; min-width: 0;
+}
+.metric-label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.metric-value { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 22px; line-height: 1.25; overflow-wrap: anywhere; }
+
+.traffic-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+.traffic-cell { display: flex; flex-direction: column; gap: 6px; }
+.traffic-cell .metric-label { color: var(--muted); }
+.traffic-cell .metric-value { font-size: 20px; }
+.traffic-cell.in  .metric-value { color: var(--accent); }
+.traffic-cell.out .metric-value { color: var(--ok); }
+
+/* ---------- 6. Tables ---------- */
+.table-wrap { overflow-x: auto; }
+
+.table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.table th {
+  text-align: left; color: var(--dim); font-weight: 600;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+  padding: 8px 10px; border-bottom: 1px solid var(--border-strong); white-space: nowrap;
+}
+.table td {
+  padding: 8px 10px; border-bottom: 1px solid var(--border);
+  vertical-align: middle; white-space: nowrap;
+}
+.table tbody tr:hover { background: var(--panel-2); }
+.table .num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.table .id { font-family: var(--mono); }
+.table .wrap { white-space: normal; overflow-wrap: anywhere; }
+
+.empty {
+  color: var(--dim); font-size: 13px; font-style: normal;
+  padding: 14px; border: 1px dashed var(--border-strong); border-radius: var(--radius-sm); text-align: center;
+}
+
+/* ---------- 7. Buttons ---------- */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 7px 12px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong); background: var(--panel-2); color: var(--text);
+  font: inherit; font-size: 13px; cursor: pointer;
+}
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn-sm { padding: 4px 9px; font-size: 12px; }
+.btn-ghost { background: transparent; }
+.btn-danger { border-color: rgba(248,81,73,.55); color: var(--err); background: transparent; }
+.btn-danger:hover:not(:disabled) { background: rgba(248,81,73,.12); border-color: var(--err); }
+
+/* ---------- 8. Auth overlay ---------- */
+.overlay {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(5,8,13,.78);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.auth-card {
+  width: 100%; max-width: 380px;
+  background: var(--panel); border: 1px solid var(--border-strong);
+  border-radius: var(--radius); padding: 20px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.auth-card .hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.auth-card label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.field {
+  width: 100%; padding: 9px 10px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  font: inherit; font-family: var(--mono);
+}
+.auth-error { color: var(--err); font-size: 12px; }
+.auth-actions { display: flex; justify-content: flex-end; }
+
+/* ---------- 9. Responsive — phone first aid (360 px and up) ---------- */
+@media (max-width: 860px) {
+  .app {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "topbar"
+      "main";
+  }
+
+  #menuToggle { display: inline-flex; }
+
+  .sidebar {
+    position: fixed; top: var(--topbar-h); bottom: 0; left: 0; z-index: 45;
+    width: min(78vw, 280px);
+    transform: translateX(-100%);
+    transition: transform .18s ease-out;
+    border-right: 1px solid var(--border-strong);
+    box-shadow: 0 12px 32px rgba(0,0,0,.5);
+  }
+  .sidebar.is-open { transform: translateX(0); }
+
+  .main { padding: 12px; gap: 12px; }
+  .panel { padding: 12px; }
+  .metric-value { font-size: 19px; }
+}
+
+@media (max-width: 700px) {
+  .brand-sub { display: none; }
+
+  /* Tables become stacked cards so nothing is cut off at 360 px. */
+  .table-wrap { overflow-x: visible; }
+  .table thead { display: none; }
+  .table, .table tbody, .table tr, .table td { display: block; width: 100%; }
+  .table tr {
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--panel-2); margin-bottom: 10px; padding: 4px 0;
+  }
+  .table td {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+    border-bottom: none; white-space: normal; padding: 5px 12px;
+  }
+  .table td::before {
+    content: attr(data-label);
+    flex: none; color: var(--dim); font-size: 11px;
+    text-transform: uppercase; letter-spacing: .04em;
+  }
+  .table .num { text-align: right; }
+  .table .actions { justify-content: flex-end; }
+  .table .actions::before { content: ""; }
+}
+
+@media (max-width: 420px) {
+  .topbar { padding: 0 10px; gap: 8px; }
+  .main { padding: 10px; }
+  .metric-value { font-size: 18px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar { transition: none; }
+}
+</style>
 </head>
 <body>
-    <!-- 首次配置向导 -->
-    <div id="first-time-setup" class="container wizard-container">
-        <div class="card">
-            <div class="wizard-header">
-                <div class="wizard-logo">AT</div>
-                <h1 class="wizard-title" data-i18n="welcome">欢迎使用 AetherTunnel</h1>
-                <p class="wizard-subtitle" data-i18n="setup_subtitle">让我们开始配置您的第一个隧道</p>
-            </div>
 
-            <!-- 进度指示器 -->
-            <div class="progress-container">
-                <div class="progress-steps">
-                    <div class="progress-step active">1</div>
-                    <div class="progress-line"></div>
-                    <div class="progress-step">2</div>
-                    <div class="progress-line"></div>
-                    <div class="progress-step">3</div>
-                </div>
-                <div class="text-center mb-4" style="margin-top: 20px;">
-                    <span id="progress-text" data-i18n="language_selection">第一步：选择语言</span>
-                </div>
-            </div>
+<a class="skip-link" href="#main" data-i18n="nav.skip">Skip to content</a>
 
-            <!-- 语言选择 -->
-            <div id="language-selection-step">
-                <h2 class="text-center mb-4" style="margin-bottom: 30px; font-size: 22px; font-weight: 700;" data-i18n="select_language">选择您的语言</h2>
-                <p class="text-center mb-4" style="color: var(--text-secondary); margin-bottom: 30px;" data-i18n="language_hint">您稍后可以在设置中更改语言</p>
-                
-                <div class="language-grid">
-                    <div class="language-card" onclick="selectLanguage('zh-CN')">
-                        <div class="language-flag">🇨🇳</div>
-                        <div class="language-name">简体中文</div>
-                        <div class="language-native-name">Simplified Chinese</div>
-                    </div>
-                    
-                    <div class="language-card" onclick="selectLanguage('en-US')">
-                        <div class="language-flag">🇺🇸</div>
-                        <div class="language-name">English</div>
-                        <div class="language-native-name">美式英语</div>
-                    </div>
-                    
-                    <div class="language-card" onclick="selectLanguage('zh-TW')">
-                        <div class="language-flag">🇹🇰</div>
-                        <div class="language-name">繁體中文</div>
-                        <div class="language-native-name">Traditional Chinese</div>
-                    </div>
-                    
-                    <div class="language-card" onclick="selectLanguage('ja-JP')">
-                        <div class="language-flag">🇯🇵</div>
-                        <div class="language-name">日本語</div>
-                        <div class="language-native-name">Japanese</div>
-                    </div>
-                    
-                    <div class="language-card" onclick="selectLanguage('ko-KR')">
-                        <div class="language-flag">🇰🇷</div>
-                        <div class="language-name">한국어</div>
-                        <div class="language-native-name">Korean</div>
-                    </div>
-                </div>
+<div class="app">
+  <header class="topbar">
+    <button type="button" id="menuToggle" class="icon-btn" aria-expanded="false" aria-controls="sidebar"
+            data-i18n-label="nav.menu">
+      <span class="bar"></span><span class="bar"></span><span class="bar"></span>
+    </button>
+    <div class="brand">
+      <span class="brand-name">AetherTunnel</span>
+      <span class="brand-sub" data-i18n="app.subtitle">TCP tunnel control panel</span>
+    </div>
+    <div class="topbar-right">
+      <span id="connState" class="badge is-warn"><span class="dot"></span><span id="connStateText">connecting</span></span>
+      <label class="sr-only" for="langSelect" data-i18n="lang.label">Language</label>
+      <select id="langSelect" class="select">
+        <option value="en">English</option>
+        <option value="zh">简体中文</option>
+      </select>
+    </div>
+  </header>
 
-                <div class="text-center mt-4" style="margin-top: 40px;">
-                    <button class="btn btn-secondary" onclick="skipSetup()" data-i18n="skip_setup">跳过配置，稍后设置</button>
-                    <p class="text-center" style="font-size: 12px; color: var(--text-secondary); margin-top: 15px;" data-i18n="skip_hint">您随时可以在控制面板中配置</p>
-                </div>
-            </div>
+  <nav id="sidebar" class="sidebar" aria-label="Sections">
+    <ul class="nav-list">
+      <li><button type="button" class="nav-item" id="navOverview" data-view="overview" data-i18n="nav.overview" aria-current="page">Overview</button></li>
+      <li><button type="button" class="nav-item" id="navProxies"  data-view="proxies"  data-i18n="nav.proxies">Proxies</button></li>
+      <li><button type="button" class="nav-item" id="navClients"  data-view="clients"  data-i18n="nav.clients">Clients</button></li>
+      <li><button type="button" class="nav-item" id="navConfig"   data-view="config"   data-i18n="nav.config">Configuration</button></li>
+    </ul>
+    <div class="sidebar-foot">
+      <p class="sidebar-note" id="authStateNote">—</p>
+      <button type="button" id="signOutBtn" class="btn btn-ghost btn-sm" data-i18n="auth.signOut" hidden>Sign out</button>
+    </div>
+  </nav>
 
-            <!-- 基础配置 -->
-            <div id="basic-config-step" class="hidden">
-                <h2 class="text-center mb-4" style="margin-bottom: 30px; font-size: 22px; font-weight: 700;" data-i18n="basic_config">基础配置</h2>
-                
-                <div class="form-group">
-                    <label class="form-label required" data-i18n="bind_port_label">监听端口</label>
-                    <input type="number" id="bind-port" class="form-input" placeholder="7000" min="1" max="65535">
-                    <p class="form-hint" data-i18n="bind_port_hint">这是服务端监听的端口，默认为 7000。建议使用 7001-7999 之间的端口以避免冲突。</p>
-                </div>
+  <div id="scrim" class="scrim" hidden></div>
 
-                <div class="form-group">
-                    <label class="form-label required" data-i18n="auth_token_label">认证令牌</label>
-                    <input type="text" id="auth-token" class="form-input" placeholder="请输入一个安全的随机字符串">
-                    <p class="form-hint" data-i18n="auth_token_hint">这是客户端连接服务端时使用的"密码"。建议使用至少 16 位的随机字符串。</p>
-                    <div class="flex" style="margin-top: 10px;">
-                        <button class="btn btn-secondary" onclick="generateToken()" data-i18n="generate_token">生成随机令牌</button>
-                        <span id="token-strength" style="margin-left: 15px; font-size: 13px;"></span>
-                    </div>
-                </div>
-
-                <div class="form-group">
-                    <label class="form-label" data-i18n="dashboard_enable_label">启用 Web 管理面板</label>
-                    <div class="flex items-center gap-3">
-                        <div class="config-toggle active" id="dashboard-toggle" onclick="toggleDashboard()"></div>
-                        <span style="font-size: 14px; color: var(--text-secondary);" data-i18n="dashboard_enable_hint">启用后可以通过网页管理服务器</span>
-                    </div>
-                </div>
-
-                <div class="text-center mt-4" style="margin-top: 40px;">
-                    <button class="btn btn-primary btn-large" onclick="saveBasicConfig()" data-i18n="save_and_continue">保存并继续</button>
-                    <div style="margin-top: 15px;">
-                        <button class="btn btn-secondary" onclick="goToLanguageStep()" data-i18n="back">返回</button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 完成配置 -->
-            <div id="setup-complete-step" class="hidden">
-                <div class="text-center" style="padding: 40px;">
-                    <div style="font-size: 80px; margin-bottom: 30px;">🎉</div>
-                    <h2 class="wizard-title" style="margin-bottom: 20px;" data-i18n="setup_complete_title">配置完成！</h2>
-                    <p class="wizard-subtitle" style="margin-bottom: 40px;" data-i18n="setup_complete_subtitle">您的 AetherTunnel 服务器已经配置完成并正在运行。</p>
-                    
-                    <div class="card" style="text-align: left; background: var(--bg-secondary);">
-                        <h3 style="font-size: 16px; font-weight: 700; margin-bottom: 15px; color: var(--text-primary);" data-i18n="connection_info">连接信息</h3>
-                        <div class="config-item" style="border-bottom: 1px solid var(--border-color); padding: 15px 0;">
-                            <div class="flex items-center justify-between mb-4">
-                                <span style="font-size: 14px; color: var(--text-secondary);" data-i18n="server_ip">服务器 IP</span>
-                                <span style="font-weight: 600; color: var(--text-primary);" id="server-ip-display">192.168.1.100</span>
-                            </div>
-                        </div>
-                        <div class="config-item" style="padding: 15px 0;">
-                            <div class="flex items-center justify-between mb-4">
-                                <span style="font-size: 14px; color: var(--text-secondary);" data-i18n="server_port">服务器端口</span>
-                                <span style="font-weight: 600; color: var(--text-primary);" id="server-port-display">7001</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div style="margin-top: 40px;">
-                        <button class="btn btn-primary btn-large" onclick="goToDashboard()" data-i18n="go_to_dashboard">进入管理面板</button>
-                    </div>
-                </div>
-            </div>
-        </div>
+  <main id="main" class="main">
+    <div id="connBanner" class="banner is-warn" hidden>
+      <span class="banner-text" id="connBannerText"></span>
     </div>
 
-    <!-- 主管理面板 -->
-    <div id="main-dashboard" class="main-layout hidden">
-        <!-- 侧边栏 -->
-        <div class="sidebar">
-            <div class="sidebar-brand">
-                <div class="sidebar-logo">AT</div>
-                <div class="sidebar-title">AetherTunnel</div>
-            </div>
-
-            <ul class="sidebar-nav">
-                <li class="sidebar-section">
-                    <div class="sidebar-section-title" data-i18n="main_menu">主菜单</div>
-                </li>
-                <li class="sidebar-nav-item active" onclick="showSection('overview')">
-                    <span class="sidebar-nav-icon">📊</span>
-                    <span class="sidebar-nav-text" data-i18n="overview">总览</span>
-                </li>
-                <li class="sidebar-nav-item" onclick="showSection('proxies')">
-                    <span class="sidebar-nav-icon">🔌</span>
-                    <span class="sidebar-nav-text" data-i18n="proxies">代理管理</span>
-                </li>
-                <li class="sidebar-nav-item" onclick="showSection('clients')">
-                    <span class="sidebar-nav-icon">💻</span>
-                    <span class="sidebar-nav-text" data-i18n="clients">客户端管理</span>
-                </li>
-                <li class="sidebar-nav-item" onclick="showSection('server')">
-                    <span class="sidebar-nav-icon">🖥️</span>
-                    <span class="sidebar-nav-text" data-i18n="server_config">服务器配置</span>
-                </li>
-                <li class="sidebar-nav-item" onclick="showSection('config')">
-                    <span class="sidebar-nav-icon">⚙️</span>
-                    <span class="sidebar-nav-text" data-i18n="config_management">配置管理</span>
-                </li>
-                
-                <li class="sidebar-section">
-                    <div class="sidebar-section-title" data-i18n="advanced_settings">高级设置</div>
-                </li>
-                <li class="sidebar-nav-item" onclick="showSection('security')">
-                    <span class="sidebar-nav-icon">🔒</span>
-                    <span class="sidebar-nav-text" data-i18n="security">安全设置</span>
-                </li>
-                <li class="sidebar-nav-item" onclick="showSection('transport')">
-                    <span class="sidebar-nav-icon">🚀</span>
-                    <span class="sidebar-nav-text" data-i18n="transport">传输配置</span>
-                </li>
-                <li class="sidebar-nav-item" onclick="showSection('monitoring')">
-                    <span class="sidebar-nav-icon">📈</span>
-                    <span class="sidebar-nav-text" data-i18n="monitoring">监控</span>
-                </li>
-                
-                <li class="sidebar-section">
-                    <div class="sidebar-section-title" data-i18n="innovative_features">颠覆性功能</div>
-                </li>
-                <li class="sidebar-nav-item" onclick="showSection('ai-routing')">
-                    <span class="sidebar-nav-icon">🤖</span>
-                    <span class="sidebar-nav-text" data-i18n="ai_routing">AI 智能路由</span>
-                </li>
-                <li class="sidebar-nav-item" onclick="showSection('webrtc')">
-                    <span class="sidebar-nav-icon">🌐</span>
-                    <span class="sidebar-nav-text" data-i18n="webrtc_p2p">WebRTC P2P</span>
-                </li>
-                <li class="sidebar-nav-item" onclick="showSection('dht')">
-                    <span class="sidebar-nav-icon">⛓️</span>
-                    <span class="sidebar-nav-text" data-i18n="dht_network">DHT 网络</span>
-                </li>
-                <li class="sidebar-nav-item" onclick="showSection('pqc')">
-                    <span class="sidebar-nav-icon">🔬</span>
-                    <span class="sidebar-nav-text" data-i18n="quantum_encryption">量子加密</span>
-                </li>
-                <li class="sidebar-nav-item" onclick="showSection('vpn')">
-                    <span class="sidebar-nav-icon">🔐</span>
-                    <span class="sidebar-nav-text" data-i18n="vpn_network">VPN 管理</span>
-                </li>
-                
-                <li class="sidebar-section">
-                    <div class="sidebar-section-title" data-i18n="system">系统</div>
-                </li>
-                <li class="sidebar-nav-item" onclick="showSection('config')">
-                    <span class="sidebar-nav-icon">⚙️</span>
-                    <span class="sidebar-nav-text" data-i18n="config_management">配置管理</span>
-                </li>
-                <li class="sidebar-nav-item" onclick="showSection('logs')">
-                    <span class="sidebar-nav-icon">📝</span>
-                    <span class="sidebar-nav-text" data-i18n="logs">日志</span>
-                </li>
-                <li class="sidebar-nav-item" onclick="showSection('settings')">
-                    <span class="sidebar-nav-icon">⚙️</span>
-                    <span class="sidebar-nav-text" data-i18n="settings">设置</span>
-                </li>
-            </ul>
-        </div>
-
-        <!-- 主内容区 -->
-        <div class="main-content">
-            <!-- 总览页面 -->
-            <div id="overview-section">
-                <div class="main-header">
-                    <h1 class="main-title" data-i18n="overview_title">服务器总览</h1>
-                    <div class="main-actions">
-                        <button class="btn btn-primary" onclick="saveAll()" data-i18n="save_all">保存所有更改</button>
-                        <button class="btn btn-secondary" onclick="refreshOverview()" data-i18n="refresh">刷新</button>
-                    </div>
-                </div>
-
-                <!-- 状态卡片 -->
-                <div class="status-grid">
-                    <div class="status-card">
-                        <div class="status-card-header">
-                            <span class="status-card-title" data-i18n="connections">连接数</span>
-                            <div class="status-indicator online"></div>
-                        </div>
-                        <div class="status-card-value" id="connections-count">0</div>
-                        <div class="status-card-label" data-i18n="active_clients">活跃客户端</div>
-                    </div>
-
-                    <div class="status-card">
-                        <div class="status-card-header">
-                            <span class="status-card-title" data-i18n="proxies">代理数</span>
-                            <div class="status-indicator online"></div>
-                        </div>
-                        <div class="status-card-value" id="proxies-count">0</div>
-                        <div class="status-card-label" data-i18n="active_proxies">活跃代理</div>
-                    </div>
-
-                    <div class="status-card">
-                        <div class="status-card-header">
-                            <span class="status-card-title" data-i18n="bandwidth">带宽</span>
-                            <div class="status-indicator warning"></div>
-                        </div>
-                        <div class="status-card-value" id="bandwidth-usage">0 MB/s</div>
-                        <div class="status-card-label" data-i18n="bandwidth_usage">带宽使用</div>
-                    </div>
-
-                    <div class="status-card">
-                        <div class="status-card-header">
-                            <span class="status-card-title" data-i18n="uptime">运行时间</span>
-                            <div class="status-indicator online"></div>
-                        </div>
-                        <div class="status-card-value" id="uptime">0:00:00</div>
-                        <div class="status-card-label" data-i18n="server_uptime">服务器运行时间</div>
-                    </div>
-
-                    <div class="status-card">
-                        <div class="status-card-header">
-                            <span class="status-card-title" data-i18n="cpu">CPU</span>
-                            <div class="status-indicator online"></div>
-                        </div>
-                        <div class="status-card-value" id="cpu-usage">0%</div>
-                        <div class="status-card-label" data-i18n="cpu_usage">CPU 使用率</div>
-                    </div>
-
-                    <div class="status-card">
-                        <div class="status-card-header">
-                            <span class="status-card-title" data-i18n="memory">内存</span>
-                            <div class="status-indicator online"></div>
-                        </div>
-                        <div class="status-card-value" id="memory-usage">0 MB</div>
-                        <div class="status-card-label" data-i18n="memory_usage">内存使用</div>
-                    </div>
-
-                    <div class="status-card">
-                        <div class="status-card-header">
-                            <span class="status-card-title" data-i18n="network">网络</span>
-                            <div class="status-indicator online"></div>
-                        </div>
-                        <div class="status-card-value" id="network-status">正常</div>
-                        <div class="status-card-label" data-i18n="network_status">网络状态</div>
-                    </div>
-                </div>
-
-                <!-- 图表区域 -->
-                <div class="chart-container">
-                    <div class="chart-header">
-                        <h3 class="chart-title" data-i18n="traffic_chart">流量趋势</h3>
-                        <div class="chart-actions">
-                            <button class="btn btn-secondary" data-i18n="1h">1h</button>
-                            <button class="btn btn-secondary" data-i18n="24h">24h</button>
-                            <button class="btn btn-secondary" data-i18n="7d">7d</button>
-                        </div>
-                    </div>
-                    <div class="chart-body">
-                        <canvas id="traffic-chart" style="width: 100%; height: 100%;"></canvas>
-                    </div>
-                </div>
-
-                <!-- 代理列表 -->
-                <div class="card">
-                    <div class="config-category-header">
-                        <h3 class="config-category-title">
-                            <span>🔌</span>
-                            <span data-i18n="recent_proxies">最近代理</span>
-                        </h3>
-                    </div>
-                    <div id="recent-proxies-list">
-                        <!-- 代理列表将通过 JS 动态加载 -->
-                    </div>
-                </div>
-            </div>
-
-            <!-- 代理管理页面 -->
-            <div id="proxies-section" class="hidden">
-                <div class="main-header">
-                    <h1 class="main-title" data-i18n="proxy_management">代理管理</h1>
-                    <div class="main-actions">
-                        <button class="btn btn-primary" onclick="addProxy()" data-i18n="add_proxy">添加代理</button>
-                        <button class="btn btn-secondary" onclick="importProxies()" data-i18n="import">导入</button>
-                    </div>
-                </div>
-
-                <!-- 代理列表 -->
-                <div id="proxy-list-container">
-                    <!-- 代理列表将通过 JS 动态加载 -->
-                </div>
-            </div>
-
-            <!-- 客户端管理页面 -->
-            <div id="clients-section" class="hidden">
-                <div class="main-header">
-                    <h1 class="main-title" data-i18n="client_management">客户端管理</h1>
-                    <div class="main-actions">
-                        <button class="btn btn-secondary" onclick="refreshClients()" data-i18n="refresh">刷新</button>
-                    </div>
-                </div>
-
-                <!-- 客户端列表 -->
-                <div class="status-grid" id="clients-list">
-                    <!-- 客户端列表将通过 JS 动态加载 -->
-                </div>
-            </div>
-
-            <!-- 服务器配置页面 -->
-            <div id="server-section" class="hidden">
-                <div class="main-header">
-                    <h1 class="main-title" data-i18n="server_configuration">服务器配置</h1>
-                    <div class="main-actions">
-                        <button class="btn btn-primary" onclick="saveServerConfig()" data-i18n="save">保存</button>
-                        <button class="btn btn-secondary" onclick="resetServerConfig()" data-i18n="reset">重置</button>
-                    </div>
-                </div>
-
-                <div id="server-config-container">
-                    <!-- 配置分类将通过 JS 动态加载 -->
-                </div>
-            </div>
-
-            <!-- VPN管理页面 -->
-            <div id="vpn-section" class="hidden">
-                <div class="main-header">
-                    <h1 class="main-title" data-i18n="vpn_network">VPN 管理</h1>
-                    <div class="main-actions">
-                        <button class="btn btn-primary" onclick="createVPN()" data-i18n="create_vpn">创建VPN隧道</button>
-                        <button class="btn btn-secondary" onclick="startAllVPNs()" data-i18n="start_all">启动所有</button>
-                        <button class="btn btn-secondary" onclick="stopAllVPNs()" data-i18n="stop_all">停止所有</button>
-                    </div>
-                </div>
-
-                <!-- VPN状态概览 -->
-                <div class="status-grid">
-                    <div class="status-card">
-                        <div class="status-card-header">
-                            <span class="status-card-title" data-i18n="vpn_tunnels">VPN隧道数</span>
-                            <div class="status-indicator online"></div>
-                        </div>
-                        <div class="status-card-value" id="vpn-tunnels-count">0</div>
-                        <div class="status-card-label" data-i18n="active_tunnels">活跃隧道</div>
-                    </div>
-
-                    <div class="status-card">
-                        <div class="status-card-header">
-                            <span class="status-card-title" data-i18n="vpn_clients">VPN客户端数</span>
-                            <div class="status-indicator online"></div>
-                        </div>
-                        <div class="status-card-value" id="vpn-clients-count">0</div>
-                        <div class="status-card-label" data-i18n="connected_clients">已连接客户端</div>
-                    </div>
-
-                    <div class="status-card">
-                        <div class="status-card-header">
-                            <span class="status-card-title" data-i18n="vpn_traffic">VPN流量</span>
-                            <div class="status-indicator warning"></div>
-                        </div>
-                        <div class="status-card-value" id="vpn-traffic">0 MB/s</div>
-                        <div class="status-card-label" data-i18n="vpn_bandwidth">VPN带宽使用</div>
-                    </div>
-
-                    <div class="status-card">
-                        <div class="status-card-header">
-                            <span class="status-card-title" data-i18n="obfuscation">混淆状态</span>
-                            <div class="status-indicator" id="obfuscation-indicator"></div>
-                        </div>
-                        <div class="status-card-value" id="obfuscation-status">未启用</div>
-                        <div class="status-card-label" data-i18n="obfuscation_type">混淆类型</div>
-                    </div>
-                </div>
-
-                <!-- VPN隧道列表 -->
-                <div class="card">
-                    <div class="config-category-header">
-                        <h3 class="config-category-title">
-                            <span>🔐</span>
-                            <span data-i18n="vpn_tunnel_list">VPN隧道列表</span>
-                        </h3>
-                    </div>
-                    <div id="vpn-list-container">
-                        <!-- VPN隧道列表将通过 JS 动态加载 -->
-                    </div>
-                </div>
-
-                <!-- 在线客户端列表 -->
-                <div class="card">
-                    <div class="config-category-header">
-                        <h3 class="config-category-title">
-                            <span>💻</span>
-                            <span data-i18n="vpn_clients">VPN客户端</span>
-                        </h3>
-                    </div>
-                    <div id="vpn-clients-container">
-                        <!-- 客户端列表将通过 JS 动态加载 -->
-                    </div>
-                </div>
-
-                <!-- 混淆配置 -->
-                <div class="card">
-                    <div class="config-category-header">
-                        <h3 class="config-category-title">
-                            <span>🎭</span>
-                            <span data-i18n="obfuscation_config">混淆配置</span>
-                        </h3>
-                    </div>
-                    <div class="config-category-body">
-                        <div class="config-item">
-                            <div class="config-item-header">
-                                <div>
-                                    <div class="config-item-title">
-                                        <span data-i18n="enable_obfuscation">启用混淆</span>
-                                    </div>
-                                    <div class="config-item-description" data-i18n="enable_obfuscation_desc">
-                                        启用数据混淆以防止DPI检测和流量分析
-                                    </div>
-                                </div>
-                                <div class="config-item-actions">
-                                    <div class="config-toggle" id="obfuscation-toggle" onclick="toggleObfuscation()"></div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="config-item">
-                            <div class="config-item-header">
-                                <div>
-                                    <div class="config-item-title">
-                                        <span data-i18n="obfuscation_type">混淆类型</span>
-                                    </div>
-                                    <div class="config-item-description" data-i18n="obfuscation_type_desc">
-                                        选择数据混淆的方式
-                                    </div>
-                                </div>
-                                <div class="config-item-actions">
-                                    <select class="form-input" style="width: 200px;" id="obfuscation-type">
-                                        <option value="none" data-i18n="obf_none">无</option>
-                                        <option value="xor" data-i18n="obf_xor">XOR加密</option>
-                                        <option value="aes" data-i18n="obf_aes">AES加密</option>
-                                        <option value="chacha" data-i18n="obf_chacha">ChaCha加密</option>
-                                        <option value="stego" data-i18n="obf_stego">隐写术</option>
-                                        <option value="morph" data-i18n="obf_morph">流量整形</option>
-                                    </select>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="config-item">
-                            <div class="config-item-header">
-                                <div>
-                                    <div class="config-item-title">
-                                        <span data-i18n="adaptive_obfuscation">自适应混淆</span>
-                                    </div>
-                                    <div class="config-item-description" data-i18n="adaptive_obfuscation_desc">
-                                        根据连接类型自动选择最佳混淆方式
-                                    </div>
-                                </div>
-                                <div class="config-item-actions">
-                                    <div class="config-toggle" id="adaptive-toggle" onclick="toggleAdaptive()"></div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="form-group" style="margin-top: 20px;">
-                            <button class="btn btn-primary" onclick="saveObfuscationConfig()" data-i18n="save_config">保存配置</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 配置管理页面 -->
-            <div id="config-section" class="hidden">
-                <div class="main-header">
-                    <h1 class="main-title" data-i18n="config_management">配置管理</h1>
-                    <div class="main-actions">
-                        <button class="btn btn-primary" onclick="loadConfigFile()" data-i18n="load_config">加载配置</button>
-                        <button class="btn btn-secondary" onclick="saveConfigFile()" data-i18n="save_config">保存配置</button>
-                        <button class="btn btn-secondary" onclick="formatConfig()" data-i18n="format_config">格式化</button>
-                        <button class="btn btn-secondary" onclick="validateConfig()" data-i18n="validate_config">验证</button>
-                        <select id="config-type-select" onchange="changeConfigType()" style="padding: 10px; border-radius: 8px; border: 2px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary);">
-                            <option value="server" data-i18n="server_config">服务端配置</option>
-                            <option value="client" data-i18n="client_config">客户端配置</option>
-                        </select>
-                    </div>
-                </div>
-
-                <!-- 配置编辑器 -->
-                <div class="card">
-                    <div class="config-category-header">
-                        <h3 class="config-category-title">
-                            <span>📝</span>
-                            <span id="config-editor-title" data-i18n="config_editor">配置编辑器</span>
-                        </h3>
-                        <div class="config-category-toggle" onclick="toggleConfigEditor()">⚙️</div>
-                    </div>
-                    <div class="config-category-body">
-                        <div class="form-group">
-                            <label class="form-label" data-i18n="config_file_path">配置文件路径</label>
-                            <input type="text" id="config-file-path" class="form-input" placeholder="/etc/aethertunnel/server.toml" value="/etc/aethertunnel/server.toml">
-                            <p class="form-hint" data-i18n="config_file_path_hint">输入配置文件的完整路径，或点击"加载配置"选择文件</p>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label class="form-label" data-i18n="config_content">配置内容</label>
-                            <textarea id="config-editor" class="form-input" style="height: 500px; font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace; font-size: 13px; line-height: 1.5; resize: vertical;" placeholder="在这里输入或粘贴配置内容..."></textarea>
-                            <p class="form-hint" data-i18n="config_content_hint">编辑配置内容，支持语法高亮和自动补全</p>
-                        </div>
-
-                        <div class="form-group" style="display: flex; justify-content: space-between; align-items: center;">
-                            <div>
-                                <span id="config-status" style="font-size: 14px; color: var(--text-secondary);" data-i18n="config_status">就绪</span>
-                                <span id="config-validation-result" style="margin-left: 15px; font-size: 14px;"></span>
-                            </div>
-                            <div>
-                                <button class="btn btn-primary" onclick="saveConfigFile()" data-i18n="save_config">保存配置</button>
-                                <button class="btn btn-secondary" onclick="reloadConfig()" data-i18n="reload_config">重载配置</button>
-                                <button class="btn btn-secondary" onclick="backupConfig()" data-i18n="backup_config">备份配置</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 配置模板 -->
-                <div class="card">
-                    <div class="config-category-header">
-                        <h3 class="config-category-title">
-                            <span>📋</span>
-                            <span data-i18n="config_templates">配置模板</span>
-                        </h3>
-                    </div>
-                    <div class="config-category-body">
-                        <div class="config-grid" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));">
-                            <div class="config-item" style="cursor: pointer; padding: 20px; border: 2px solid var(--border-color); border-radius: 12px; transition: var(--transition);" onclick="loadTemplate('server-basic')">
-                                <div style="font-weight: 700; margin-bottom: 10px; color: var(--text-primary);" data-i18n="server_basic_template">服务端基础配置</div>
-                                <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 10px;" data-i18n="server_basic_desc">标准VPN服务端配置，适合大多数场景</div>
-                                <div style="font-size: 12px; color: var(--success-color);" data-i18n="recommended">推荐</div>
-                            </div>
-                            
-                            <div class="config-item" style="cursor: pointer; padding: 20px; border: 2px solid var(--border-color); border-radius: 12px; transition: var(--transition);" onclick="loadTemplate('client-basic')">
-                                <div style="font-weight: 700; margin-bottom: 10px; color: var(--text-primary);" data-i18n="client_basic_template">客户端基础配置</div>
-                                <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 10px;" data-i18n="client_basic_desc">标准VPN客户端配置，快速连接VPN</div>
-                                <div style="font-size: 12px; color: var(--success-color);" data-i18n="recommended">推荐</div>
-                            </div>
-                            
-                            <div class="config-item" style="cursor: pointer; padding: 20px; border: 2px solid var(--border-color); border-radius: 12px; transition: var(--transition);" onclick="loadTemplate('server-advanced')">
-                                <div style="font-weight: 700; margin-bottom: 10px; color: var(--text-primary);" data-i18n="server_advanced_template">服务端高级配置</div>
-                                <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 10px;" data-i18n="server_advanced_desc">高级VPN服务端配置，包含性能优化</div>
-                                <div style="font-size: 12px; color: var(--warning-color);" data-i18n="advanced">高级</div>
-                            </div>
-                            
-                            <div class="config-item" style="cursor: pointer; padding: 20px; border: 2px solid var(--border-color); border-radius: 12px; transition: var(--transition);" onclick="loadTemplate('client-advanced')">
-                                <div style="font-weight: 700; margin-bottom: 10px; color: var(--text-primary);" data-i18n="client_advanced_template">客户端高级配置</div>
-                                <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 10px;" data-i18n="client_advanced_desc">高级VPN客户端配置，包含混淆设置</div>
-                                <div style="font-size: 12px; color: var(--warning-color);" data-i18n="advanced">高级</div>
-                            </div>
-                            
-                            <div class="config-item" style="cursor: pointer; padding: 20px; border: 2px solid var(--border-color); border-radius: 12px; transition: var(--transition);" onclick="loadTemplate('security-hardened')">
-                                <div style="font-weight: 700; margin-bottom: 10px; color: var(--text-primary);" data-i18n="security_hardened_template">安全加固配置</div>
-                                <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 10px;" data-i18n="security_hardened_desc">高安全性配置，适合企业环境</div>
-                                <div style="font-size: 12px; color: var(--danger-color);" data-i18n="security">安全</div>
-                            </div>
-                            
-                            <div class="config-item" style="cursor: pointer; padding: 20px; border: 2px solid var(--border-color); border-radius: 12px; transition: var(--transition);" onclick="loadTemplate('performance-optimized')">
-                                <div style="font-weight: 700; margin-bottom: 10px; color: var(--text-primary);" data-i18n="performance_optimized_template">性能优化配置</div>
-                                <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 10px;" data-i18n="performance_optimized_desc">高性能配置，适合大流量场景</div>
-                                <div style="font-size: 12px; color: var(--primary-color);" data-i18n="performance">性能</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 配置历史 -->
-                <div class="card">
-                    <div class="config-category-header">
-                        <h3 class="config-category-title">
-                            <span>📜</span>
-                            <span data-i18n="config_history">配置历史</span>
-                        </h3>
-                        <button class="btn btn-secondary" onclick="clearConfigHistory()" data-i18n="clear_history">清除历史</button>
-                    </div>
-                    <div class="config-category-body">
-                        <div id="config-history-list">
-                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 15px; background: var(--bg-secondary); border-radius: 8px; margin-bottom: 10px;">
-                                <div>
-                                    <div style="font-weight: 700; margin-bottom: 5px;">server.toml</div>
-                                    <div style="font-size: 12px; color: var(--text-secondary);">2026-02-21 04:30:15 - 修改VPN端口</div>
-                                </div>
-                                <div>
-                                    <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="restoreConfig('server.toml')" data-i18n="restore">恢复</button>
-                                    <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="viewConfigDiff('server.toml')" data-i18n="diff">对比</button>
-                                </div>
-                            </div>
-                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 15px; background: var(--bg-secondary); border-radius: 8px; margin-bottom: 10px;">
-                                <div>
-                                    <div style="font-weight: 700; margin-bottom: 5px;">client.toml</div>
-                                    <div style="font-size: 12px; color: var(--text-secondary);">2026-02-21 04:25:10 - 添加混淆配置</div>
-                                </div>
-                                <div>
-                                    <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="restoreConfig('client.toml')" data-i18n="restore">恢复</button>
-                                    <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="viewConfigDiff('client.toml')" data-i18n="diff">对比</button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 批量操作 -->
-                <div class="card">
-                    <div class="config-category-header">
-                        <h3 class="config-category-title">
-                            <span>⚡</span>
-                            <span data-i18n="batch_operations">批量操作</span>
-                        </h3>
-                    </div>
-                    <div class="config-category-body">
-                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px;">
-                            <div class="form-group">
-                                <button class="btn btn-primary btn-large" onclick="batchUpdateConfig()" data-i18n="batch_update">批量更新配置</button>
-                                <p class="form-hint" data-i18n="batch_update_desc">批量更新多个配置参数</p>
-                            </div>
-                            <div class="form-group">
-                                <button class="btn btn-secondary btn-large" onclick="exportAllConfigs()" data-i18n="export_configs">导出所有配置</button>
-                                <p class="form-hint" data-i18n="export_configs_desc">导出所有配置文件为ZIP</p>
-                            </div>
-                            <div class="form-group">
-                                <button class="btn btn-secondary btn-large" onclick="importConfigs()" data-i18n="import_configs">导入配置文件</button>
-                                <p class="form-hint" data-i18n="import_configs_desc">从备份或ZIP导入配置</p>
-                            </div>
-                            <div class="form-group">
-                                <button class="btn btn-secondary btn-large" onclick="resetAllConfigs()" data-i18n="reset_configs">重置所有配置</button>
-                                <p class="form-hint" data-i18n="reset_configs_desc">重置为默认配置</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 其他页面将通过 JS 动态显示 -->
-        </div>
+    <div id="errorBanner" class="banner is-error" hidden>
+      <span class="banner-text" id="errorBannerText"></span>
+      <button type="button" class="banner-btn" id="errorBannerDismiss" data-i18n="banner.dismiss">Dismiss</button>
     </div>
 
-    <!-- 加载遮罩 -->
-    <div class="loading-overlay" id="loading-overlay">
-        <div class="loading-spinner"></div>
+    <!-- ================= Overview ================= -->
+    <section class="view" id="view-overview">
+      <div class="panel">
+        <div class="panel-head">
+          <h3 data-i18n="status.title">Server status</h3>
+          <span class="count mono" id="lastUpdated"></span>
+        </div>
+        <dl class="kv">
+          <div><dt data-i18n="status.version">Version</dt><dd id="statusVersion">—</dd></div>
+          <div><dt data-i18n="status.protocol">Protocol</dt><dd id="statusProtocol">—</dd></div>
+          <div><dt data-i18n="status.uptime">Uptime</dt><dd id="statusUptime">—</dd></div>
+          <div><dt data-i18n="status.encryption">Encryption</dt><dd id="statusEncryption">—</dd></div>
+          <div><dt data-i18n="status.buildTime">Build time</dt><dd id="statusBuildTime">—</dd></div>
+          <div><dt data-i18n="status.commit">Git commit</dt><dd id="statusCommit">—</dd></div>
+          <div><dt data-i18n="status.startedAt">Started at</dt><dd id="statusStartedAt">—</dd></div>
+          <div><dt data-i18n="status.authRequired">Token required</dt><dd id="statusAuthRequired">—</dd></div>
+        </dl>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h3 data-i18n="metrics.title">Counters</h3></div>
+        <div class="metrics">
+          <div class="metric"><div class="metric-label" data-i18n="metrics.activeConn">Active connections</div><div class="metric-value" id="metricConnActive">—</div></div>
+          <div class="metric"><div class="metric-label" data-i18n="metrics.totalConn">Total connections</div><div class="metric-value" id="metricConnTotal">—</div></div>
+          <div class="metric"><div class="metric-label" data-i18n="metrics.maxConn">Max connections</div><div class="metric-value" id="metricConnMax">—</div></div>
+          <div class="metric"><div class="metric-label" data-i18n="metrics.registeredProxies">Registered proxies</div><div class="metric-value" id="metricProxyRegistered">—</div></div>
+          <div class="metric"><div class="metric-label" data-i18n="metrics.activeStreams">Active streams</div><div class="metric-value" id="metricProxyStreams">—</div></div>
+          <div class="metric"><div class="metric-label" data-i18n="metrics.clients">Connected clients</div><div class="metric-value" id="metricClientCount">—</div></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h3 data-i18n="traffic.title">Traffic</h3></div>
+        <div class="traffic-grid">
+          <div class="traffic-cell in">
+            <span class="metric-label" data-i18n="traffic.in">Inbound</span>
+            <span class="metric-value" id="trafficIn">—</span>
+          </div>
+          <div class="traffic-cell out">
+            <span class="metric-label" data-i18n="traffic.out">Outbound</span>
+            <span class="metric-value" id="trafficOut">—</span>
+          </div>
+          <div class="traffic-cell">
+            <span class="metric-label" data-i18n="traffic.total">Total</span>
+            <span class="metric-value" id="trafficTotal">—</span>
+          </div>
+        </div>
+        <p class="panel-note" data-i18n="traffic.note">Counters are cumulative since the server started.</p>
+      </div>
+    </section>
+
+    <!-- ================= Proxies ================= -->
+    <section class="view" id="view-proxies" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          <h3 data-i18n="proxies.title">Proxies</h3>
+          <span class="count" id="proxiesCount"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="proxiesTable">
+            <thead>
+              <tr>
+                <th data-i18n="proxies.col.name">Name</th>
+                <th data-i18n="proxies.col.type">Type</th>
+                <th data-i18n="proxies.col.localAddr">Local address</th>
+                <th data-i18n="proxies.col.remotePort">Remote port</th>
+                <th data-i18n="proxies.col.client">Client</th>
+                <th data-i18n="proxies.col.activeConns">Active conns</th>
+                <th data-i18n="proxies.col.totalConns">Total conns</th>
+                <th data-i18n="proxies.col.bytesIn">Bytes in</th>
+                <th data-i18n="proxies.col.bytesOut">Bytes out</th>
+              </tr>
+            </thead>
+            <tbody id="proxiesBody"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="proxiesEmpty" hidden></p>
+      </div>
+    </section>
+
+    <!-- ================= Clients ================= -->
+    <section class="view" id="view-clients" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          <h3 data-i18n="clients.title">Clients</h3>
+          <span class="count" id="clientsCount"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="clientsTable">
+            <thead>
+              <tr>
+                <th data-i18n="clients.col.id">Client ID</th>
+                <th data-i18n="clients.col.remoteAddr">Remote address</th>
+                <th data-i18n="clients.col.connectedAt">Connected at</th>
+                <th data-i18n="clients.col.lastHeartbeat">Last heartbeat</th>
+                <th data-i18n="clients.col.encrypted">Encrypted</th>
+                <th data-i18n="clients.col.proxies">Proxies</th>
+                <th data-i18n="clients.col.activeStreams">Streams</th>
+                <th data-i18n="clients.col.bytesIn">Bytes in</th>
+                <th data-i18n="clients.col.bytesOut">Bytes out</th>
+                <th data-i18n="clients.col.actions">Action</th>
+              </tr>
+            </thead>
+            <tbody id="clientsBody"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="clientsEmpty" hidden></p>
+      </div>
+    </section>
+
+    <!-- ================= Configuration ================= -->
+    <section class="view" id="view-config" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          <h3 data-i18n="config.title">Configuration (redacted)</h3>
+          <span class="spacer"></span>
+          <button type="button" class="btn btn-sm" id="configRefresh" data-i18n="config.refresh">Refresh</button>
+        </div>
+        <dl class="kv">
+          <div><dt data-i18n="config.bindAddr">Bind address</dt><dd id="cfgBindAddr">—</dd></div>
+          <div><dt data-i18n="config.bindPort">Bind port</dt><dd id="cfgBindPort">—</dd></div>
+          <div><dt data-i18n="config.maxConnections">Max connections</dt><dd id="cfgMaxConn">—</dd></div>
+          <div><dt data-i18n="config.enabled">Encryption enabled</dt><dd id="cfgEncEnabled">—</dd></div>
+          <div><dt data-i18n="config.algorithm">Algorithm</dt><dd id="cfgEncAlgorithm">—</dd></div>
+          <div><dt data-i18n="config.authRequired">Token required</dt><dd id="cfgAuthRequired">—</dd></div>
+        </dl>
+        <p class="panel-note" data-i18n="config.note">The API returns a redacted summary only — secrets and keys are never sent to the browser.</p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="overlay" id="authOverlay" hidden>
+  <form class="auth-card" id="authForm" autocomplete="on">
+    <h2 data-i18n="auth.title">Dashboard token required</h2>
+    <p class="hint" data-i18n="auth.hint">This dashboard is protected. Enter the token configured on the server.</p>
+    <label for="authInput" data-i18n="auth.label">Token</label>
+    <input id="authInput" class="field" type="password" name="token" autocomplete="current-password"
+           spellcheck="false" data-i18n-placeholder="auth.placeholder">
+    <p class="auth-error" id="authError" hidden></p>
+    <div class="auth-actions">
+      <button type="submit" class="btn" id="authSubmit" data-i18n="auth.submit">Unlock</button>
     </div>
-
-    <script>
-        // ===== 国际化字典 =====
-        const i18n = {
-            'zh-CN': {
-                welcome: '欢迎使用 AetherTunnel',
-                setup_subtitle: '让我们开始配置您的第一个隧道',
-                language_selection: '第一步：选择语言',
-                select_language: '选择您的语言',
-                language_hint: '您稍后可以在设置中更改语言',
-                skip_setup: '跳过配置，稍后设置',
-                skip_hint: '您随时可以在控制面板中配置',
-                basic_config: '基础配置',
-                bind_port_label: '监听端口',
-                bind_port_hint: '这是服务端监听的端口，默认为 7000。建议使用 7001-7999 之间的端口以避免冲突。',
-                auth_token_label: '认证令牌',
-                auth_token_hint: '这是客户端连接服务端时使用的"密码"。建议使用至少 16 位的随机字符串。',
-                generate_token: '生成随机令牌',
-                dashboard_enable_label: '启用 Web 管理面板',
-                dashboard_enable_hint: '启用后可以通过网页管理服务器',
-                save_and_continue: '保存并继续',
-                back: '返回',
-                setup_complete_title: '配置完成！',
-                setup_complete_subtitle: '您的 AetherTunnel 服务器已经配置完成并正在运行。',
-                connection_info: '连接信息',
-                server_ip: '服务器 IP',
-                server_port: '服务器端口',
-                go_to_dashboard: '进入管理面板',
-                main_menu: '主菜单',
-                overview: '总览',
-                proxies: '代理管理',
-                clients: '客户端管理',
-                server_config: '服务器配置',
-                advanced_settings: '高级设置',
-                security: '安全设置',
-                transport: '传输配置',
-                monitoring: '监控',
-                innovative_features: '颠覆性功能',
-                ai_routing: 'AI 智能路由',
-                webrtc_p2p: 'WebRTC P2P',
-                dht_network: 'DHT 网络',
-                quantum_encryption: '量子加密',
-                logs: '日志',
-                settings: '设置',
-                save_all: '保存所有更改',
-                refresh: '刷新',
-                add_proxy: '添加代理',
-                import: '导入',
-                client_management: '客户端管理',
-                save: '保存',
-                reset: '重置',
-                connections: '连接数',
-                active_clients: '活跃客户端',
-                proxies_count: '代理数',
-                active_proxies: '活跃代理',
-                bandwidth: '带宽',
-                bandwidth_usage: '带宽使用',
-                uptime: '运行时间',
-                server_uptime: '服务器运行时间',
-                cpu: 'CPU',
-                cpu_usage: 'CPU 使用率',
-                memory: '内存',
-                memory_usage: '内存使用',
-                network: '网络',
-                network_status: '网络状态',
-                traffic_chart: '流量趋势',
-                recent_proxies: '最近代理',
-                weak: '弱',
-                medium: '中',
-                strong: '强',
-                online: '在线',
-                offline: '离线',
-                normal: '正常'
-            },
-            'en-US': {
-                welcome: 'Welcome to AetherTunnel',
-                setup_subtitle: 'Let\'s configure your first tunnel',
-                language_selection: 'Step 1: Select Language',
-                select_language: 'Select your language',
-                language_hint: 'You can change the language later in settings',
-                skip_setup: 'Skip configuration, setup later',
-                skip_hint: 'You can always configure in the control panel',
-                basic_config: 'Basic Configuration',
-                bind_port_label: 'Bind Port',
-                bind_port_hint: 'This is the port the server listens on. Default is 7000. Recommend using ports between 7001-7999 to avoid conflicts.',
-                auth_token_label: 'Auth Token',
-                auth_token_hint: 'This is the "password" used by clients to connect to the server. Recommend using a random string of at least 16 characters.',
-                generate_token: 'Generate Random Token',
-                dashboard_enable_label: 'Enable Web Dashboard',
-                dashboard_enable_hint: 'After enabling, you can manage the server via web interface',
-                save_and_continue: 'Save & Continue',
-                back: 'Back',
-                setup_complete_title: 'Setup Complete!',
-                setup_complete_subtitle: 'Your AetherTunnel server has been configured and is running.',
-                connection_info: 'Connection Info',
-                server_ip: 'Server IP',
-                server_port: 'Server Port',
-                go_to_dashboard: 'Go to Dashboard',
-                main_menu: 'Main Menu',
-                overview: 'Overview',
-                proxies: 'Proxy Management',
-                clients: 'Client Management',
-                server_config: 'Server Config',
-                advanced_settings: 'Advanced Settings',
-                security: 'Security',
-                transport: 'Transport',
-                monitoring: 'Monitoring',
-                innovative_features: 'Innovative Features',
-                ai_routing: 'AI Smart Routing',
-                webrtc_p2p: 'WebRTC P2P',
-                dht_network: 'DHT Network',
-                quantum_encryption: 'Quantum Encryption',
-                logs: 'Logs',
-                settings: 'Settings',
-                save_all: 'Save All Changes',
-                refresh: 'Refresh',
-                add_proxy: 'Add Proxy',
-                import: 'Import',
-                client_management: 'Client Management',
-                save: 'Save',
-                reset: 'Reset',
-                connections: 'Connections',
-                active_clients: 'Active Clients',
-                proxies_count: 'Proxies',
-                active_proxies: 'Active Proxies',
-                bandwidth: 'Bandwidth',
-                bandwidth_usage: 'Bandwidth Usage',
-                uptime: 'Uptime',
-                server_uptime: 'Server Uptime',
-                cpu: 'CPU',
-                cpu_usage: 'CPU Usage',
-                memory: 'Memory',
-                memory_usage: 'Memory Usage',
-                network: 'Network',
-                network_status: 'Network Status',
-                traffic_chart: 'Traffic Chart',
-                recent_proxies: 'Recent Proxies',
-                weak: 'Weak',
-                medium: 'Medium',
-                strong: 'Strong',
-                online: 'Online',
-                offline: 'Offline',
-                normal: 'Normal',
-                // VPN相关翻译
-                vpn_network: 'VPN 管理',
-                create_vpn: '创建VPN隧道',
-                start_all: '启动所有',
-                stop_all: '停止所有',
-                vpn_tunnels: 'VPN隧道数',
-                active_tunnels: '活跃隧道',
-                vpn_clients: 'VPN客户端数',
-                connected_clients: '已连接客户端',
-                vpn_traffic: 'VPN流量',
-                vpn_bandwidth: 'VPN带宽使用',
-                obfuscation: '混淆状态',
-                obfuscation_type: '混淆类型',
-                vpn_tunnel_list: 'VPN隧道列表',
-                vpn_clients_list: 'VPN客户端',
-                running: '运行中',
-                start: '启动',
-                stop: '停止',
-                edit: '编辑',
-                delete: '删除',
-                disconnect: '断开',
-                obfuscation_config: '混淆配置',
-                enable_obfuscation: '启用混淆',
-                enable_obfuscation_desc: '启用数据混淆以防止DPI检测和流量分析',
-                adaptive_obfuscation: '自适应混淆',
-                adaptive_obfuscation_desc: '根据连接类型自动选择最佳混淆方式',
-                save_config: '保存配置',
-                obf_none: '无',
-                obf_xor: 'XOR加密',
-                obf_aes: 'AES加密',
-                obf_chacha: 'ChaCha加密',
-                obf_stego: '隐写术',
-                obf_morph: '流量整形'
-            }
-        };
-
-        // ===== 全局变量 =====
-        let currentLanguage = 'zh-CN';
-        let currentStep = 1;
-
-        // ===== 初始化 =====
-        document.addEventListener('DOMContentLoaded', function() {
-            // 检查是否是首次配置
-            checkFirstTimeSetup();
-            
-            // 更新时间
-            updateUptime();
-            setInterval(updateUptime, 1000);
-            
-            // 模拟数据更新
-            setInterval(updateMockData, 3000);
-        });
-
-        // ===== 功能函数 =====
-        function checkFirstTimeSetup() {
-            // 这里可以检查本地存储或 API 来判断是否是首次配置
-            // 暂时默认显示首次配置向导
-        }
-
-        function selectLanguage(lang) {
-            currentLanguage = lang;
-            
-            // 更新所有文本
-            document.querySelectorAll('[data-i18n]').forEach(el => {
-                const key = el.getAttribute('data-i18n');
-                if (i18n[lang][key]) {
-                    el.textContent = i18n[lang][key];
-                }
-            });
-
-            // 高亮选中的语言
-            document.querySelectorAll('.language-card').forEach(card => {
-                card.classList.remove('selected');
-            });
-            event.currentTarget.classList.add('selected');
-
-            // 延迟后进入下一步
-            setTimeout(() => {
-                goToBasicConfigStep();
-            }, 300);
-        }
-
-        function goToBasicConfigStep() {
-            currentStep = 2;
-            
-            // 更新进度指示器
-            document.querySelectorAll('.progress-step')[0].classList.remove('active');
-            document.querySelectorAll('.progress-step')[0].classList.add('completed');
-            document.querySelectorAll('.progress-step')[1].classList.add('active');
-            
-            document.getElementById('progress-text').textContent = i18n[currentLanguage].basic_config;
-
-            // 隐藏语言选择步骤
-            document.getElementById('language-selection-step').classList.add('hidden');
-            document.getElementById('basic-config-step').classList.remove('hidden');
-        }
-
-        function generateToken() {
-            const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
-            let token = '';
-            for (let i = 0; i < 32; i++) {
-                token += chars.charAt(Math.floor(Math.random() * chars.length));
-            }
-            document.getElementById('auth-token').value = token;
-            
-            // 评估密码强度
-            evaluatePasswordStrength(token);
-        }
-
-        function evaluatePasswordStrength(password) {
-            let strength = i18n[currentLanguage].weak;
-            
-            if (password.length >= 8) {
-                strength = i18n[currentLanguage].medium;
-            }
-            if (password.length >= 12 && /[A-Z]/.test(password) && /[0-9]/.test(password) && /[^A-Za-z0-9]/.test(password)) {
-                strength = i18n[currentLanguage].strong;
-            }
-            
-            const strengthEl = document.getElementById('token-strength');
-            strengthEl.textContent = `强度: ${strength}`;
-            
-            if (strength === i18n[currentLanguage].weak) {
-                strengthEl.style.color = 'var(--danger-color)';
-            } else if (strength === i18n[currentLanguage].medium) {
-                strengthEl.style.color = 'var(--warning-color)';
-            } else {
-                strengthEl.style.color = 'var(--success-color)';
-            }
-        }
-
-        function saveBasicConfig() {
-            // 显示加载遮罩
-            document.getElementById('loading-overlay').classList.add('show');
-            
-            // 模拟保存配置
-            setTimeout(() => {
-                // 隐藏加载遮罩
-                document.getElementById('loading-overlay').classList.remove('show');
-                
-                // 进入完成步骤
-                goToCompleteStep();
-            }, 1500);
-        }
-
-        function goToCompleteStep() {
-            currentStep = 3;
-            
-            // 更新进度指示器
-            document.querySelectorAll('.progress-step')[1].classList.remove('active');
-            document.querySelectorAll('.progress-step')[1].classList.add('completed');
-            document.querySelectorAll('.progress-step')[2].classList.add('active');
-            
-            document.getElementById('progress-text').textContent = i18n[currentLanguage].setup_complete_title;
-
-            // 隐藏基础配置步骤
-            document.getElementById('basic-config-step').classList.add('hidden');
-            document.getElementById('setup-complete-step').classList.remove('hidden');
-        }
-
-        function goToLanguageStep() {
-            currentStep = 1;
-            
-            // 更新进度指示器
-            document.querySelectorAll('.progress-step')[1].classList.remove('active');
-            document.querySelectorAll('.progress-step')[0].classList.add('active');
-
-            document.getElementById('progress-text').textContent = i18n[currentLanguage].language_selection;
-
-            // 显示语言选择步骤
-            document.getElementById('language-selection-step').classList.remove('hidden');
-            document.getElementById('basic-config-step').classList.add('hidden');
-        }
-
-        function skipSetup() {
-            // 跳过配置，直接进入主面板
-            document.getElementById('first-time-setup').classList.add('hidden');
-            document.getElementById('main-dashboard').classList.remove('hidden');
-            
-            // 加载主面板数据
-            loadDashboardData();
-        }
-
-        function goToDashboard() {
-            document.getElementById('first-time-setup').classList.add('hidden');
-            document.getElementById('main-dashboard').classList.remove('hidden');
-            
-            // 加载主面板数据
-            loadDashboardData();
-        }
-
-        function showSection(section) {
-            // 隐藏所有部分
-            document.querySelectorAll('.main-content > div').forEach(div => {
-                div.classList.add('hidden');
-            });
-            
-            // 显示选中的部分
-            document.getElementById(section + '-section').classList.remove('hidden');
-            
-            // 更新侧边栏高亮
-            document.querySelectorAll('.sidebar-nav-item').forEach(item => {
-                item.classList.remove('active');
-            });
-            event.currentTarget.classList.add('active');
-        }
-
-        function loadDashboardData() {
-            // 加载实时数据
-            updateRealTimeStats();
-            loadRecentProxies();
-            loadClientsList();
-            loadServerConfig();
-        }
-
-        function updateRealTimeStats() {
-            // 模拟更新实时数据
-            // 这里应该调用 WebSocket API
-        }
-
-        function updateMockData() {
-            // 模拟数据更新
-            const connections = Math.floor(Math.random() * 100);
-            const proxies = Math.floor(Math.random() * 50);
-            const bandwidth = (Math.random() * 100).toFixed(2);
-            const cpu = (Math.random() * 80).toFixed(1);
-            const memory = Math.floor(Math.random() * 4096);
-            
-            document.getElementById('connections-count').textContent = connections;
-            document.getElementById('proxies-count').textContent = proxies;
-            document.getElementById('bandwidth-usage').textContent = `${bandwidth} MB/s`;
-            document.getElementById('cpu-usage').textContent = `${cpu}%`;
-            document.getElementById('memory-usage').textContent = `${memory} MB`;
-        }
-
-        function loadRecentProxies() {
-            const proxiesList = document.getElementById('recent-proxies-list');
-            proxiesList.innerHTML = `
-                <div style="display: grid; gap: 10px;">
-                    ${createProxyCard('ssh', 'tcp', '127.0.0.1', 22, 2222)}
-                    ${createProxyCard('web', 'http', '127.0.0.1', 80, 8080)}
-                    ${createProxyCard('mysql', 'tcp', '127.0.0.1', 3306, 3306)}
-                </div>
-            `;
-        }
-
-        function createProxyCard(name, type, localIp, localPort, remotePort) {
-            return `
-                <div style="background: var(--bg-secondary); padding: 20px; border-radius: 12px; display: flex; justify-content: space-between; align-items: center;">
-                    <div>
-                        <div style="font-weight: 700; margin-bottom: 5px;">${name}</div>
-                        <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 3px;">${type.toUpperCase()} :${localPort} -> :${remotePort}</div>
-                        <div style="font-size: 12px; color: var(--text-secondary);">运行中</div>
-                    </div>
-                    <button class="btn btn-secondary" style="padding: 8px 16px; font-size: 13px;">管理</button>
-                </div>
-            `;
-        }
-
-        function loadClientsList() {
-            const clientsList = document.getElementById('clients-list');
-            clientsList.innerHTML = `
-                <div class="status-card">
-                    <div style="font-size: 18px; font-weight: 700; margin-bottom: 10px;">Client-1</div>
-                    <div style="font-size: 14px; color: var(--text-secondary);">192.168.1.50</div>
-                    <div style="font-size: 14px; color: var(--text-secondary); margin-top: 5px;">运行时间: 2小时30分</div>
-                </div>
-                <div class="status-card">
-                    <div style="font-size: 18px; font-weight: 700; margin-bottom: 10px;">Client-2</div>
-                    <div style="font-size: 14px; color: var(--text-secondary);">192.168.1.51</div>
-                    <div style="font-size: 14px; color: var(--text-secondary); margin-top: 5px;">运行时间: 1小时45分</div>
-                </div>
-                <div class="status-card">
-                    <div style="font-size: 18px; font-weight: 700; margin-bottom: 10px;">Client-3</div>
-                    <div style="font-size: 14px; color: var(--text-secondary);">192.168.1.52</div>
-                    <div style="font-size: 14px; color: var(--text-secondary); margin-top: 5px;">离线</div>
-                </div>
-            `;
-        }
-
-        function loadServerConfig() {
-            const configContainer = document.getElementById('server-config-container');
-            
-            configContainer.innerHTML = `
-                ${createConfigCategory('server', '🖥️', [
-                    { title: 'bind_addr', label: '绑定地址', type: 'text', default: '0.0.0.0' },
-                    { title: 'bind_port', label: '监听端口', type: 'number', default: 7001 },
-                    { title: 'auth_token', label: '认证令牌', type: 'password', default: '' }
-                ])}
-                
-                ${createConfigCategory('tls', '🔒', [
-                    { title: 'enabled', label: '启用 TLS', type: 'toggle', default: false },
-                    { title: 'cert_file', label: '证书文件路径', type: 'text', default: '' },
-                    { title: 'key_file', label: '私钥文件路径', type: 'text', default: '' }
-                ])}
-                
-                ${createConfigCategory('dashboard', '📊', [
-                    { title: 'enabled', label: '启用管理面板', type: 'toggle', default: true },
-                    { title: 'port', label: '监听端口', type: 'number', default: 7500 },
-                    { title: 'username', label: '用户名', type: 'text', default: 'admin' },
-                    { title: 'password', label: '密码', type: 'password', default: '' }
-                ])}
-            `;
-        }
-
-        function createConfigCategory(category, icon, items) {
-            return `
-                <div class="config-category">
-                    <div class="config-category-header">
-                        <h3 class="config-category-title">
-                            <span>${icon}</span>
-                            <span style="text-transform: capitalize;">${category}</span>
-                        </h3>
-                        <div class="config-category-toggle">⚙️</div>
-                    </div>
-                    <div class="config-category-body">
-                        ${items.map(item => createConfigItem(item)).join('')}
-                    </div>
-                </div>
-            `;
-        }
-
-        function createConfigItem(item) {
-            let inputHtml = '';
-            
-            if (item.type === 'text' || item.type === 'number' || item.type === 'password') {
-                inputHtml = `<input type="${item.type}" class="form-input" value="${item.default || ''}" placeholder="${item.label}">`;
-            } else if (item.type === 'toggle') {
-                inputHtml = `
-                    <div class="config-toggle ${item.default ? 'active' : ''}" onclick="this.classList.toggle('active')"></div>
-                `;
-            }
-            
-            return `
-                <div class="config-item">
-                    <div class="config-item-header">
-                        <label class="form-label ${item.required ? 'required' : ''}">${item.label}</label>
-                        <div class="config-item-actions">
-                            <span class="config-toggle ${item.default ? 'active' : ''}"></span>
-                        </div>
-                    </div>
-                    ${inputHtml}
-                </div>
-            `;
-        }
-
-        function updateUptime() {
-            // 模拟更新运行时间
-            const uptimeEl = document.getElementById('uptime');
-            if (uptimeEl) {
-                const now = new Date();
-                const uptime = now - new Date(now.getFullYear(), 0, 1);
-                
-                const hours = Math.floor(uptime / 3600000);
-                const minutes = Math.floor((uptime % 3600000) / 60000);
-                const seconds = Math.floor((uptime % 60000) / 1000);
-                
-                uptimeEl.textContent = `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-            }
-        }
-
-        function saveAll() {
-            // 显示加载遮罩
-            document.getElementById('loading-overlay').classList.add('show');
-            
-            // 模拟保存
-            setTimeout(() => {
-                document.getElementById('loading-overlay').classList.remove('show');
-                alert('保存成功！');
-            }, 1000);
-        }
-
-        function refreshOverview() {
-            // 显示加载遮罩
-            document.getElementById('loading-overlay').classList.add('show');
-            
-            // 模拟刷新
-            setTimeout(() => {
-                document.getElementById('loading-overlay').classList.remove('show');
-                updateMockData();
-            }, 500);
-        }
-
-        function toggleDashboard() {
-            const toggle = document.getElementById('dashboard-toggle');
-            toggle.classList.toggle('active');
-        }
-
-        function addProxy() {
-            alert('添加代理功能开发中...');
-        }
-
-        function importProxies() {
-            alert('导入代理功能开发中...');
-        }
-
-        function refreshClients() {
-            updateMockData();
-            loadClientsList();
-        }
-
-        // VPN管理函数
-        function loadVPNList() {
-            const vpnContainer = document.getElementById('vpn-list-container');
-            vpnContainer.innerHTML = `
-                <div style="display: grid; gap: 10px;">
-                    <div style="background: var(--bg-secondary); padding: 20px; border-radius: 12px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                            <div style="font-weight: 700;">默认隧道</div>
-                            <div style="display: flex; gap: 8px;">
-                                <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" data-i18n="start">启动</button>
-                                <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" data-i18n="stop">停止</button>
-                                <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" data-i18n="edit">编辑</button>
-                                <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" data-i18n="delete">删除</button>
-                            </div>
-                        </div>
-                        <div style="font-size: 13px; color: var(--text-secondary);">
-                            <div>ID: tunnel_default</div>
-                            <div>IP: 10.0.0.1/24</div>
-                            <div>协议: TCP</div>
-                            <div>状态: <span style="color: var(--success-color);" data-i18n="running">运行中</span></div>
-                        </div>
-                    </div>
-                </div>
-            `;
-            
-            // 更新VPN计数
-            document.getElementById('vpn-tunnels-count').textContent = 1;
-        }
-
-        function loadVPNClients() {
-            const clientsContainer = document.getElementById('vpn-clients-container');
-            clientsContainer.innerHTML = `
-                <div style="display: grid; gap: 10px;">
-                    <div style="background: var(--bg-secondary); padding: 20px; border-radius: 12px; display: flex; justify-content: space-between; align-items: center;">
-                        <div>
-                            <div style="font-weight: 700; margin-bottom: 5px;">Client-1</div>
-                            <div style="font-size: 13px; color: var(--text-secondary);">IP: 10.0.0.2</div>
-                            <div style="font-size: 13px; color: var(--text-secondary);">MAC: 00:11:22:33:44:55</div>
-                            <div style="font-size: 12px; color: var(--text-secondary);">连接时间: 2小时30分</div>
-                            <div style="font-size: 12px; color: var(--text-secondary);">发送: 12.5 MB, 接收: 8.3 MB</div>
-                            <div style="font-size: 12px; color: var(--text-secondary);">延迟: 25ms</div>
-                        </div>
-                        <div>
-                            <div style="color: var(--success-color); font-size: 12px; margin-bottom: 10px;" data-i18n="online">在线</div>
-                            <button class="btn btn-secondary" style="padding: 8px 16px; font-size: 13px;" data-i18n="disconnect">断开</button>
-                        </div>
-                    </div>
-                    <div style="background: var(--bg-secondary); padding: 20px; border-radius: 12px; display: flex; justify-content: space-between; align-items: center;">
-                        <div>
-                            <div style="font-weight: 700; margin-bottom: 5px;">Client-2</div>
-                            <div style="font-size: 13px; color: var(--text-secondary);">IP: 10.0.0.3</div>
-                            <div style="font-size: 13px; color: var(--text-secondary);">MAC: 00:11:22:33:44:66</div>
-                            <div style="font-size: 12px; color: var(--text-secondary);">连接时间: 1小时45分</div>
-                            <div style="font-size: 12px; color: var(--text-secondary);">发送: 5.2 MB, 接收: 3.1 MB</div>
-                            <div style="font-size: 12px; color: var(--text-secondary);">延迟: 42ms</div>
-                        </div>
-                        <div>
-                            <div style="color: var(--success-color); font-size: 12px; margin-bottom: 10px;" data-i18n="online">在线</div>
-                            <button class="btn btn-secondary" style="padding: 8px 16px; font-size: 13px;" data-i18n="disconnect">断开</button>
-                        </div>
-                    </div>
-                </div>
-            `;
-            
-            // 更新客户端计数
-            document.getElementById('vpn-clients-count').textContent = 2;
-        }
-
-        function createVPN() {
-            // 创建VPN隧道对话框
-            const name = prompt('请输入隧道名称:');
-            if (!name) return;
-            
-            const localIP = prompt('请输入本地IP (如 10.0.0.1):', '10.0.0.1');
-            if (!localIP) return;
-            
-            const remoteIP = prompt('请输入远程IP (如 10.0.0.2):', '10.0.0.2');
-            if (!remoteIP) return;
-            
-            // 模拟创建VPN隧道
-            alert('VPN隧道 "' + name + '" 创建成功！');
-            loadVPNList();
-        }
-
-        function startAllVPNs() {
-            alert('正在启动所有VPN隧道...');
-            loadVPNList();
-            loadVPNClients();
-        }
-
-        function stopAllVPNs() {
-            if (confirm('确定要停止所有VPN隧道吗？')) {
-                alert('正在停止所有VPN隧道...');
-                document.getElementById('vpn-tunnels-count').textContent = 0;
-                document.getElementById('vpn-clients-count').textContent = 0;
-                document.getElementById('vpn-list-container').innerHTML = '<p style="padding: 20px; text-align: center; color: var(--text-secondary);">没有活跃的VPN隧道</p>';
-                document.getElementById('vpn-clients-container').innerHTML = '<p style="padding: 20px; text-align: center; color: var(--text-secondary);">没有在线的客户端</p>';
-            }
-        }
-
-        function toggleObfuscation() {
-            const toggle = document.getElementById('obfuscation-toggle');
-            toggle.classList.toggle('active');
-            
-            const indicator = document.getElementById('obfuscation-indicator');
-            const status = document.getElementById('obfuscation-status');
-            
-            if (toggle.classList.contains('active')) {
-                indicator.classList.add('online');
-                status.textContent = '已启用';
-            } else {
-                indicator.classList.remove('online');
-                status.textContent = '未启用';
-            }
-        }
-
-        function toggleAdaptive() {
-            const toggle = document.getElementById('adaptive-toggle');
-            toggle.classList.toggle('active');
-        }
-
-        function saveObfuscationConfig() {
-            const type = document.getElementById('obfuscation-type').value;
-            const enabled = document.getElementById('obfuscation-toggle').classList.contains('active');
-            const adaptive = document.getElementById('adaptive-toggle').classList.contains('active');
-            
-            // 显示加载状态
-            document.getElementById('loading-overlay').classList.add('show');
-            
-            // 模拟保存配置
-            setTimeout(() => {
-                document.getElementById('loading-overlay').classList.remove('show');
-                alert('混淆配置已保存！');
-                
-                // 更新混淆状态
-                if (enabled) {
-                    document.getElementById('obfuscation-status').textContent = type.toUpperCase();
-                    document.getElementById('obfuscation-indicator').classList.add('online');
-                } else {
-                    document.getElementById('obfuscation-status').textContent = '未启用';
-                    document.getElementById('obfuscation-indicator').classList.remove('online');
-                }
-            }, 1000);
-        }
-
-        function saveServerConfig() {
-            saveAll();
-        }
-
-        // 配置管理函数
-        let currentConfigType = 'server';
-        let configHistory = [];
-
-        function loadConfigFile() {
-            const filePath = document.getElementById('config-file-path').value;
-            if (!filePath) {
-                alert('请先输入配置文件路径！');
-                return;
-            }
-
-            // 显示加载状态
-            document.getElementById('loading-overlay').classList.add('show');
-            document.getElementById('config-status').textContent = '正在加载配置...';
-
-            // 模拟加载配置文件
-            setTimeout(() => {
-                // 这里应该调用实际的API来加载配置文件
-                const mockConfig = getMockConfig(currentConfigType);
-                document.getElementById('config-editor').value = mockConfig;
-                
-                document.getElementById('loading-overlay').classList.remove('show');
-                document.getElementById('config-status').textContent = '配置加载成功';
-                
-                // 添加到历史记录
-                addToConfigHistory(filePath, 'load');
-                
-                // 验证配置
-                validateConfig();
-            }, 1000);
-        }
-
-        function saveConfigFile() {
-            const filePath = document.getElementById('config-file-path').value;
-            const configContent = document.getElementById('config-editor').value;
-            
-            if (!filePath) {
-                alert('请先输入配置文件路径！');
-                return;
-            }
-
-            if (!configContent.trim()) {
-                alert('配置内容不能为空！');
-                return;
-            }
-
-            // 显示保存状态
-            document.getElementById('loading-overlay').classList.add('show');
-            document.getElementById('config-status').textContent = '正在保存配置...';
-
-            // 模拟保存配置文件
-            setTimeout(() => {
-                // 这里应该调用实际的API来保存配置文件
-                document.getElementById('loading-overlay').classList.remove('show');
-                document.getElementById('config-status').textContent = '配置保存成功';
-                
-                // 添加到历史记录
-                addToConfigHistory(filePath, 'save');
-                
-                // 显示成功消息
-                showNotification('配置保存成功！', 'success');
-            }, 1000);
-        }
-
-        function formatConfig() {
-            const editor = document.getElementById('config-editor');
-            const configContent = editor.value;
-            
-            if (!configContent.trim()) {
-                alert('没有可格式化的配置内容！');
-                return;
-            }
-
-            // 模拟格式化配置
-            document.getElementById('loading-overlay').classList.add('show');
-            
-            setTimeout(() => {
-                try {
-                    // 简单的TOML格式化
-                    const formatted = formatToml(configContent);
-                    editor.value = formatted;
-                    
-                    document.getElementById('loading-overlay').classList.remove('show');
-                    document.getElementById('config-status').textContent = '配置格式化完成';
-                    showNotification('配置格式化完成！', 'success');
-                } catch (error) {
-                    document.getElementById('loading-overlay').classList.remove('show');
-                    document.getElementById('config-status').textContent = '格式化失败';
-                    showNotification('格式化失败：' + error.message, 'error');
-                }
-            }, 500);
-        }
-
-        function validateConfig() {
-            const editor = document.getElementById('config-editor');
-            const configContent = editor.value;
-            const validationResult = document.getElementById('config-validation-result');
-            
-            if (!configContent.trim()) {
-                validationResult.innerHTML = '<span style="color: var(--warning-color);" data-i18n="config_empty">配置为空</span>';
-                return;
-            }
-
-            // 模拟配置验证
-            try {
-                // 简单的TOML语法验证
-                if (isValidToml(configContent)) {
-                    validationResult.innerHTML = '<span style="color: var(--success-color);" data-i18n="config_valid">配置有效</span>';
-                    document.getElementById('config-status').textContent = '配置验证通过';
-                } else {
-                    validationResult.innerHTML = '<span style="color: var(--danger-color);" data-i18n="config_invalid">配置无效</span>';
-                    document.getElementById('config-status').textContent = '配置验证失败';
-                }
-            } catch (error) {
-                validationResult.innerHTML = '<span style="color: var(--danger-color);" data-i18n="config_error">配置错误</span>';
-                document.getElementById('config-status').textContent = '配置验证出错：' + error.message;
-            }
-        }
-
-        function changeConfigType() {
-            const select = document.getElementById('config-type-select');
-            currentConfigType = select.value;
-            
-            // 更新编辑器标题
-            const title = document.getElementById('config-editor-title');
-            if (currentConfigType === 'server') {
-                title.textContent = '服务端配置';
-            } else {
-                title.textContent = '客户端配置';
-            }
-            
-            // 更新文件路径
-            const filePathInput = document.getElementById('config-file-path');
-            if (currentConfigType === 'server') {
-                filePathInput.value = '/etc/aethertunnel/server.toml';
-            } else {
-                filePathInput.value = '/etc/aethertunnel/client.toml';
-            }
-            
-            // 清空编辑器
-            document.getElementById('config-editor').value = '';
-            document.getElementById('config-validation-result').innerHTML = '';
-            document.getElementById('config-status').textContent = '就绪';
-        }
-
-        function loadTemplate(templateType) {
-            let template = '';
-            
-            switch (templateType) {
-                case 'server-basic':
-                    template = getServerBasicTemplate();
-                    break;
-                case 'client-basic':
-                    template = getClientBasicTemplate();
-                    break;
-                case 'server-advanced':
-                    template = getServerAdvancedTemplate();
-                    break;
-                case 'client-advanced':
-                    template = getClientAdvancedTemplate();
-                    break;
-                case 'security-hardened':
-                    template = getSecurityHardenedTemplate();
-                    break;
-                case 'performance-optimized':
-                    template = getPerformanceOptimizedTemplate();
-                    break;
-                default:
-                    alert('未知的配置模板！');
-                    return;
-            }
-            
-            document.getElementById('config-editor').value = template;
-            document.getElementById('config-status').textContent = '模板加载成功';
-            validateConfig();
-            showNotification('配置模板加载成功！', 'success');
-        }
-
-        function reloadConfig() {
-            const filePath = document.getElementById('config-file-path').value;
-            if (filePath) {
-                loadConfigFile();
-            }
-        }
-
-        function backupConfig() {
-            const filePath = document.getElementById('config-file-path').value;
-            const configContent = document.getElementById('config-editor').value;
-            
-            if (!configContent.trim()) {
-                alert('没有配置内容可备份！');
-                return;
-            }
-
-            // 生成备份文件名
-            const backupFileName = filePath.split('/').pop() + '.backup.' + new Date().getTime() + '.toml';
-            
-            // 创建下载链接
-            const blob = new Blob([configContent], { type: 'text/plain' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = backupFileName;
-            a.click();
-            
-            URL.revokeObjectURL(url);
-            showNotification('配置备份已创建：' + backupFileName, 'success');
-        }
-
-        function clearConfigHistory() {
-            if (confirm('确定要清除所有配置历史吗？')) {
-                configHistory = [];
-                document.getElementById('config-history-list').innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 20px;" data-i18n="no_history">暂无历史记录</p>';
-                showNotification('配置历史已清除', 'success');
-            }
-        }
-
-        function restoreConfig(configName) {
-            if (confirm('确定要从备份恢复 ' + configName + ' 吗？')) {
-                document.getElementById('loading-overlay').classList.add('show');
-                
-                setTimeout(() => {
-                    // 这里应该从备份文件加载配置
-                    const restoredConfig = getMockConfig(currentConfigType);
-                    document.getElementById('config-editor').value = restoredConfig;
-                    
-                    document.getElementById('loading-overlay').classList.remove('show');
-                    document.getElementById('config-status').textContent = '配置已恢复';
-                    validateConfig();
-                    showNotification('配置已恢复：' + configName, 'success');
-                }, 1000);
-            }
-        }
-
-        function viewConfigDiff(configName) {
-            // 模拟显示配置差异
-            const diffWindow = window.open('', '_blank', 'width=800,height=600');
-            diffWindow.document.write(`
-                <html>
-                <head>
-                    <title>配置差异 - ${configName}</title>
-                    <style>
-                        body { font-family: monospace; padding: 20px; }
-                        .diff { background: #f0f0f0; padding: 10px; margin: 10px 0; }
-                        .added { background: #d4edda; color: #155724; }
-                        .removed { background: #f8d7da; color: #721c24; }
-                    </style>
-                </head>
-                <body>
-                    <h1>配置差异对比 - ${configName}</h1>
-                    <div class="diff">
-                        <div class="added">+ vpn.port = 7100</div>
-                        <div class="removed">- vpn.port = 7000</div>
-                        <div class="added">+ vpn.obfuscation = true</div>
-                    </div>
-                    <p style="color: #666; font-size: 14px;">此功能需要实际版本控制系统支持</p>
-                </body>
-                </html>
-            `);
-        }
-
-        function batchUpdateConfig() {
-            const batchOperations = [
-                { field: 'vpn.port', value: '7100', type: 'number' },
-                { field: 'vpn.obfuscation', value: 'true', type: 'boolean' },
-                { field: 'obfuscation.enabled', value: 'true', type: 'boolean' },
-                { field: 'logging.level', value: 'info', type: 'string' }
-            ];
-
-            if (confirm('确定要执行批量配置更新吗？这将修改以下配置：\n' + batchOperations.map(op => `${op.field} = ${op.value}`).join('\n'))) {
-                document.getElementById('loading-overlay').classList.add('show');
-                
-                setTimeout(() => {
-                    // 模拟批量更新
-                    const editor = document.getElementById('config-editor');
-                    let configContent = editor.value;
-                    
-                    batchOperations.forEach(op => {
-                        const regex = new RegExp(`^${op.field}\\s*=.*$`, 'm');
-                        const newValue = `${op.field} = ${op.value}`;
-                        
-                        if (regex.test(configContent)) {
-                            configContent = configContent.replace(regex, newValue);
-                        } else {
-                            // 如果不存在，添加到配置中
-                            configContent += `\n${newValue}`;
-                        }
-                    });
-                    
-                    editor.value = configContent;
-                    document.getElementById('loading-overlay').classList.remove('show');
-                    document.getElementById('config-status').textContent = '批量更新完成';
-                    validateConfig();
-                    showNotification('批量配置更新完成！', 'success');
-                }, 1500);
-            }
-        }
-
-        function exportAllConfigs() {
-            // 创建配置ZIP文件
-            const zipContent = {
-                'server.toml': getMockConfig('server'),
-                'client.toml': getMockConfig('client'),
-                'README.md': '# AetherTunnel 配置文件备份\n\n备份时间: ' + new Date().toLocaleString('zh-CN')
-            };
-
-            // 创建下载
-            const zipBlob = new Blob([JSON.stringify(zipContent, null, 2)], { type: 'application/json' });
-            const url = URL.createObjectURL(zipBlob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'aethertunnel-configs-backup-' + new Date().getTime() + '.json';
-            a.click();
-            
-            URL.revokeObjectURL(url);
-            showNotification('配置文件已导出为ZIP格式', 'success');
-        }
-
-        function importConfigs() {
-            const input = document.createElement('input');
-            input.type = 'file';
-            input.accept = '.json,.toml,.zip';
-            input.onchange = function(e) {
-                const file = e.target.files[0];
-                if (!file) return;
-
-                document.getElementById('loading-overlay').classList.add('show');
-                
-                const reader = new FileReader();
-                reader.onload = function(e) {
-                    try {
-                        const importedContent = e.target.result;
-                        document.getElementById('config-editor').value = importedContent;
-                        document.getElementById('loading-overlay').classList.remove('show');
-                        document.getElementById('config-status').textContent = '配置导入成功';
-                        validateConfig();
-                        showNotification('配置文件导入成功！', 'success');
-                    } catch (error) {
-                        document.getElementById('loading-overlay').classList.remove('show');
-                        showNotification('配置文件导入失败：' + error.message, 'error');
-                    }
-                };
-                reader.readAsText(file);
-            };
-            input.click();
-        }
-
-        function resetAllConfigs() {
-            if (confirm('确定要重置所有配置为默认值吗？此操作不可恢复！')) {
-                document.getElementById('loading-overlay').classList.add('show');
-                
-                setTimeout(() => {
-                    document.getElementById('config-editor').value = getMockConfig(currentConfigType);
-                    document.getElementById('loading-overlay').classList.remove('show');
-                    document.getElementById('config-status').textContent = '配置已重置';
-                    validateConfig();
-                    showNotification('所有配置已重置为默认值！', 'success');
-                }, 1000);
-            }
-        }
-
-        function toggleConfigEditor() {
-            const editor = document.getElementById('config-editor');
-            editor.style.display = editor.style.display === 'none' ? 'block' : 'none';
-        }
-
-        function showNotification(message, type) {
-            // 创建通知元素
-            const notification = document.createElement('div');
-            notification.style.cssText = `
-                position: fixed;
-                top: 20px;
-                right: 20px;
-                padding: 15px 20px;
-                border-radius: 8px;
-                color: white;
-                font-weight: 600;
-                z-index: 10000;
-                animation: slideIn 0.3s ease;
-                background: ${type === 'success' ? 'var(--success-color)' : type === 'error' ? 'var(--danger-color)' : 'var(--primary-color)'};
-            `;
-            notification.textContent = message;
-            
-            // 添加动画样式
-            const style = document.createElement('style');
-            style.textContent = `
-                @keyframes slideIn {
-                    from { transform: translateX(100%); opacity: 0; }
-                    to { transform: translateX(0); opacity: 1; }
-                }
-            `;
-            document.head.appendChild(style);
-            
-            document.body.appendChild(notification);
-            
-            // 自动移除
-            setTimeout(() => {
-                notification.style.animation = 'slideIn 0.3s ease reverse';
-                setTimeout(() => {
-                    notification.remove();
-                    style.remove();
-                }, 300);
-            }, 3000);
-        }
-
-        function addToConfigHistory(filePath, action) {
-            const historyItem = {
-                file: filePath,
-                action: action,
-                timestamp: new Date().toLocaleString('zh-CN'),
-                user: 'admin'
-            };
-            
-            configHistory.unshift(historyItem);
-            
-            // 限制历史记录数量
-            if (configHistory.length > 20) {
-                configHistory = configHistory.slice(0, 20);
-            }
-            
-            // 更新历史记录显示
-            updateConfigHistoryDisplay();
-        }
-
-        function updateConfigHistoryDisplay() {
-            const historyList = document.getElementById('config-history-list');
-            
-            if (configHistory.length === 0) {
-                historyList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 20px;" data-i18n="no_history">暂无历史记录</p>';
-                return;
-            }
-            
-            historyList.innerHTML = configHistory.map(item => `
-                <div style="display: flex; justify-content: space-between; align-items: center; padding: 15px; background: var(--bg-secondary); border-radius: 8px; margin-bottom: 10px;">
-                    <div>
-                        <div style="font-weight: 700; margin-bottom: 5px;">${item.file}</div>
-                        <div style="font-size: 12px; color: var(--text-secondary);">${item.timestamp} - ${item.action} - ${item.user}</div>
-                    </div>
-                    <div>
-                        <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="restoreConfig('${item.file}')" data-i18n="restore">恢复</button>
-                        <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="viewConfigDiff('${item.file}')" data-i18n="diff">对比</button>
-                    </div>
-                </div>
-            `).join('');
-        }
-
-        // 配置模板函数
-        function getMockConfig(type) {
-            if (type === 'server') {
-                return getServerBasicTemplate();
-            } else {
-                return getClientBasicTemplate();
-            }
-        }
-
-        function getServerBasicTemplate() {
-            return `# AetherTunnel 服务端基础配置
-# 适合大多数VPN使用场景
-
-[server]
-bind_addr = "0.0.0.0"
-bind_port = 7000
-auth_token = "your-secure-token-here"
-
-[vpn]
-enabled = true
-port = 7100
-local_ip = "10.0.0.1"
-remote_ip = "10.0.0.2"
-netmask = "255.255.255.0"
-protocol = "tcp"
-obfuscation = true
-vpn_auth_token = "your-vpn-token-here"
-
-[obfuscation]
-enabled = true
-default_type = "stego"
-adaptive_enabled = true
-
-[dashboard]
-enabled = true
-port = 7500
-`;
-        }
-
-        function getClientBasicTemplate() {
-            return `# AetherTunnel 客户端基础配置
-# 快速连接VPN服务端
-
-[client]
-server_addr = "your-vpn-server.com"
-server_port = 7000
-auth_token = "your-secure-token-here"
-
-[vpn]
-enabled = true
-vpn_server_addr = "your-vpn-server.com"
-vpn_server_port = 7100
-vpn_auth_token = "your-vpn-token-here"
-vpn_tunnel_type = "tcp"
-vpn_obfuscation = true
-vpn_obfuscation_type = "stego"
-
-[obfuscation]
-enabled = true
-default_type = "stego"
-adaptive_enabled = true
-`;
-        }
-
-        function getServerAdvancedTemplate() {
-            return `# AetherTunnel 服务端高级配置
-# 包含性能优化和安全增强
-
-[server]
-bind_addr = "0.0.0.0"
-bind_port = 7000
-auth_token = "your-secure-token-here"
-max_connections = 1000
-graceful_shutdown_timeout = 30
-
-[vpn]
-enabled = true
-port = 7100
-local_ip = "10.0.0.1"
-remote_ip = "10.0.0.2"
-netmask = "255.255.255.0"
-protocol = "tcp"
-obfuscation = true
-vpn_auth_token = "your-vpn-token-here"
-max_peers = 254
-mtu = 1400
-enable_performance = true
-max_pool_size = 1000
-enable_compression = true
-enable_qos = true
-bandwidth_limit = "1Gbps"
-
-[obfuscation]
-enabled = true
-default_type = "stego"
-adaptive_enabled = true
-packet_padding = true
-traffic_morphing = true
-key_rotation = 60
-strength = 7
-
-[dashboard]
-enabled = true
-port = 7500
-
-[logging]
-level = "info"
-format = "json"
-output = "/var/log/aethertunnel/server.log"
-max_size = "100MB"
-max_age = 30
-compress = true
-
-[security]
-enable_ip_whitelist = true
-allowed_ips = ["192.168.1.0/24"]
-max_connections = 1000
-max_connections_per_ip = 10
-slow_attack_threshold = 100
-rate_limit = 100
-`;
-        }
-
-        function getClientAdvancedTemplate() {
-            return `# AetherTunnel 客户端高级配置
-# 包含高级功能和性能优化
-
-[client]
-server_addr = "your-vpn-server.com"
-server_port = 7000
-auth_token = "your-secure-token-here"
-protocol = "tcp"
-
-[vpn]
-enabled = true
-vpn_server_addr = "your-vpn-server.com"
-vpn_server_port = 7100
-vpn_auth_token = "your-vpn-token-here"
-vpn_tunnel_type = "tcp"
-vpn_obfuscation = true
-vpn_obfuscation_type = "stego"
-vpn_local_ip = ""
-vpn_netmask = "255.255.255.0"
-
-[vpn.connection]
-auto_reconnect = true
-max_reconnect_attempts = 0
-reconnect_interval = 5
-reconnect_timeout = 30
-
-[vpn.keepalive]
-enabled = true
-interval = 30
-timeout = 10
-max_failures = 3
-
-[vpn.routes]
-enabled = true
-
-[[vpn.routes.items]]
-network = "10.0.0.0/24"
-via_vpn = true
-description = "VPN网络"
-
-[[vpn.routes.items]]
-network = "192.168.1.0/24"
-via_vpn = false
-description = "本地网络"
-
-[obfuscation]
-enabled = true
-default_type = "stego"
-adaptive_enabled = true
-packet_padding = true
-traffic_morphing = true
-strength = 7
-randomize_packet_size = true
-min_packet_size = 100
-max_packet_size = 1500
-
-[logging]
-level = "info"
-format = "json"
-output = "./logs/client.log"
-max_size = "50MB"
-max_age = 30
-compress = true
-
-[performance]
-enable_memory_pool = true
-pool_size = 100
-worker_threads = 0
-
-[statistics]
-enabled = true
-interval = 60
-realtime = true
-export_format = "json"
-`;
-        }
-
-        function getSecurityHardenedTemplate() {
-            return `# AetherTunnel 安全加固配置
-# 企业级安全标准
-
-[server]
-bind_addr = "0.0.0.0"
-bind_port = 7000
-auth_token = "your-secure-token-here"
-max_connections = 500
-
-[tls]
-enabled = true
-cert_file = "/etc/aethertunnel/certs/server.crt"
-key_file = "/etc/aethertunnel/certs/server.key"
-ca_file = "/etc/aethertunnel/certs/ca.crt"
-min_version = "TLS1.3"
-skip_verify = false
-
-[vpn]
-enabled = true
-port = 7100
-local_ip = "10.0.0.1"
-remote_ip = "10.0.0.2"
-netmask = "255.255.255.0"
-protocol = "tcp"
-obfuscation = true
-vpn_auth_token = "your-vpn-token-here"
-verify_cert = true
-cert_file = "/etc/aethertunnel/certs/vpn.crt"
-key_file = "/etc/aethertunnel/certs/vpn.key"
-
-[obfuscation]
-enabled = true
-default_type = "aes"
-adaptive_enabled = true
-packet_padding = true
-traffic_morphing = true
-key_rotation = 30
-strength = 10
-
-[security]
-enable_ip_whitelist = true
-allowed_ips = ["192.168.1.0/24", "10.0.0.0/8"]
-max_connections = 500
-max_connections_per_ip = 5
-slow_attack_threshold = 50
-rate_limit = 50
-enable_fingerprint = true
-enable_ip_whitelist = true
-
-[logging]
-level = "warn"
-format = "json"
-output = "/var/log/aethertunnel/server.log"
-max_size = "100MB"
-max_age = 90
-compress = true
-sensitive_fields = ["password", "token", "secret", "sk", "authorization"]
-
-[audit]
-enabled = true
-log_file = "/var/log/aethertunnel/audit.log"
-log_connections = true
-log_errors = true
-log_auth = true
-log_admin = true
-`;
-        }
-
-        function getPerformanceOptimizedTemplate() {
-            return `# AetherTunnel 性能优化配置
-# 大流量高并发场景
-
-[server]
-bind_addr = "0.0.0.0"
-bind_port = 7000
-auth_token = "your-secure-token-here"
-max_connections = 10000
-worker_threads = 8
-
-[vpn]
-enabled = true
-port = 7100
-local_ip = "10.0.0.1"
-remote_ip = "10.0.0.2"
-netmask = "255.255.255.0"
-protocol = "tcp"
-obfuscation = true
-vpn_auth_token = "your-vpn-token-here"
-enable_performance = true
-max_pool_size = 5000
-enable_compression = true
-enable_qos = true
-bandwidth_limit = "10Gbps"
-mtu = 9000
-
-[obfuscation]
-enabled = true
-default_type = "xor"
-adaptive_enabled = true
-packet_padding = false
-traffic_morphing = false
-strength = 3
-
-[performance]
-enable_memory_pool = true
-pool_size = 1024  # 1GB
-worker_threads = 8
-enable_cpu_affinity = true
-cpu_cores = [0, 1, 2, 3, 4, 5, 6, 7]
-enable_huge_pages = true
-
-[connection_pool]
-enabled = true
-max_size = 5000
-idle_timeout = "30m"
-max_lifetime = "2h"
-
-[rate_limit]
-enabled = true
-limit = 10000
-burst = 1000
-
-[logging]
-level = "error"
-format = "json"
-output = "/var/log/aethertunnel/server.log"
-max_size = "500MB"
-max_age = 7
-compress = true
-console_output = false
-
-[network]
-enable_ipv6 = true
-bind_interface = ""
-default_gateway = ""
-dns_servers = ["8.8.8.8", "8.8.4.4"]
-`;
-        }
-
-        // TOML格式化和验证函数
-        function formatToml(content) {
-            // 简单的TOML格式化实现
-            let lines = content.split('\n');
-            let formatted = [];
-            let indentLevel = 0;
-            
-            for (let line of lines) {
-                line = line.trim();
-                
-                if (line.startsWith('[')) {
-                    // 节标题
-                    formatted.push('');
-                    formatted.push(line);
-                    indentLevel = 1;
-                } else if (line.startsWith('[[') && line.endsWith(']]')) {
-                    // 数组节标题
-                    formatted.push('');
-                    formatted.push(line);
-                    indentLevel = 1;
-                } else if (line.includes('=')) {
-                    // 键值对
-                    let [key, value] = line.split('=').map(s => s.trim());
-                    let indent = '  '.repeat(indentLevel);
-                    formatted.push(`${indent}${key} = ${value}`);
-                } else if (line.startsWith('#')) {
-                    // 注释
-                    formatted.push(line);
-                } else if (line) {
-                    // 其他内容
-                    formatted.push(line);
-                }
-            }
-            
-            return formatted.join('\n').trim();
-        }
-
-        function isValidToml(content) {
-            // 简单的TOML语法验证
-            try {
-                // 检查基本的TOML结构
-                const lines = content.split('\n');
-                let inSection = false;
-                
-                for (let line of lines) {
-                    line = line.trim();
-                    
-                    if (!line || line.startsWith('#')) continue;
-                    
-                    // 检查节标题
-                    if (line.startsWith('[') && line.endsWith(']')) {
-                        inSection = true;
-                        continue;
-                    }
-                    
-                    // 检查键值对
-                    if (line.includes('=')) {
-                        const [key, value] = line.split('=').map(s => s.trim());
-                        if (!key) return false;
-                        continue;
-                    }
-                    
-                    // 检查其他有效结构
-                    if (line.startsWith('[[') && line.endsWith(']]')) {
-                        continue;
-                    }
-                }
-                
-                return true;
-            } catch (error) {
-                return false;
-            }
-        }
-
-        // 国际化更新
-        const additionalTranslations = {
-            'zh-CN': {
-                config_management: '配置管理',
-                load_config: '加载配置',
-                save_config: '保存配置',
-                format_config: '格式化',
-                validate_config: '验证',
-                config_editor: '配置编辑器',
-                config_file_path: '配置文件路径',
-                config_file_path_hint: '输入配置文件的完整路径，或点击"加载配置"选择文件',
-                config_content: '配置内容',
-                config_content_hint: '编辑配置内容，支持语法高亮和自动补全',
-                config_status: '就绪',
-                config_templates: '配置模板',
-                server_basic_template: '服务端基础配置',
-                server_basic_desc: '标准VPN服务端配置，适合大多数场景',
-                recommended: '推荐',
-                client_basic_template: '客户端基础配置',
-                client_basic_desc: '标准VPN客户端配置，快速连接VPN',
-                server_advanced_template: '服务端高级配置',
-                server_advanced_desc: '高级VPN服务端配置，包含性能优化',
-                advanced: '高级',
-                client_advanced_template: '客户端高级配置',
-                client_advanced_desc: '高级VPN客户端配置，包含混淆设置',
-                security_hardened_template: '安全加固配置',
-                security_hardened_desc: '高安全性配置，适合企业环境',
-                security: '安全',
-                performance_optimized_template: '性能优化配置',
-                performance_optimized_desc: '高性能配置，适合大流量场景',
-                performance: '性能',
-                config_history: '配置历史',
-                clear_history: '清除历史',
-                no_history: '暂无历史记录',
-                restore: '恢复',
-                diff: '对比',
-                batch_operations: '批量操作',
-                batch_update: '批量更新配置',
-                batch_update_desc: '批量更新多个配置参数',
-                export_configs: '导出所有配置',
-                export_configs_desc: '导出所有配置文件为ZIP',
-                import_configs: '导入配置文件',
-                import_configs_desc: '从备份或ZIP导入配置',
-                reset_configs: '重置所有配置',
-                reset_configs_desc: '重置为默认配置',
-                server_config: '服务端配置',
-                client_config: '客户端配置',
-                config_empty: '配置为空',
-                config_valid: '配置有效',
-                config_invalid: '配置无效',
-                config_error: '配置错误',
-                reload_config: '重载配置',
-                backup_config: '备份配置'
-            },
-            'en-US': {
-                config_management: 'Configuration Management',
-                load_config: 'Load Config',
-                save_config: 'Save Config',
-                format_config: 'Format',
-                validate_config: 'Validate',
-                config_editor: 'Configuration Editor',
-                config_file_path: 'Config File Path',
-                config_file_path_hint: 'Enter the full path to the config file, or click "Load Config" to select',
-                config_content: 'Config Content',
-                config_content_hint: 'Edit configuration content with syntax highlighting and auto-completion',
-                config_status: 'Ready',
-                config_templates: 'Configuration Templates',
-                server_basic_template: 'Server Basic Config',
-                server_basic_desc: 'Standard VPN server configuration for most scenarios',
-                recommended: 'Recommended',
-                client_basic_template: 'Client Basic Config',
-                client_basic_desc: 'Standard VPN client configuration for quick connection',
-                server_advanced_template: 'Server Advanced Config',
-                server_advanced_desc: 'Advanced VPN server configuration with performance optimization',
-                advanced: 'Advanced',
-                client_advanced_template: 'Client Advanced Config',
-                client_advanced_desc: 'Advanced VPN client configuration with obfuscation settings',
-                security_hardened_template: 'Security Hardened Config',
-                security_hardened_desc: 'High security configuration for enterprise environments',
-                security: 'Security',
-                performance_optimized_template: 'Performance Optimized Config',
-                performance_optimized_desc: 'High performance configuration for high traffic scenarios',
-                performance: 'Performance',
-                config_history: 'Configuration History',
-                clear_history: 'Clear History',
-                no_history: 'No history records',
-                restore: 'Restore',
-                diff: 'Diff',
-                batch_operations: 'Batch Operations',
-                batch_update: 'Batch Update Config',
-                batch_update_desc: 'Batch update multiple configuration parameters',
-                export_configs: 'Export All Configs',
-                export_configs_desc: 'Export all configuration files as ZIP',
-                import_configs: 'Import Configurations',
-                import_configs_desc: 'Import configurations from backup or ZIP',
-                reset_configs: 'Reset All Configs',
-                reset_configs_desc: 'Reset to default configuration',
-                server_config: 'Server Configuration',
-                client_config: 'Client Configuration',
-                config_empty: 'Configuration is empty',
-                config_valid: 'Configuration is valid',
-                config_invalid: 'Configuration is invalid',
-                config_error: 'Configuration error',
-                reload_config: 'Reload Configuration',
-                backup_config: 'Backup Configuration'
-            }
-        };
-
-        // 更新国际化字典
-        Object.keys(additionalTranslations).forEach(lang => {
-            if (!i18n[lang]) i18n[lang] = {};
-            Object.assign(i18n[lang], additionalTranslations[lang]);
-        });
-
-        function resetServerConfig() {
-            if (confirm('确定要重置配置吗？')) {
-                loadServerConfig();
-            }
-        }
-
-        function saveProxy(id) {
-            // 保存代理配置
-        }
-
-        function deleteProxy(id) {
-            if (confirm('确定要删除此代理吗？')) {
-                // 删除代理
-            }
-        }
-
-        function manageClient(id) {
-            // 管理客户端
-        }
-
-        function disconnectClient(id) {
-            // 断开客户端
-        }
-
-        function viewClientLogs(id) {
-            // 查看客户端日志
-        }
-
-        function editConfig(id) {
-            // 编辑配置
-        }
-
-        function resetConfig(id) {
-            // 重置配置
-        }
-
-        // ===== WebSocket 连接（模拟） =====
-        function connectWebSocket() {
-            // 这里应该建立 WebSocket 连接
-            console.log('Connecting to WebSocket...');
-        }
-
-        // ===== 模拟流量图表 =====
-        function initTrafficChart() {
-            const canvas = document.getElementById('traffic-chart');
-            if (canvas) {
-                const ctx = canvas.getContext('2d');
-                
-                // 简单的流量图表绘制
-                function drawChart() {
-                    const width = canvas.width = canvas.offsetWidth;
-                    const height = canvas.height = canvas.offsetHeight;
-                    
-                    ctx.clearRect(0, 0, width, height);
-                    
-                    // 绘制网格
-                    ctx.strokeStyle = '#e2e8f0';
-                    ctx.lineWidth = 1;
-                    
-                    for (let i = 0; i <= width; i += 50) {
-                        ctx.beginPath();
-                        ctx.moveTo(i, 0);
-                        ctx.lineTo(i, height);
-                        ctx.stroke();
-                    }
-                    
-                    for (let i = 0; i <= height; i += 50) {
-                        ctx.beginPath();
-                        ctx.moveTo(0, i);
-                        ctx.lineTo(width, i);
-                        ctx.stroke();
-                    }
-                    
-                    // 绘制流量曲线
-                    ctx.strokeStyle = '#667eea';
-                    ctx.lineWidth = 2;
-                    ctx.beginPath();
-                    
-                    const points = [];
-                    for (let i = 0; i < width; i += 10) {
-                        const y = height - (Math.random() * height * 0.7);
-                        points.push({x: i, y: y});
-                    }
-                    
-                    ctx.moveTo(points[0].x, points[0].y);
-                    for (let i = 1; i < points.length; i++) {
-                        ctx.lineTo(points[i].x, points[i].y);
-                    }
-                    
-                    ctx.stroke();
-                }
-                
-                drawChart();
-                setInterval(drawChart, 3000);
-            }
-        }
-
-        // ===== 初始化 =====
-        window.addEventListener('load', function() {
-            initTrafficChart();
-        });
-
-        // ===== 键盘快捷键 =====
-        document.addEventListener('keydown', function(e) {
-            if (e.ctrlKey && e.key === 's') {
-                e.preventDefault();
-                saveAll();
-            }
-            if (e.ctrlKey && e.key === 'r') {
-                e.preventDefault();
-                refreshOverview();
-            }
-        });
-    </script>
+  </form>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ========================================================================
+     i18n — every key below must exist in both dictionaries; a parity check
+     runs at start-up and logs any mismatch to the console.
+     ======================================================================== */
+  var I18N = {
+    en: {
+      'app.subtitle': 'TCP tunnel control panel',
+      'nav.menu': 'Menu',
+      'nav.skip': 'Skip to content',
+      'nav.overview': 'Overview',
+      'nav.proxies': 'Proxies',
+      'nav.clients': 'Clients',
+      'nav.config': 'Configuration',
+      'lang.label': 'Language',
+      'state.connecting': 'connecting…',
+      'state.connected': 'connected',
+      'state.disconnected': 'disconnected — retrying',
+      'state.unauthorized': 'not authorised',
+      'conn.bannerDisconnected': 'Disconnected — retrying every {s}s. Last successful update: {ago}.',
+      'footer.lastUpdated': 'Last update: {ago}',
+      'footer.never': 'never',
+      'auth.title': 'Dashboard token required',
+      'auth.hint': 'This dashboard is protected. Paste the token configured on the server (dashboard.token). It is stored in this browser only.',
+      'auth.label': 'Token',
+      'auth.placeholder': 'paste token',
+      'auth.submit': 'Unlock',
+      'auth.signOut': 'Sign out',
+      'auth.errMissing': 'Enter a token first.',
+      'auth.errRejected': 'The server rejected that token (401). Check the value and try again.',
+      'auth.noteRequired': 'A dashboard token is required; requests are sent with your Bearer token.',
+      'auth.noteStored': 'Token stored in this browser.',
+      'auth.noteNotRequired': 'This server does not require a dashboard token.',
+      'auth.noteNoToken': 'No token stored — the API is not authorised.',
+      'banner.dismiss': 'Dismiss',
+      'err.status': 'Failed to load /api/status: {msg}',
+      'err.clients': 'Failed to load /api/clients: {msg}',
+      'err.proxies': 'Failed to load /api/proxies: {msg}',
+      'err.config': 'Failed to load /api/config: {msg}',
+      'err.disconnect': 'Failed to disconnect client {id}: {msg}',
+      'err.unauthorized': 'The API answered 401 — the dashboard token is missing or invalid.',
+      'status.title': 'Server status',
+      'status.version': 'Version',
+      'status.protocol': 'Protocol',
+      'status.uptime': 'Uptime',
+      'status.encryption': 'Encryption',
+      'status.buildTime': 'Build time',
+      'status.commit': 'Git commit',
+      'status.startedAt': 'Started at',
+      'status.authRequired': 'Token required',
+      'metrics.title': 'Counters',
+      'metrics.activeConn': 'Active connections',
+      'metrics.totalConn': 'Total connections',
+      'metrics.maxConn': 'Max connections',
+      'metrics.registeredProxies': 'Registered proxies',
+      'metrics.activeStreams': 'Active streams',
+      'metrics.clients': 'Connected clients',
+      'traffic.title': 'Traffic',
+      'traffic.in': 'Inbound',
+      'traffic.out': 'Outbound',
+      'traffic.total': 'Total',
+      'traffic.note': 'Counters are cumulative since the server started.',
+      'proxies.title': 'Proxies',
+      'proxies.count': '{n} registered',
+      'proxies.col.name': 'Name',
+      'proxies.col.type': 'Type',
+      'proxies.col.localAddr': 'Local address',
+      'proxies.col.remotePort': 'Remote port',
+      'proxies.col.client': 'Client',
+      'proxies.col.activeConns': 'Active conns',
+      'proxies.col.totalConns': 'Total conns',
+      'proxies.col.bytesIn': 'Bytes in',
+      'proxies.col.bytesOut': 'Bytes out',
+      'proxies.empty': 'no proxies registered',
+      'clients.title': 'Clients',
+      'clients.count': '{n} connected',
+      'clients.col.id': 'Client ID',
+      'clients.col.remoteAddr': 'Remote address',
+      'clients.col.connectedAt': 'Connected at',
+      'clients.col.lastHeartbeat': 'Last heartbeat',
+      'clients.col.encrypted': 'Encrypted',
+      'clients.col.proxies': 'Proxies',
+      'clients.col.activeStreams': 'Streams',
+      'clients.col.bytesIn': 'Bytes in',
+      'clients.col.bytesOut': 'Bytes out',
+      'clients.col.actions': 'Action',
+      'clients.empty': 'no clients connected',
+      'clients.confirm': 'Disconnect client {id}? Its active streams will be closed.',
+      'clients.disconnect': 'Disconnect',
+      'clients.heartbeatEvery': 'every {n}s',
+      'common.loadFailed': 'could not load data: {msg}',
+      'common.yes': 'yes',
+      'common.no': 'no',
+      'common.na': '—',
+      'config.title': 'Configuration (redacted)',
+      'config.bindAddr': 'Bind address',
+      'config.bindPort': 'Bind port',
+      'config.maxConnections': 'Max connections',
+      'config.enabled': 'Encryption enabled',
+      'config.algorithm': 'Algorithm',
+      'config.authRequired': 'Token required',
+      'config.refresh': 'Refresh',
+      'config.note': 'The API returns a redacted summary only — secrets and keys are never sent to the browser.',
+      'rel.justNow': 'just now',
+      'rel.seconds': '{n}s ago',
+      'rel.minutes': '{n}m ago',
+      'rel.hours': '{n}h ago',
+      'rel.days': '{n}d ago',
+      'unit.d': 'd',
+      'unit.h': 'h',
+      'unit.m': 'm',
+      'unit.s': 's'
+    },
+    zh: {
+      'app.subtitle': 'TCP 隧道控制面板',
+      'nav.menu': '菜单',
+      'nav.skip': '跳到主要内容',
+      'nav.overview': '概览',
+      'nav.proxies': '代理',
+      'nav.clients': '客户端',
+      'nav.config': '配置',
+      'lang.label': '语言',
+      'state.connecting': '连接中…',
+      'state.connected': '已连接',
+      'state.disconnected': '连接断开 — 正在重试',
+      'state.unauthorized': '未授权',
+      'conn.bannerDisconnected': '连接断开 — 每 {s} 秒重试一次。上次成功更新：{ago}。',
+      'footer.lastUpdated': '上次更新：{ago}',
+      'footer.never': '从未',
+      'auth.title': '需要控制台令牌',
+      'auth.hint': '此控制台已启用访问保护。请粘贴服务端配置的令牌（dashboard.token）。令牌只保存在当前浏览器中。',
+      'auth.label': '令牌',
+      'auth.placeholder': '粘贴令牌',
+      'auth.submit': '解锁',
+      'auth.signOut': '退出登录',
+      'auth.errMissing': '请先输入令牌。',
+      'auth.errRejected': '服务端拒绝了该令牌（401）。请检查后重试。',
+      'auth.noteRequired': '此服务端需要控制台令牌，请求会携带你的 Bearer 令牌。',
+      'auth.noteStored': '令牌已保存在此浏览器中。',
+      'auth.noteNotRequired': '此服务端不需要控制台令牌。',
+      'auth.noteNoToken': '尚未保存令牌 — API 未授权。',
+      'banner.dismiss': '关闭',
+      'err.status': '加载 /api/status 失败：{msg}',
+      'err.clients': '加载 /api/clients 失败：{msg}',
+      'err.proxies': '加载 /api/proxies 失败：{msg}',
+      'err.config': '加载 /api/config 失败：{msg}',
+      'err.disconnect': '断开客户端 {id} 失败：{msg}',
+      'err.unauthorized': 'API 返回 401 — 控制台令牌缺失或无效。',
+      'status.title': '服务端状态',
+      'status.version': '版本',
+      'status.protocol': '协议',
+      'status.uptime': '运行时长',
+      'status.encryption': '加密',
+      'status.buildTime': '构建时间',
+      'status.commit': 'Git 提交',
+      'status.startedAt': '启动时间',
+      'status.authRequired': '需要令牌',
+      'metrics.title': '计数',
+      'metrics.activeConn': '活动连接',
+      'metrics.totalConn': '累计连接',
+      'metrics.maxConn': '最大连接数',
+      'metrics.registeredProxies': '已注册代理',
+      'metrics.activeStreams': '活动流',
+      'metrics.clients': '已连接客户端',
+      'traffic.title': '流量',
+      'traffic.in': '入站',
+      'traffic.out': '出站',
+      'traffic.total': '合计',
+      'traffic.note': '计数为服务端启动以来的累计值。',
+      'proxies.title': '代理',
+      'proxies.count': '已注册 {n} 个',
+      'proxies.col.name': '名称',
+      'proxies.col.type': '类型',
+      'proxies.col.localAddr': '本地地址',
+      'proxies.col.remotePort': '远端端口',
+      'proxies.col.client': '客户端',
+      'proxies.col.activeConns': '活动连接',
+      'proxies.col.totalConns': '累计连接',
+      'proxies.col.bytesIn': '入站字节',
+      'proxies.col.bytesOut': '出站字节',
+      'proxies.empty': '暂无已注册的代理',
+      'clients.title': '客户端',
+      'clients.count': '已连接 {n} 个',
+      'clients.col.id': '客户端 ID',
+      'clients.col.remoteAddr': '远端地址',
+      'clients.col.connectedAt': '连接时间',
+      'clients.col.lastHeartbeat': '最近心跳',
+      'clients.col.encrypted': '加密',
+      'clients.col.proxies': '代理',
+      'clients.col.activeStreams': '流数量',
+      'clients.col.bytesIn': '入站字节',
+      'clients.col.bytesOut': '出站字节',
+      'clients.col.actions': '操作',
+      'clients.empty': '当前没有已连接的客户端',
+      'clients.confirm': '确认断开客户端 {id}？其上的活动流将被关闭。',
+      'clients.disconnect': '断开',
+      'clients.heartbeatEvery': '每 {n} 秒',
+      'common.loadFailed': '无法加载数据：{msg}',
+      'common.yes': '是',
+      'common.no': '否',
+      'common.na': '—',
+      'config.title': '配置（已脱敏）',
+      'config.bindAddr': '监听地址',
+      'config.bindPort': '监听端口',
+      'config.maxConnections': '最大连接数',
+      'config.enabled': '已启用加密',
+      'config.algorithm': '加密算法',
+      'config.authRequired': '需要令牌',
+      'config.refresh': '刷新',
+      'config.note': 'API 只返回脱敏摘要 —— 密钥等敏感信息不会发送到浏览器。',
+      'rel.justNow': '刚刚',
+      'rel.seconds': '{n} 秒前',
+      'rel.minutes': '{n} 分钟前',
+      'rel.hours': '{n} 小时前',
+      'rel.days': '{n} 天前',
+      'unit.d': '天',
+      'unit.h': '小时',
+      'unit.m': '分',
+      'unit.s': '秒'
+    }
+  };
+
+  var POLL_MS = 2000;
+  var TOKEN_KEY = 'aethertunnel.dashboard.token';
+  var LANG_KEY = 'aethertunnel.dashboard.lang';
+
+  /* ---------- State — everything rendered comes from here, and here it comes from the API. ---------- */
+  var state = {
+    lang: 'en',
+    token: null,
+    view: 'overview',
+    connected: false,
+    unauthorized: false,
+    lastStatus: null,
+    lastClients: null,
+    lastProxies: null,
+    lastSuccessAt: 0,   // browser clock, used only to age-stamp our own fetches
+    uptimeBaseSeconds: null,
+    uptimeBaseAt: 0     // performance.now() when uptimeBaseSeconds arrived
+  };
+
+  /* ---------- Small helpers ---------- */
+  function el(id) { return document.getElementById(id); }
+
+  function t(key, params) {
+    var dict = I18N[state.lang] || I18N.en;
+    var s = Object.prototype.hasOwnProperty.call(dict, key) ? dict[key]
+          : (Object.prototype.hasOwnProperty.call(I18N.en, key) ? I18N.en[key] : key);
+    if (params) {
+      Object.keys(params).forEach(function (k) {
+        s = s.split('{' + k + '}').join(String(params[k]));
+      });
+    }
+    return s;
+  }
+
+  function checkDictionaries() {
+    var en = Object.keys(I18N.en), zh = Object.keys(I18N.zh);
+    var missingZh = en.filter(function (k) { return !Object.prototype.hasOwnProperty.call(I18N.zh, k); });
+    var missingEn = zh.filter(function (k) { return !Object.prototype.hasOwnProperty.call(I18N.en, k); });
+    if (missingZh.length || missingEn.length) {
+      console.warn('[i18n] dictionary mismatch', { missingInZh: missingZh, missingInEn: missingEn });
+    }
+  }
+
+  function setText(node, value) {
+    if (node) node.textContent = (value === null || value === undefined || value === '') ? t('common.na') : String(value);
+  }
+
+  function clearNode(node) {
+    if (!node) return;
+    while (node.firstChild) node.removeChild(node.firstChild);
+  }
+
+  function makeCell(text, labelKey, className) {
+    var td = document.createElement('td');
+    td.textContent = (text === null || text === undefined || text === '') ? t('common.na') : String(text);
+    if (labelKey) td.setAttribute('data-label', t(labelKey));
+    if (className) td.className = className;
+    return td;
+  }
+
+  function fmtInt(v) {
+    if (v === null || v === undefined || v === '' || isNaN(Number(v))) return t('common.na');
+    return Number(v).toLocaleString(state.lang === 'zh' ? 'zh-CN' : 'en-US');
+  }
+
+  function fmtBytes(v) {
+    if (v === null || v === undefined || v === '' || isNaN(Number(v))) return t('common.na');
+    var n = Number(v);
+    var neg = n < 0;
+    n = Math.abs(n);
+    var units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    var i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    var shown = i === 0 ? String(Math.round(n)) : n.toFixed(n < 10 ? 2 : 1);
+    return (neg ? '-' : '') + shown + ' ' + units[i];
+  }
+
+  function fmtDuration(seconds) {
+    if (seconds === null || seconds === undefined || isNaN(Number(seconds))) return t('common.na');
+    var s = Math.max(0, Math.floor(Number(seconds)));
+    var d = Math.floor(s / 86400);
+    var h = Math.floor((s % 86400) / 3600);
+    var m = Math.floor((s % 3600) / 60);
+    var sec = s % 60;
+    var parts = [];
+    if (d > 0) parts.push(d + t('unit.d'));
+    if (d > 0 || h > 0) parts.push(h + t('unit.h'));
+    if (d > 0 || h > 0 || m > 0) parts.push(m + t('unit.m'));
+    parts.push(sec + t('unit.s'));
+    return parts.join(' ');
+  }
+
+  /* Timestamps come from the API as RFC3339 strings or as numbers (seconds or
+     milliseconds since the epoch). Anything unparseable is shown verbatim. */
+  function parseTimestamp(v) {
+    if (v === null || v === undefined || v === '') return null;
+    if (typeof v === 'number') {
+      if (!isFinite(v)) return null;
+      return new Date(v < 1e12 ? v * 1000 : v);
+    }
+    if (typeof v === 'string') {
+      var s = v.trim();
+      if (/^-?\d+(\.\d+)?$/.test(s)) {
+        var n = Number(s);
+        return new Date(n < 1e12 ? n * 1000 : n);
+      }
+      var parsed = new Date(s);
+      if (!isNaN(parsed.getTime())) return parsed;
+    }
+    return null;
+  }
+
+  /* Age of a server-supplied instant. The browser clock only supplies "now";
+     the instant itself always comes from the API response. */
+  function fmtRelative(value) {
+    var d = parseTimestamp(value);
+    if (!d) return (value === null || value === undefined || value === '') ? t('common.na') : String(value);
+    var diff = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+    if (diff < 5) return t('rel.justNow');
+    if (diff < 60) return t('rel.seconds', { n: diff });
+    if (diff < 3600) return t('rel.minutes', { n: Math.floor(diff / 60) });
+    if (diff < 86400) return t('rel.hours', { n: Math.floor(diff / 3600) });
+    return t('rel.days', { n: Math.floor(diff / 86400) });
+  }
+
+  function fmtAbsolute(value) {
+    var d = parseTimestamp(value);
+    if (!d) return (value === null || value === undefined || value === '') ? t('common.na') : String(value);
+    return d.toLocaleString(state.lang === 'zh' ? 'zh-CN' : 'en-US');
+  }
+
+  /* ---------- API access ---------- */
+  function authHeaders() {
+    return state.token ? { 'Authorization': 'Bearer ' + state.token } : {};
+  }
+
+  /* Never throws: returns {data} | {error, network} | {unauthorized}. */
+  function request(path, options) {
+    var opts = options || {};
+    var headers = authHeaders();
+    if (opts.method && opts.method !== 'GET') headers['Content-Type'] = 'application/json';
+    return fetch(path, {
+      method: opts.method || 'GET',
+      headers: headers,
+      cache: 'no-store',
+      credentials: 'same-origin'
+    }).then(function (res) {
+      return res.text().then(function (text) {
+        var body = null;
+        if (text) { try { body = JSON.parse(text); } catch (e) { body = null; } }
+        if (res.status === 401) return { unauthorized: true, status: 401 };
+        if (!res.ok) {
+          var msg = (body && body.error) ? String(body.error) : ('HTTP ' + res.status);
+          return { error: msg, status: res.status };
+        }
+        if (body === null) return { error: 'invalid JSON from ' + path, status: res.status };
+        return { data: body, status: res.status };
+      });
+    }).catch(function (err) {
+      return { error: (err && err.message) ? err.message : String(err), network: true };
+    });
+  }
+
+  /* ---------- Error banner + connection state ---------- */
+  function showError(message) {
+    var banner = el('errorBanner');
+    if (!banner) return;
+    setText(el('errorBannerText'), message);
+    banner.hidden = false;
+  }
+
+  function hideError() {
+    var banner = el('errorBanner');
+    if (banner) banner.hidden = true;
+  }
+
+  function setConnState(kind, text) {
+    var badge = el('connState');
+    var label = el('connStateText');
+    if (badge) {
+      badge.className = 'badge ' + (kind === 'ok' ? 'is-ok' : kind === 'err' ? 'is-err' : kind === 'warn' ? 'is-warn' : '');
+    }
+    if (label) label.textContent = text;
+  }
+
+  function setConnected(ok, reason) {
+    state.connected = ok;
+    if (ok) {
+      state.lastSuccessAt = Date.now();
+      setConnState('ok', t('state.connected'));
+      var banner = el('connBanner');
+      if (banner) banner.hidden = true;
+    } else {
+      setConnState('err', reason === 'unauthorized' ? t('state.unauthorized') : t('state.disconnected'));
+      var b = el('connBanner');
+      if (b) {
+        b.hidden = false;
+        setText(el('connBannerText'), t('conn.bannerDisconnected', {
+          s: POLL_MS / 1000,
+          ago: state.lastSuccessAt ? fmtRelative(new Date(state.lastSuccessAt).toISOString()) : t('footer.never')
+        }));
+      }
+    }
+  }
+
+  function renderLastUpdated() {
+    var node = el('lastUpdated');
+    if (!node) return;
+    node.textContent = state.lastSuccessAt
+      ? t('footer.lastUpdated', { ago: fmtRelative(new Date(state.lastSuccessAt).toISOString()) })
+      : t('footer.lastUpdated', { ago: t('footer.never') });
+  }
+
+  /* ---------- Auth ---------- */
+  function setUnauthorized(isUnauthorized) {
+    state.unauthorized = isUnauthorized;
+    var overlay = el('authOverlay');
+    if (overlay) overlay.hidden = !isUnauthorized;
+    var note = el('authStateNote');
+    var signOut = el('signOutBtn');
+    if (signOut) signOut.hidden = !state.token;
+
+    if (note) {
+      if (isUnauthorized) {
+        note.textContent = state.token ? t('auth.errRejected') : t('auth.noteNoToken');
+      } else if (state.lastStatus && state.lastStatus.auth_required) {
+        note.textContent = state.token ? t('auth.noteStored') : t('auth.noteRequired');
+      } else if (state.lastStatus) {
+        note.textContent = t('auth.noteNotRequired');
+      } else {
+        note.textContent = t('common.na');
+      }
+    }
+
+    if (isUnauthorized) {
+      // Nothing on screen can be trusted while the API refuses our requests.
+      state.lastStatus = null;
+      state.lastClients = null;
+      state.lastProxies = null;
+      state.uptimeBaseSeconds = null;
+      renderStatus(null);
+      renderClients(null, null);
+      renderProxies(null, null);
+      var input = el('authInput');
+      if (input) { try { input.focus(); } catch (e) {} }
+      var err = el('authError');
+      // Do not clobber an explicit "token rejected" message from a submit.
+      if (err && err.hidden) { err.textContent = t('auth.noteNoToken'); err.hidden = false; }
+    }
+  }
+
+  function handleUnauthorized() {
+    setConnected(false, 'unauthorized');
+    setUnauthorized(true);
+    showError(t('err.unauthorized'));
+  }
+
+  function submitToken(value) {
+    var token = (value || '').trim();
+    var err = el('authError');
+    if (!token) {
+      if (err) { err.textContent = t('auth.errMissing'); err.hidden = false; }
+      return;
+    }
+    state.token = token;
+    try { localStorage.setItem(TOKEN_KEY, token); } catch (e) {}
+    if (err) err.hidden = true;
+    var submit = el('authSubmit');
+    if (submit) submit.disabled = true;
+    // Probe with the new token before declaring success.
+    request('/api/status').then(function (res) {
+      if (submit) submit.disabled = false;
+      if (res.unauthorized) {
+        state.token = null;
+        try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
+        if (err) { err.textContent = t('auth.errRejected'); err.hidden = false; }
+        setUnauthorized(true);
+        return;
+      }
+      setUnauthorized(false);
+      hideError();
+      if (res.data) applyStatus(res.data);
+      poll();
+    });
+  }
+
+  function signOut() {
+    state.token = null;
+    try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
+    var note = el('authStateNote');
+    if (note) note.textContent = t('auth.noteRequired');
+    var signOutBtn = el('signOutBtn');
+    if (signOutBtn) signOutBtn.hidden = true;
+    poll();
+  }
+
+  /* ---------- Rendering — API payloads only ---------- */
+  function renderStatus(status) {
+    var s = status || {};
+    var conns = s.connections || {};
+    var proxies = s.proxies || {};
+    var traffic = s.traffic || {};
+
+    setText(el('statusVersion'), s.version);
+    setText(el('statusProtocol'), s.protocol !== undefined ? 'v' + s.protocol : null);
+    setText(el('statusEncryption'), s.encryption);
+    setText(el('statusBuildTime'), s.build_time ? fmtAbsolute(s.build_time) : null);
+    setText(el('statusCommit'), s.git_commit);
+    setText(el('statusStartedAt'), s.started_at ? fmtAbsolute(s.started_at) : null);
+    setText(el('statusAuthRequired'), s.auth_required === undefined ? null : (s.auth_required ? t('common.yes') : t('common.no')));
+
+    setText(el('metricConnActive'), s.connections ? fmtInt(conns.active) : null);
+    setText(el('metricConnTotal'), s.connections ? fmtInt(conns.total) : null);
+    setText(el('metricConnMax'), s.connections ? fmtInt(conns.max) : null);
+    setText(el('metricProxyRegistered'), s.proxies ? fmtInt(proxies.registered) : null);
+    setText(el('metricProxyStreams'), s.proxies ? fmtInt(proxies.active_streams) : null);
+
+    var hasTraffic = traffic && (traffic.bytes_in !== undefined || traffic.bytes_out !== undefined);
+    setText(el('trafficIn'), hasTraffic ? fmtBytes(traffic.bytes_in) : null);
+    setText(el('trafficOut'), hasTraffic ? fmtBytes(traffic.bytes_out) : null);
+    setText(el('trafficTotal'), hasTraffic ? fmtBytes(Number(traffic.bytes_in || 0) + Number(traffic.bytes_out || 0)) : null);
+
+    if (typeof s.uptime_seconds === 'number') {
+      state.uptimeBaseSeconds = s.uptime_seconds;
+      state.uptimeBaseAt = (window.performance && performance.now) ? performance.now() : 0;
+    } else {
+      state.uptimeBaseSeconds = null;
+    }
+    renderUptime();
+  }
+
+  /* Uptime is the server value; between polls we add only the locally measured
+     elapsed time since that value arrived, and we stop when disconnected. */
+  function renderUptime() {
+    var node = el('statusUptime');
+    if (!node) return;
+    if (state.uptimeBaseSeconds === null) { node.textContent = t('common.na'); return; }
+    var extra = 0;
+    if (state.connected && window.performance && performance.now) {
+      extra = Math.max(0, (performance.now() - state.uptimeBaseAt) / 1000);
+    }
+    node.textContent = fmtDuration(state.uptimeBaseSeconds + extra);
+  }
+
+  function renderProxies(payload, errorMessage) {
+    var body = el('proxiesBody');
+    var table = el('proxiesTable');
+    var empty = el('proxiesEmpty');
+    var count = el('proxiesCount');
+    if (!body) return;
+
+    clearNode(body);
+
+    if (errorMessage) {
+      if (table) table.hidden = true;
+      if (empty) { empty.hidden = false; empty.textContent = t('common.loadFailed', { msg: errorMessage }); }
+      if (count) count.textContent = '';
+      return;
+    }
+
+    if (!payload) {
+      // No payload and no error: we simply have not loaded anything yet.
+      if (table) table.hidden = true;
+      if (empty) { empty.hidden = false; empty.textContent = t('common.na'); }
+      if (count) count.textContent = '';
+      return;
+    }
+
+    var list = (payload.proxies) ? payload.proxies : [];
+    if (count) count.textContent = t('proxies.count', { n: fmtInt(list.length) });
+
+    if (!list.length) {
+      if (table) table.hidden = true;
+      if (empty) { empty.hidden = false; empty.textContent = t('proxies.empty'); }
+      return;
+    }
+
+    if (table) table.hidden = false;
+    if (empty) empty.hidden = true;
+
+    list.forEach(function (p) {
+      var proxy = p || {};
+      var tr = document.createElement('tr');
+      tr.appendChild(makeCell(proxy.name, 'proxies.col.name', 'id'));
+      tr.appendChild(makeCell(proxy.type, 'proxies.col.type'));
+      tr.appendChild(makeCell(proxy.local_addr, 'proxies.col.localAddr', 'id'));
+      tr.appendChild(makeCell(proxy.remote_port, 'proxies.col.remotePort', 'num'));
+      tr.appendChild(makeCell(proxy.client_id, 'proxies.col.client', 'id'));
+      tr.appendChild(makeCell(fmtInt(proxy.active_connections), 'proxies.col.activeConns', 'num'));
+      tr.appendChild(makeCell(fmtInt(proxy.total_connections), 'proxies.col.totalConns', 'num'));
+      tr.appendChild(makeCell(fmtBytes(proxy.bytes_in), 'proxies.col.bytesIn', 'num'));
+      tr.appendChild(makeCell(fmtBytes(proxy.bytes_out), 'proxies.col.bytesOut', 'num'));
+      body.appendChild(tr);
+    });
+  }
+
+  function renderClients(payload, errorMessage) {
+    var body = el('clientsBody');
+    var table = el('clientsTable');
+    var empty = el('clientsEmpty');
+    var count = el('clientsCount');
+    if (!body) return;
+
+    clearNode(body);
+
+    if (errorMessage) {
+      if (table) table.hidden = true;
+      if (empty) { empty.hidden = false; empty.textContent = t('common.loadFailed', { msg: errorMessage }); }
+      if (count) count.textContent = '';
+      return;
+    }
+
+    if (!payload) {
+      // No payload and no error: nothing has been loaded yet — do not claim 0.
+      if (table) table.hidden = true;
+      if (empty) { empty.hidden = false; empty.textContent = t('common.na'); }
+      if (count) count.textContent = '';
+      var unknown = el('metricClientCount');
+      if (unknown) unknown.textContent = t('common.na');
+      return;
+    }
+
+    var list = (payload.clients) ? payload.clients : [];
+    if (count) count.textContent = t('clients.count', { n: fmtInt(list.length) });
+    var metric = el('metricClientCount');
+    if (metric) metric.textContent = fmtInt(list.length);
+
+    if (!list.length) {
+      if (table) table.hidden = true;
+      if (empty) { empty.hidden = false; empty.textContent = t('clients.empty'); }
+      return;
+    }
+
+    if (table) table.hidden = false;
+    if (empty) empty.hidden = true;
+
+    list.forEach(function (c) {
+      var client = c || {};
+      var id = (client.id === null || client.id === undefined) ? '' : String(client.id);
+      var tr = document.createElement('tr');
+
+      tr.appendChild(makeCell(id, 'clients.col.id', 'id wrap'));
+      tr.appendChild(makeCell(client.remote_addr, 'clients.col.remoteAddr', 'id'));
+      tr.appendChild(withTitle(makeCell(fmtRelative(client.connected_at), 'clients.col.connectedAt'), fmtAbsolute(client.connected_at)));
+
+      var hb = fmtRelative(client.last_heartbeat);
+      if (client.heartbeat_seconds !== undefined && client.heartbeat_seconds !== null) {
+        hb += ' (' + t('clients.heartbeatEvery', { n: fmtInt(client.heartbeat_seconds) }) + ')';
+      }
+      tr.appendChild(withTitle(makeCell(hb, 'clients.col.lastHeartbeat'), fmtAbsolute(client.last_heartbeat)));
+
+      tr.appendChild(makeCell(client.encrypted === undefined ? null : (client.encrypted ? t('common.yes') : t('common.no')),
+                              'clients.col.encrypted'));
+      tr.appendChild(makeCell((client.proxies && client.proxies.length) ? client.proxies.join(', ') : null,
+                              'clients.col.proxies', 'wrap'));
+      tr.appendChild(makeCell(fmtInt(client.active_streams), 'clients.col.activeStreams', 'num'));
+      tr.appendChild(makeCell(fmtBytes(client.bytes_in), 'clients.col.bytesIn', 'num'));
+      tr.appendChild(makeCell(fmtBytes(client.bytes_out), 'clients.col.bytesOut', 'num'));
+
+      var actions = document.createElement('td');
+      actions.className = 'actions';
+      actions.setAttribute('data-label', t('clients.col.actions'));
+      if (id) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn-danger btn-sm';
+        btn.textContent = t('clients.disconnect');
+        btn.addEventListener('click', function () { disconnectClient(id, btn); });
+        actions.appendChild(btn);
+      } else {
+        actions.textContent = t('common.na');
+      }
+      tr.appendChild(actions);
+
+      body.appendChild(tr);
+    });
+  }
+
+  function withTitle(cell, titleText) {
+    if (titleText && titleText !== t('common.na')) cell.setAttribute('title', titleText);
+    return cell;
+  }
+
+  function renderConfig(payload, errorMessage) {
+    if (errorMessage) {
+      ['cfgBindAddr', 'cfgBindPort', 'cfgMaxConn', 'cfgEncEnabled', 'cfgEncAlgorithm', 'cfgAuthRequired']
+        .forEach(function (id) { setText(el(id), null); });
+      showError(t('err.config', { msg: errorMessage }));
+      return;
+    }
+    var cfg = payload || {};
+    var server = cfg.server || {};
+    var enc = cfg.encryption || {};
+    var dash = cfg.dashboard || {};
+
+    setText(el('cfgBindAddr'), server.bind_addr);
+    setText(el('cfgBindPort'), server.bind_port);
+    setText(el('cfgMaxConn'), server.max_connections);
+    setText(el('cfgEncEnabled'), enc.enabled === undefined ? null : (enc.enabled ? t('common.yes') : t('common.no')));
+    setText(el('cfgEncAlgorithm'), enc.algorithm);
+    setText(el('cfgAuthRequired'), dash.auth_required === undefined ? null : (dash.auth_required ? t('common.yes') : t('common.no')));
+  }
+
+  function disconnectClient(id, button) {
+    if (!window.confirm(t('clients.confirm', { id: id }))) return;
+    if (button) button.disabled = true;
+    request('/api/clients/' + encodeURIComponent(id), { method: 'DELETE' }).then(function (res) {
+      if (button) button.disabled = false;
+      if (res.unauthorized) { handleUnauthorized(); return; }
+      if (res.error) { showError(t('err.disconnect', { id: id, msg: res.error })); return; }
+      hideError();
+      poll();
+    });
+  }
+
+  /* ---------- Navigation ---------- */
+  var VIEWS = ['overview', 'proxies', 'clients', 'config'];
+
+  function setView(name) {
+    if (VIEWS.indexOf(name) === -1) name = 'overview';
+    state.view = name;
+    VIEWS.forEach(function (v) {
+      var section = el('view-' + v);
+      if (section) section.hidden = (v !== name);
+      var nav = el('nav' + v.charAt(0).toUpperCase() + v.slice(1));
+      if (nav) {
+        if (v === name) nav.setAttribute('aria-current', 'page');
+        else nav.removeAttribute('aria-current');
+      }
+    });
+    if (name === 'config') loadConfig();
+    closeSidebar();
+  }
+
+  function isMobileNav() {
+    return window.matchMedia('(max-width: 860px)').matches;
+  }
+
+  function openSidebar() {
+    var sidebar = el('sidebar'), scrim = el('scrim'), toggle = el('menuToggle');
+    if (sidebar) sidebar.classList.add('is-open');
+    if (scrim) scrim.hidden = false;
+    if (toggle) toggle.setAttribute('aria-expanded', 'true');
+    var first = el('navOverview');
+    if (first) { try { first.focus(); } catch (e) {} }
+  }
+
+  function closeSidebar() {
+    var sidebar = el('sidebar'), scrim = el('scrim'), toggle = el('menuToggle');
+    if (sidebar) sidebar.classList.remove('is-open');
+    if (scrim) scrim.hidden = true;
+    if (toggle) toggle.setAttribute('aria-expanded', 'false');
+  }
+
+  function toggleSidebar() {
+    var sidebar = el('sidebar');
+    if (sidebar && sidebar.classList.contains('is-open')) closeSidebar();
+    else openSidebar();
+  }
+
+  /* ---------- i18n application ---------- */
+  function applyI18n() {
+    document.documentElement.lang = (state.lang === 'zh') ? 'zh-CN' : 'en';
+    var nodes = document.querySelectorAll('[data-i18n]');
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].textContent = t(nodes[i].getAttribute('data-i18n'));
+    }
+    var labels = document.querySelectorAll('[data-i18n-label]');
+    for (var j = 0; j < labels.length; j++) {
+      labels[j].setAttribute('aria-label', t(labels[j].getAttribute('data-i18n-label')));
+    }
+    var holders = document.querySelectorAll('[data-i18n-placeholder]');
+    for (var k = 0; k < holders.length; k++) {
+      holders[k].setAttribute('placeholder', t(holders[k].getAttribute('data-i18n-placeholder')));
+    }
+  }
+
+  /* ---------- Polling ---------- */
+  function applyStatus(data) {
+    state.lastStatus = data;
+    // The new uptime value must be in state before renderStatus() draws it.
+    renderStatus(data);
+    renderLastUpdated();
+  }
+
+  function poll() {
+    return Promise.all([
+      request('/api/status'),
+      request('/api/clients'),
+      request('/api/proxies')
+    ]).then(function (results) {
+      var statusRes = results[0], clientsRes = results[1], proxiesRes = results[2];
+
+      if (statusRes.unauthorized || clientsRes.unauthorized || proxiesRes.unauthorized) {
+        handleUnauthorized();
+        return;
+      }
+
+      if (statusRes.error) {
+        setConnected(false);
+        showError(t('err.status', { msg: statusRes.error }));
+      } else {
+        setConnected(true);
+        applyStatus(statusRes.data);
+        setUnauthorized(false);
+      }
+
+      renderLastUpdated();
+
+      if (clientsRes.error) {
+        renderClients(null, clientsRes.error);
+        showError(t('err.clients', { msg: clientsRes.error }));
+      } else {
+        state.lastClients = clientsRes.data;
+        renderClients(clientsRes.data, null);
+      }
+
+      if (proxiesRes.error) {
+        renderProxies(null, proxiesRes.error);
+        showError(t('err.proxies', { msg: proxiesRes.error }));
+      } else {
+        state.lastProxies = proxiesRes.data;
+        renderProxies(proxiesRes.data, null);
+      }
+    });
+  }
+
+  function loadConfig() {
+    var btn = el('configRefresh');
+    if (btn) btn.disabled = true;
+    return request('/api/config').then(function (res) {
+      if (btn) btn.disabled = false;
+      if (res.unauthorized) { handleUnauthorized(); return; }
+      if (res.error) { renderConfig(null, res.error); return; }
+      hideError();
+      renderConfig(res.data, null);
+    });
+  }
+
+  /* ---------- Wiring ---------- */
+  function loadStoredState() {
+    try {
+      var storedToken = localStorage.getItem(TOKEN_KEY);
+      if (storedToken) state.token = storedToken;
+      var storedLang = localStorage.getItem(LANG_KEY);
+      if (storedLang && I18N[storedLang]) state.lang = storedLang;
+    } catch (e) { /* storage may be blocked; the dashboard still works */ }
+  }
+
+  function init() {
+    checkDictionaries();
+    loadStoredState();
+
+    var langSelect = el('langSelect');
+    if (langSelect) {
+      langSelect.value = state.lang;
+      langSelect.addEventListener('change', function () {
+        state.lang = I18N[langSelect.value] ? langSelect.value : 'en';
+        try { localStorage.setItem(LANG_KEY, state.lang); } catch (e) {}
+        applyI18n();
+        renderStatus(state.lastStatus);
+        renderClients(state.lastClients, null);
+        renderProxies(state.lastProxies, null);
+        renderLastUpdated();
+        setUnauthorized(state.unauthorized);
+        setConnState(state.connected ? 'ok' : 'err',
+                     state.connected ? t('state.connected')
+                                     : (state.unauthorized ? t('state.unauthorized') : t('state.disconnected')));
+      });
+    }
+
+    var toggle = el('menuToggle');
+    if (toggle) toggle.addEventListener('click', toggleSidebar);
+    var scrim = el('scrim');
+    if (scrim) scrim.addEventListener('click', closeSidebar);
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape') closeSidebar();
+    });
+    window.addEventListener('resize', function () { if (!isMobileNav()) closeSidebar(); });
+
+    VIEWS.forEach(function (v) {
+      var nav = el('nav' + v.charAt(0).toUpperCase() + v.slice(1));
+      if (nav) nav.addEventListener('click', function () { setView(v); });
+    });
+
+    var dismiss = el('errorBannerDismiss');
+    if (dismiss) dismiss.addEventListener('click', hideError);
+
+    var form = el('authForm');
+    if (form) form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      submitToken(el('authInput') ? el('authInput').value : '');
+    });
+
+    var signOutBtn = el('signOutBtn');
+    if (signOutBtn) signOutBtn.addEventListener('click', signOut);
+
+    var cfgBtn = el('configRefresh');
+    if (cfgBtn) cfgBtn.addEventListener('click', loadConfig);
+
+    setView('overview');
+    applyI18n();
+    setConnState('warn', t('state.connecting'));
+    if (!state.token) setUnauthorized(false);
+    renderLastUpdated();
+
+    poll();
+    setInterval(poll, POLL_MS);
+    setInterval(renderUptime, 1000);
+    setInterval(renderLastUpdated, 1000);
+
+    // Do not hammer the API while the tab is hidden; refresh on return.
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) poll();
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
 </body>
 </html>
