@@ -151,9 +151,9 @@ func (c *client) rendezvousAddr() (net.Addr, error) {
 		return nil, errors.New("the server does not offer hole punching (server.p2p_port is not set)")
 	}
 
-	host, _, err := net.SplitHostPort(c.cfg.Client.ServerAddr)
+	host, _, err := net.SplitHostPort(c.serverAddr())
 	if err != nil {
-		return nil, fmt.Errorf("client.server_addr %q is not host:port", c.cfg.Client.ServerAddr)
+		return nil, fmt.Errorf("client.server_addr %q is not host:port", c.serverAddr())
 	}
 	addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {

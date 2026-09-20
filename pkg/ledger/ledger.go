@@ -276,42 +276,57 @@ func (l *Ledger) headLocked() string {
 	return l.entries[len(l.entries)-1].Hash
 }
 
+// ReadFile parses a JSONL ledger file into entries without verifying it. Pair it
+// with Verify to check a chain that arrived from somewhere else.
+func ReadFile(path string) ([]Entry, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("ledger: read %s: %w", path, err)
+	}
+	entries, _, err := parse(data)
+	return entries, err
+}
+
 // load parses a JSONL file and adopts it when the chain verifies.
 func (l *Ledger) load(data []byte) error {
+	entries, lines, err := parse(data)
+	if err != nil {
+		return fmt.Errorf("ledger: %s: %w", l.path, err)
+	}
+	verified, err := verifyChain(entries, l.pub)
+	if err != nil {
+		return fmt.Errorf("ledger: %s: line %d: %w", l.path, lines[verified], err)
+	}
+
+	l.entries = entries
+	return nil
+}
+
+// parse decodes JSONL entries, skipping blank lines and returning the file line
+// number each entry came from so a failure can be reported against the file the
+// operator has to edit.
+func parse(data []byte) ([]Entry, []int, error) {
 	lines := strings.Split(string(data), "\n")
 	// A file written by Append ends with a newline, which leaves a final empty
 	// element that is not an entry.
-	if lines[len(lines)-1] == "" {
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
 
 	entries := make([]Entry, 0, len(lines))
-	source := make([]int, 0, len(lines))
+	numbers := make([]int, 0, len(lines))
 	for i, line := range lines {
 		if line == "" {
 			continue
 		}
 		var entry Entry
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			return fmt.Errorf("ledger: %s: line %d: %w", l.path, i+1, err)
+			return nil, nil, fmt.Errorf("line %d: %w", i+1, err)
 		}
 		entries = append(entries, entry)
-		source = append(source, i+1)
+		numbers = append(numbers, i+1)
 	}
-
-	verified, err := verifyChain(entries, l.pub)
-	if err != nil {
-		line := 0
-		if verified < len(source) {
-			line = source[verified]
-		} else if len(source) > 0 {
-			line = source[len(source)-1]
-		}
-		return fmt.Errorf("ledger: %s: line %d: %w", l.path, line, err)
-	}
-
-	l.entries = entries
-	return nil
+	return entries, numbers, nil
 }
 
 // Verify checks a chain end to end: every hash links to the previous entry,

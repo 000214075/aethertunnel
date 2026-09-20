@@ -46,13 +46,15 @@ type Server struct {
 
 	startedAt time.Time
 
-	sessions *SessionManager
-	tunnels  *TunnelManager
-	metrics  *Metrics
-	acl      *AccessControl
-	auditor  *Auditor
-	vhost    *vhostSet
-	p2p      *p2pRendezvous
+	sessions  *SessionManager
+	tunnels   *TunnelManager
+	metrics   *Metrics
+	acl       *AccessControl
+	auditor   *Auditor
+	ledger    *ledgerStore
+	vhost     *vhostSet
+	p2p       *p2pRendezvous
+	directory *directory
 
 	tlsConfig  *tls.Config
 	identities []ed25519.PublicKey
@@ -86,6 +88,17 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open audit log: %w", err)
 	}
+	bandwidth, err := openLedger(cfg, logger)
+	if err != nil {
+		_ = auditor.Close()
+		return nil, err
+	}
+	dir, err := openDirectory(cfg, logger)
+	if err != nil {
+		_ = bandwidth.Close()
+		_ = auditor.Close()
+		return nil, err
+	}
 	tlsConfig, err := cfg.ServerTLSConfig()
 	if err != nil {
 		return nil, err
@@ -106,13 +119,16 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		metrics:    newMetrics(),
 		acl:        acl,
 		auditor:    auditor,
+		ledger:     bandwidth,
 		tlsConfig:  tlsConfig,
 		identities: identities,
 		nonces:     crypto.NewNonceCache(0),
+		directory:  dir,
 	}
 	sessions := newSessionManager(cfg.Server.MaxConnections)
 	s.sessions = sessions
 	s.tunnels = newTunnelManager(cfg, logger, cipher, sessions, s.metrics)
+	s.tunnels.directory = dir
 
 	s.vhost = newVhostSet(cfg, logger, s.metrics)
 	s.tunnels.vhost = s.vhost
@@ -190,7 +206,11 @@ func (s *Server) Run(ctx context.Context) error {
 		conn, err := listener.Accept()
 		if err != nil {
 			if s.closing.Load() {
+				// Every connection handler runs its teardown here, which is where
+				// the last ledger entries and DHT withdrawals happen, so the
+				// stores are only closed once they have all finished.
 				s.wg.Wait()
+				s.closeStores()
 				return nil
 			}
 			s.logger.Printf("accept error: %v", err)
@@ -249,6 +269,19 @@ func (s *Server) Shutdown(reason string) {
 	s.sessions.CloseAll(reason)
 	if err := s.auditor.Close(); err != nil {
 		s.logger.Printf("closing the audit log: %v", err)
+	}
+}
+
+// closeStores releases the ledgers and directories that connection teardown writes
+// to. It is called once the last handler has returned, because a handler that is
+// still tearing down a session appends a ledger entry and withdraws the session's
+// proxies from the DHT. It is safe to call more than once.
+func (s *Server) closeStores() {
+	if err := s.ledger.Close(); err != nil {
+		s.logger.Printf("closing the bandwidth ledger: %v", err)
+	}
+	if err := s.directory.Close(); err != nil {
+		s.logger.Printf("closing the DHT node: %v", err)
 	}
 }
 
@@ -469,6 +502,9 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 		s.tunnels.RemoveSessionTunnels(session, "client disconnected")
 		s.sessions.Remove(session.ID)
 		session.Close("control connection ended")
+		// The ledger entry is written after the member endpoints are gone, so it
+		// covers the whole life of the proxy and is written once.
+		s.recordSessionUsage(session)
 		s.auditor.Record(AuditEvent{
 			Event: EventClientGone, ClientID: session.ID, Remote: session.RemoteAddr,
 			Outcome: "closed",

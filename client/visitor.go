@@ -66,7 +66,7 @@ func (c *client) serveStreamVisitor(ctx context.Context, cfg config.VisitorConfi
 		return
 	}
 	c.logger.Printf("visitor %q (%s) listening on %s -> %s/%s",
-		cfg.Name, cfg.Type, listener.Addr(), c.cfg.Client.ServerAddr, cfg.ServerName)
+		cfg.Name, cfg.Type, listener.Addr(), c.serverAddr(), cfg.ServerName)
 
 	go func() {
 		<-ctx.Done()
@@ -107,7 +107,7 @@ func (c *client) serveUDPVisitor(ctx context.Context, cfg config.VisitorConfig) 
 		return
 	}
 	c.logger.Printf("visitor %q (%s) listening on %s -> %s/%s",
-		cfg.Name, cfg.Type, socket.LocalAddr(), c.cfg.Client.ServerAddr, cfg.ServerName)
+		cfg.Name, cfg.Type, socket.LocalAddr(), c.serverAddr(), cfg.ServerName)
 
 	pump := &flynet.DatagramPump{
 		Socket: socket,
@@ -295,7 +295,7 @@ func (c *client) dialVisitor(cfg config.VisitorConfig) (net.Conn, *protocol.Fram
 	dialTimeout := time.Duration(c.cfg.Client.DialTimeoutSecs) * time.Second
 	conn, err := c.dialServer()
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("dial %s: %w", c.cfg.Client.ServerAddr, err)
+		return nil, nil, nil, fmt.Errorf("dial %s: %w", c.serverAddr(), err)
 	}
 	_ = conn.SetDeadline(time.Now().Add(dialTimeout))
 

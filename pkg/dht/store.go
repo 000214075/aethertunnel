@@ -106,6 +106,13 @@ func (s *valueStore) add(key, addr string, expires time.Time) {
 	s.entries[key] = entry{value: []byte(strings.Join(list, "\n")), expires: expires, local: prev.local}
 }
 
+// remove drops a slot, which stops this node from republishing it.
+func (s *valueStore) remove(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.entries, key)
+}
+
 // localRecords lists the unexpired records this node owns.
 func (s *valueStore) localRecords() []storedRecord {
 	s.mu.Lock()

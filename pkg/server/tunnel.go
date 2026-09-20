@@ -180,8 +180,9 @@ type TunnelManager struct {
 	sessions *SessionManager
 	metrics  *Metrics
 
-	vhost *vhostSet
-	p2p   *p2pRendezvous
+	vhost     *vhostSet
+	p2p       *p2pRendezvous
+	directory *directory
 }
 
 func newTunnelManager(cfg *config.Config, logger *log.Logger, cipher *crypto.Cipher, sessions *SessionManager, metrics *Metrics) *TunnelManager {
@@ -258,6 +259,12 @@ func (m *TunnelManager) Register(session *Session, spec protocol.ProxySpec) (*Tu
 	if members := group.memberCount(); members > 1 {
 		m.logger.Printf("proxy %q: session %s joined the pool (%d members, strategy %s)",
 			spec.Name, session.ID, members, group.strategy)
+	} else {
+		// The record names the address a visitor dials, so it is written when the
+		// proxy first appears rather than once per pool member. A DHT failure is
+		// logged by the directory and is not fatal: the proxy still works for a
+		// visitor that knows the address.
+		_ = m.directory.publish(spec)
 	}
 	return member, nil
 }
@@ -293,6 +300,9 @@ func (m *TunnelManager) Unregister(name string, session *Session, reason string)
 				delete(m.groups, name)
 			}
 			m.mu.Unlock()
+			// The last member is gone, so the name is no longer served here.
+			// Copies already replicated to DHT peers lapse within one TTL.
+			m.directory.withdraw(name)
 		}
 		if session != nil {
 			return

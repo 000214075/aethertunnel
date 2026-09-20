@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +26,8 @@ import (
 //	GET    /api/clients         connected clients
 //	GET    /api/proxies         published tunnels
 //	GET    /api/config          redacted configuration summary
+//	GET    /api/ledger          signed bandwidth ledger and its public key
+//	GET    /api/dht             DHT node identity and the proxies it announces
 //	DELETE /api/clients/{id}    disconnect one client
 //
 // When [dashboard].token is set, everything except /api/health requires
@@ -61,6 +64,8 @@ func NewDashboard(srv *Server, logger *log.Logger) (*Dashboard, error) {
 	d.handle("GET /api/clients", d.withAuth(true, d.apiClients))
 	d.handle("GET /api/proxies", d.withAuth(true, d.apiProxies))
 	d.handle("GET /api/config", d.withAuth(true, d.apiConfig))
+	d.handle("GET /api/ledger", d.withAuth(true, d.apiLedger))
+	d.handle("GET /api/dht", d.withAuth(true, d.apiDHT))
 	d.handle("DELETE /api/clients/", d.withAuth(true, d.apiDisconnect))
 	// Health probes are always public and cheap: orchestrators poll them often.
 	d.handle("GET /healthz", d.withAuth(false, d.healthz))
@@ -323,8 +328,39 @@ func (d *Dashboard) apiConfig(w http.ResponseWriter, r *http.Request) {
 			"port":          d.cfg.Dashboard.Port,
 			"auth_required": d.cfg.Dashboard.Token != "",
 		},
+		"ledger": map[string]any{
+			"enabled": d.cfg.Ledger.Enabled,
+			"path":    d.cfg.Ledger.Path,
+		},
+		"dht":                d.server.directory.summary(),
 		"proxies_configured": len(d.cfg.Proxies),
 	})
+}
+
+// apiLedger publishes the bandwidth ledger: the signing public key an auditor
+// needs, the chain head, and the most recent entries. The entries are already
+// signed, so a reader can verify the response without any further access to the
+// server. ?limit= caps how many of the most recent entries are returned.
+func (d *Dashboard) apiLedger(w http.ResponseWriter, r *http.Request) {
+	limit := 200
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "limit must be a non-negative integer"})
+			return
+		}
+		if parsed > 5000 {
+			parsed = 5000
+		}
+		limit = parsed
+	}
+	writeJSON(w, http.StatusOK, d.server.renderLedger(limit))
+}
+
+// apiDHT reports the DHT node this server runs and the proxies it announces, so an
+// operator can see whether a proxy is findable by name.
+func (d *Dashboard) apiDHT(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, d.server.directory.summary())
 }
 
 // apiDisconnect closes one client. Closing the session also stops its tunnels.

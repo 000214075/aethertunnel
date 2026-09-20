@@ -187,6 +187,20 @@ func (t *Table) Put(ctx context.Context, key string, value []byte) error {
 	return nil
 }
 
+// Forget drops the value stored under key on this node.
+//
+// Only the local copy is removed, so the key stops being republished and expires
+// everywhere else within one TTL. The protocol has no remote delete: a value that
+// has already been replicated to peers cannot be recalled.
+func (t *Table) Forget(key string) error {
+	if err := t.ready(); err != nil {
+		return err
+	}
+	id := keyFor(nsValue, key)
+	t.store.remove(storeKey(nsValue, id))
+	return nil
+}
+
 // Get looks a value up iteratively, preferring locally stored values and
 // falling back to a network lookup.
 func (t *Table) Get(ctx context.Context, key string) ([]byte, error) {

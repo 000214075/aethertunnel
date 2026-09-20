@@ -13,6 +13,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"strings"
@@ -20,6 +21,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/aethertunnel/aethertunnel/pkg/crypto"
+	"github.com/aethertunnel/aethertunnel/pkg/dht"
+	"github.com/aethertunnel/aethertunnel/pkg/discovery"
 )
 
 // ServerConfig is the [server] section.
@@ -278,6 +281,59 @@ type AuditConfig struct {
 	MaxBytes int64 `toml:"max_bytes"`
 }
 
+// LedgerConfig is the [ledger] section: a signed, hash-chained record of the
+// bandwidth every client used.
+//
+// Each entry commits to the one before it and is signed with an Ed25519 key, so an
+// operator can publish the chain and anyone holding only the public key can check
+// that it was not altered or truncated. The key file holds the private seed and is
+// generated on first use.
+type LedgerConfig struct {
+	Enabled    bool   `toml:"enabled"`
+	Path       string `toml:"path"`
+	SigningKey string `toml:"signing_key_file"`
+}
+
+// DHTConfig is the [dht] section: a Kademlia distributed hash table over UDP that
+// carries the directory of published proxies.
+//
+// A server publishes one record per published proxy, naming the address a client
+// should dial for it. A client resolves that name instead of being configured with
+// an address, so a proxy can move between servers without every visitor's
+// configuration changing. The same node type serves both roles.
+type DHTConfig struct {
+	Enabled bool `toml:"enabled"`
+	// ListenAddr is the UDP address the node binds. Empty selects DefaultDHTAddr.
+	ListenAddr string `toml:"listen_addr"`
+	// Bootstrap lists DHT nodes to contact on start. An empty list makes the node
+	// a one-node table, which still resolves the records it publishes itself.
+	Bootstrap []string `toml:"bootstrap"`
+	// NodeID is a 40-character hex identifier. Empty selects a random one, which
+	// changes on every restart.
+	NodeID string `toml:"node_id"`
+	// Namespace prefixes every key, so two deployments can share one DHT.
+	Namespace string `toml:"namespace"`
+	// TTLSeconds is how long the DHT keeps a record. Zero selects one hour.
+	TTLSeconds int `toml:"ttl_seconds"`
+	// AnnounceTTLSeconds is how long a reader honours an announcement. Zero
+	// selects 90 seconds.
+	AnnounceTTLSeconds int `toml:"announce_ttl_seconds"`
+	// RepublishSeconds is how often live announcements are rewritten. Zero selects
+	// a third of AnnounceTTLSeconds.
+	RepublishSeconds int `toml:"republish_seconds"`
+	// LookupTimeoutSeconds bounds one resolution. Zero selects five seconds.
+	LookupTimeoutSeconds int `toml:"lookup_timeout_seconds"`
+	// AdvertiseHost is the host a client is told to dial for a proxy this server
+	// publishes. It carries no port: the port is the one that serves each proxy,
+	// which is the control port, a shared http or https listener, or the proxy's
+	// own remote_port. Empty uses server.bind_addr, which is wrong behind NAT or
+	// a load balancer. It applies to the server role.
+	AdvertiseHost string `toml:"advertise_host"`
+	// Discover is the proxy name a client resolves when client.server_addr is
+	// empty. It applies to the client role.
+	Discover string `toml:"discover"`
+}
+
 // ObfuscationConfig is the [obfuscation] section. Padding hides exact frame
 // lengths; it does not make the traffic look like TLS.
 type ObfuscationConfig struct {
@@ -312,6 +368,8 @@ type Config struct {
 	Obfuscation ObfuscationConfig `toml:"obfuscation"`
 	Metrics     MetricsConfig     `toml:"metrics"`
 	Audit       AuditConfig       `toml:"audit"`
+	Ledger      LedgerConfig      `toml:"ledger"`
+	DHT         DHTConfig         `toml:"dht"`
 	VPN         VPNConfig         `toml:"vpn"`
 	Proxies     []ProxyConfig     `toml:"proxies"`
 	Visitors    []VisitorConfig   `toml:"visitors"`
@@ -394,6 +452,31 @@ func (c *Config) applyDefaults() {
 	if c.Audit.MaxBytes == 0 {
 		c.Audit.MaxBytes = 32 << 20
 	}
+	if c.Ledger.Enabled {
+		if c.Ledger.Path == "" {
+			c.Ledger.Path = "aethertunnel-ledger.jsonl"
+		}
+		if c.Ledger.SigningKey == "" {
+			c.Ledger.SigningKey = "aethertunnel-ledger.key"
+		}
+	}
+	if c.DHT.Enabled {
+		if c.DHT.ListenAddr == "" {
+			c.DHT.ListenAddr = DefaultDHTAddr
+		}
+		if c.DHT.Namespace == "" {
+			c.DHT.Namespace = DefaultDHTNamespace
+		}
+		if c.DHT.AnnounceTTLSeconds == 0 {
+			c.DHT.AnnounceTTLSeconds = 90
+		}
+		if c.DHT.RepublishSeconds == 0 {
+			c.DHT.RepublishSeconds = c.DHT.AnnounceTTLSeconds / 3
+		}
+		if c.DHT.LookupTimeoutSeconds == 0 {
+			c.DHT.LookupTimeoutSeconds = 5
+		}
+	}
 	if c.Obfuscation.Enabled && c.Obfuscation.PadTo == 0 {
 		c.Obfuscation.PadTo = 256
 	}
@@ -428,6 +511,44 @@ const (
 
 // MaxMultipath bounds [[proxies]].multipath.
 const MaxMultipath = 8
+
+// Defaults for the [dht] section. The listen address is a fixed port so that a
+// node can be bootstrapped by address without first being told which port it
+// chose.
+const (
+	DefaultDHTAddr      = "0.0.0.0:7001"
+	DefaultDHTNamespace = "aethertunnel"
+)
+
+// DHTAddr is the address the DHT node binds.
+func (c *Config) DHTAddr() string { return c.DHT.ListenAddr }
+
+// DHTNodeID parses [dht].node_id.
+func (c *Config) DHTNodeID() (dht.ID, error) {
+	if c.DHT.NodeID == "" {
+		return dht.ID{}, nil
+	}
+	id, err := dht.IDFromString(c.DHT.NodeID)
+	if err != nil {
+		return dht.ID{}, fmt.Errorf("dht.node_id: %w", err)
+	}
+	return id, nil
+}
+
+// DHTSettings maps the section onto the discovery package's configuration.
+func (c *Config) DHTSettings(logger *log.Logger) discovery.Config {
+	return discovery.Config{
+		ListenAddr:        c.DHT.ListenAddr,
+		Bootstrap:         c.DHT.Bootstrap,
+		NodeID:            c.DHT.NodeID,
+		Namespace:         c.DHT.Namespace,
+		TTL:               time.Duration(c.DHT.TTLSeconds) * time.Second,
+		AnnounceTTL:       time.Duration(c.DHT.AnnounceTTLSeconds) * time.Second,
+		RepublishInterval: time.Duration(c.DHT.RepublishSeconds) * time.Second,
+		LookupTimeout:     time.Duration(c.DHT.LookupTimeoutSeconds) * time.Second,
+		Logger:            logger,
+	}
+}
 
 // EncryptionPassphrase returns the passphrase used for key derivation. An empty
 // [encryption].passphrase falls back to the auth token, so enabling encryption
@@ -569,10 +690,12 @@ func (c *Config) Validate(role string) error {
 			c.Warnings = append(c.Warnings, "server.auth_token is short or a well-known placeholder; use at least 16 random characters")
 		}
 	case RoleClient:
-		if c.Client.ServerAddr == "" {
-			problems = append(problems, "client.server_addr is required")
-		} else if _, _, err := splitHostPort(c.Client.ServerAddr); err != nil {
-			problems = append(problems, fmt.Sprintf("client.server_addr %q is not host:port", c.Client.ServerAddr))
+		if c.Client.ServerAddr == "" && c.DHT.Discover == "" {
+			problems = append(problems, "client.server_addr is required, unless dht.enabled and dht.discover resolve the server address from the DHT")
+		} else if c.Client.ServerAddr != "" {
+			if _, _, err := splitHostPort(c.Client.ServerAddr); err != nil {
+				problems = append(problems, fmt.Sprintf("client.server_addr %q is not host:port", c.Client.ServerAddr))
+			}
 		}
 		if c.Client.AuthToken == "" {
 			problems = append(problems, "client.auth_token is required")
@@ -674,6 +797,81 @@ func (c *Config) Validate(role string) error {
 	}
 	if c.VPN.Enabled {
 		c.Warnings = append(c.Warnings, "vpn.enabled is true but the VPN data path is not implemented in this version; it will be ignored")
+	}
+
+	switch {
+	case c.Ledger.Enabled && role == RoleClient:
+		c.Warnings = append(c.Warnings, "ledger.enabled has no effect in a client configuration: the bandwidth ledger is kept by the server")
+	case c.Ledger.Enabled:
+		if c.Ledger.Path == "" {
+			problems = append(problems, "ledger.enabled is true but ledger.path is empty")
+		}
+		if c.Ledger.SigningKey == "" {
+			problems = append(problems, "ledger.enabled is true but ledger.signing_key_file is empty")
+		}
+	}
+
+	if c.DHT.Enabled {
+		if _, _, err := net.SplitHostPort(c.DHT.ListenAddr); err != nil {
+			problems = append(problems, fmt.Sprintf("dht.listen_addr %q is not host:port", c.DHT.ListenAddr))
+		}
+		if c.DHT.NodeID != "" {
+			if _, err := dht.IDFromString(c.DHT.NodeID); err != nil {
+				problems = append(problems, fmt.Sprintf("dht.node_id %q is not a 40-character hex identifier", c.DHT.NodeID))
+			}
+		}
+		for _, addr := range c.DHT.Bootstrap {
+			if _, _, err := net.SplitHostPort(addr); err != nil {
+				problems = append(problems, fmt.Sprintf("dht.bootstrap entry %q is not host:port", addr))
+			}
+		}
+		if c.DHT.AnnounceTTLSeconds < 0 {
+			problems = append(problems, "dht.announce_ttl_seconds cannot be negative")
+		}
+		if c.DHT.RepublishSeconds < 0 {
+			problems = append(problems, "dht.republish_seconds cannot be negative")
+		}
+		if c.DHT.RepublishSeconds > 0 && c.DHT.RepublishSeconds >= c.DHT.AnnounceTTLSeconds {
+			problems = append(problems, fmt.Sprintf(
+				"dht.republish_seconds (%d) must be shorter than dht.announce_ttl_seconds (%d), otherwise an announcement lapses before it is rewritten",
+				c.DHT.RepublishSeconds, c.DHT.AnnounceTTLSeconds))
+		}
+		if c.DHT.TTLSeconds < 0 {
+			problems = append(problems, "dht.ttl_seconds cannot be negative")
+		}
+		if c.DHT.TTLSeconds > 0 && c.DHT.TTLSeconds < c.DHT.AnnounceTTLSeconds {
+			problems = append(problems, fmt.Sprintf(
+				"dht.ttl_seconds (%d) must not be shorter than dht.announce_ttl_seconds (%d), otherwise records expire in the DHT before readers stop honouring them",
+				c.DHT.TTLSeconds, c.DHT.AnnounceTTLSeconds))
+		}
+
+		switch role {
+		case RoleServer:
+			if strings.Contains(c.DHT.AdvertiseHost, ":") {
+				problems = append(problems, fmt.Sprintf(
+					"dht.advertise_host %q contains a port: give the host only, because the port is the one that serves each proxy",
+					c.DHT.AdvertiseHost))
+			} else if c.DHT.AdvertiseHost == "" && isUnspecifiedAddr(c.Server.BindAddr) {
+				c.Warnings = append(c.Warnings,
+					"dht.advertise_host is empty and server.bind_addr is a wildcard address "+
+						"(0.0.0.0 or ::): the addresses published to the DHT will not be dialable from "+
+						"another host, so set dht.advertise_host to the address clients reach this server on")
+			}
+			if c.DHT.Discover != "" {
+				c.Warnings = append(c.Warnings, "dht.discover has no effect in a server configuration: it names the proxy a client resolves")
+			}
+		case RoleClient:
+			if c.DHT.Discover == "" {
+				c.Warnings = append(c.Warnings, "dht.enabled is true but dht.discover is empty: no proxy name is resolved, so the section has no effect")
+			} else if c.Client.ServerAddr != "" {
+				c.Warnings = append(c.Warnings, fmt.Sprintf(
+					"client.server_addr is set to %s and dht.discover to %q: the configured address is used and the DHT is not consulted",
+					c.Client.ServerAddr, c.DHT.Discover))
+			}
+			if c.DHT.AdvertiseHost != "" {
+				c.Warnings = append(c.Warnings, "dht.advertise_host has no effect in a client configuration: it describes the addresses a server publishes")
+			}
+		}
 	}
 
 	seen := map[string]bool{}
@@ -839,6 +1037,16 @@ func ValidDomain(pattern string) bool {
 
 func isLoopback(addr string) bool {
 	return addr == "127.0.0.1" || addr == "::1" || addr == "localhost"
+}
+
+// isUnspecifiedAddr reports whether a bind address accepts every interface, in
+// which case it cannot be handed to a peer as a destination.
+func isUnspecifiedAddr(addr string) bool {
+	switch addr {
+	case "", "0.0.0.0", "::", "[::]":
+		return true
+	}
+	return false
 }
 
 func isWeakToken(token string) bool {

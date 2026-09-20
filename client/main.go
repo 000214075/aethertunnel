@@ -21,6 +21,7 @@ import (
 
 	"github.com/aethertunnel/aethertunnel/pkg/config"
 	"github.com/aethertunnel/aethertunnel/pkg/crypto"
+	"github.com/aethertunnel/aethertunnel/pkg/discovery"
 	flynet "github.com/aethertunnel/aethertunnel/pkg/net"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
 )
@@ -39,6 +40,12 @@ type client struct {
 	tlsConfig *tls.Config
 	logger    *log.Logger
 
+	// resolver is the DHT node, nil unless [dht] is enabled with a discover name.
+	// target is the server address to dial: the configured one, or the one the
+	// resolver last reported.
+	resolver *discovery.Node
+	target   string
+
 	mu              sync.Mutex
 	session         string
 	p2pPort         int
@@ -47,12 +54,44 @@ type client struct {
 	registeredNames []string
 }
 
+// serverAddr is the address the next connection attempt dials.
+func (c *client) serverAddr() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.target
+}
+
+// refreshTarget re-resolves [dht].discover, so a proxy that moved to another server
+// is picked up on the next reconnect instead of requiring a restart.
+//
+// A resolution failure leaves the previous address in place: a DHT that is briefly
+// unreachable should not take a working session's replacement away.
+func (c *client) refreshTarget() {
+	if c.resolver == nil {
+		return
+	}
+	record, err := c.resolver.Resolve(c.cfg.DHT.Discover)
+	if err != nil {
+		c.logger.Printf("dht: cannot resolve %q: %v (still using %s)",
+			c.cfg.DHT.Discover, err, c.serverAddr())
+		return
+	}
+	if record.Server == c.serverAddr() {
+		return
+	}
+	c.mu.Lock()
+	c.target = record.Server
+	c.mu.Unlock()
+	c.logger.Printf("dht: %q resolves to %s (type %s)", record.Name, record.Server, record.Type)
+}
+
 func main() {
 	var (
 		showVersion = flag.Bool("version", false, "print the version and exit")
 		configPath  = flag.String("config", "", "path to the client configuration file (default client.toml)")
 		checkConfig = flag.Bool("check", false, "validate the configuration and exit")
 		showID      = flag.Bool("identity", false, "print this client's public identity key and exit")
+		discover    = flag.String("discover", "", "resolve a proxy name through the [dht] network and exit")
 	)
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [flags] [config-file]\n\n", os.Args[0])
@@ -98,6 +137,25 @@ func main() {
 		return
 	}
 
+	if *discover != "" {
+		if !cfg.DHT.Enabled {
+			logger.Fatalf("dht: -discover needs a [dht] section with enabled = true")
+		}
+		resolver, err := discovery.Start(cfg.DHTSettings(logger))
+		if err != nil {
+			logger.Fatalf("dht: %v", err)
+		}
+		defer func() { _ = resolver.Close() }()
+
+		record, err := resolver.Resolve(*discover)
+		if err != nil {
+			logger.Fatalf("dht lookup of %q failed: %v", *discover, err)
+		}
+		fmt.Printf("%s -> %s (type %s, announced %s)\n",
+			record.Name, record.Server, record.Type, record.Updated.UTC().Format(time.RFC3339))
+		return
+	}
+
 	cipher, err := cfg.Cipher(config.RoleClient)
 	if err != nil {
 		logger.Fatalf("encryption configuration: %v", err)
@@ -106,7 +164,7 @@ func main() {
 	if err != nil {
 		logger.Fatalf("transport configuration: %v", err)
 	}
-	c := &client{cfg: cfg, cipher: cipher, tlsConfig: tlsConfig, logger: logger}
+	c := &client{cfg: cfg, cipher: cipher, tlsConfig: tlsConfig, logger: logger, target: cfg.Client.ServerAddr}
 
 	if cfg.Identity.Enabled {
 		identity, err := crypto.LoadIdentity(cfg.Identity.KeyFile)
@@ -117,11 +175,30 @@ func main() {
 		logger.Printf("client identity %s (from %s)", identity.PublicKeyHex(), cfg.Identity.KeyFile)
 	}
 
+	if cfg.DHT.Enabled && cfg.DHT.Discover != "" {
+		resolver, err := discovery.Start(cfg.DHTSettings(logger))
+		if err != nil {
+			logger.Fatalf("dht: %v", err)
+		}
+		c.resolver = resolver
+		defer func() {
+			if err := resolver.Close(); err != nil {
+				logger.Printf("closing the DHT node: %v", err)
+			}
+		}()
+		logger.Printf("dht: node %s on %s, resolving %q", resolver.Self(), resolver.Addr(), cfg.DHT.Discover)
+		c.refreshTarget()
+		if c.target == "" {
+			logger.Fatalf("dht: %q did not resolve and client.server_addr is empty, so there is nothing to connect to",
+				cfg.DHT.Discover)
+		}
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	logger.Printf("AetherTunnel client %s (protocol %d) -> %s, encryption %s, %d tunnel(s), %d visitor(s) configured",
-		version, protocol.ProtocolVersion, cfg.Client.ServerAddr, cipher.Algorithm(),
+		version, protocol.ProtocolVersion, c.target, cipher.Algorithm(),
 		len(cfg.Proxies), len(cfg.Visitors))
 
 	c.run(ctx)
@@ -174,7 +251,7 @@ func (c *client) run(ctx context.Context) {
 	}
 }
 
-// jitter spreads reconnects out by ±20% so a fleet of clients does not retry in
+// jitter spreads reconnects out by 卤20% so a fleet of clients does not retry in
 // lockstep after a server restart.
 func jitter(d time.Duration) time.Duration {
 	if d <= 0 {
@@ -190,10 +267,11 @@ func (c *client) dialServer() (net.Conn, error) {
 	dialTimeout := time.Duration(c.cfg.Client.DialTimeoutSecs) * time.Second
 	dialer := &net.Dialer{Timeout: dialTimeout}
 
+	target := c.serverAddr()
 	if c.tlsConfig == nil {
-		return dialer.Dial("tcp", c.cfg.Client.ServerAddr)
+		return dialer.Dial("tcp", target)
 	}
-	return tls.DialWithDialer(dialer, "tcp", c.cfg.Client.ServerAddr, c.tlsConfig)
+	return tls.DialWithDialer(dialer, "tcp", target, c.tlsConfig)
 }
 
 // attachIdentity adds the Ed25519 assertion the server checks when
@@ -225,9 +303,12 @@ func (c *client) sessionKeyCopy() []byte {
 // session runs one control connection until it fails or ctx is cancelled.
 func (c *client) runSession(ctx context.Context) error {
 	dialTimeout := time.Duration(c.cfg.Client.DialTimeoutSecs) * time.Second
+	// Re-resolving here means a proxy that moved is followed on the next attempt,
+	// and a session that is already up keeps running on its established connection.
+	c.refreshTarget()
 	conn, err := c.dialServer()
 	if err != nil {
-		return fmt.Errorf("dial %s: %w", c.cfg.Client.ServerAddr, err)
+		return fmt.Errorf("dial %s: %w", c.serverAddr(), err)
 	}
 	defer conn.Close()
 
@@ -301,7 +382,7 @@ func (c *client) runSession(ctx context.Context) error {
 		c.logger.Printf("the server offers xtcp hole punching on udp port %d", response.P2PPort)
 	}
 
-	c.logger.Printf("connected to %s as session %s (server %s)", c.cfg.Client.ServerAddr, response.Session, response.ServerVersion)
+	c.logger.Printf("connected to %s as session %s (server %s)", c.serverAddr(), response.Session, response.ServerVersion)
 
 	if err := c.registerProxies(framer); err != nil {
 		return err
@@ -507,7 +588,7 @@ func (c *client) serveStream(session string, request protocol.DataRequest) {
 // datagram for the local UDP service, and each reply becomes one frame.
 //
 // The service is dialled as a connected UDP socket, so a reply is only accepted
-// from the address the requests were sent to — which is what a local service
+// from the address the requests were sent to 鈥?which is what a local service
 // does. The frames are already sealed individually by the framer, so no record
 // layer is layered on top.
 func (c *client) serveDatagrams(proxy string, conn net.Conn, framer *protocol.Framer, localAddr string) {
