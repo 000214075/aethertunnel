@@ -171,25 +171,32 @@ func TestDatagramPumpReportsTraffic(t *testing.T) {
 	}
 	defer socket.Close()
 
-	if got := sendAndReceive(t, socket, pump.Socket.LocalAddr(), "counted"); got != "counted" {
+	// The first datagram opens the session, and its own bytes are carried once the
+	// session is up; the second datagram then travels on the established session.
+	const first = "counted"
+	if got := sendAndReceive(t, socket, pump.Socket.LocalAddr(), first); got != first {
 		t.Fatalf("the first datagram came back as %q", got)
 	}
-
-	// The first datagram only opens the session; the counters are cleared so the
-	// bytes reported below belong to the datagrams sent after it.
-	upload.Store(0)
-	download.Store(0)
 
 	const payload = "counted-again"
 	if again := sendAndReceive(t, socket, pump.Socket.LocalAddr(), payload); again != payload {
 		t.Fatalf("the second datagram came back as %q", again)
 	}
 
-	if got := upload.Load(); got != int64(len(payload)) {
-		t.Fatalf("uploaded %d bytes, want %d", got, len(payload))
+	// A reply reaches the socket before its bytes are counted, so the totals are
+	// awaited rather than read once: reading them immediately would see the count
+	// from before the last reply was booked.
+	want := int64(len(first) + len(payload))
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && (upload.Load() < want || download.Load() < want) {
+		time.Sleep(10 * time.Millisecond)
 	}
-	if got := download.Load(); got != int64(len(payload)) {
-		t.Fatalf("downloaded %d bytes, want %d", got, len(payload))
+
+	if got := upload.Load(); got != want {
+		t.Fatalf("uploaded %d bytes, want %d", got, want)
+	}
+	if got := download.Load(); got != want {
+		t.Fatalf("downloaded %d bytes, want %d", got, want)
 	}
 }
 
