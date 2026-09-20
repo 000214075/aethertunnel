@@ -32,6 +32,11 @@ const (
 	EventACLDenied       = "acl_denied"
 	EventRateLimited     = "rate_limited"
 	EventDashboardAction = "dashboard_action"
+
+	EventVisitorAccepted = "visitor_accepted"
+	EventVisitorRejected = "visitor_rejected"
+	EventP2PDirect       = "p2p_direct"
+	EventP2PRelayed      = "p2p_relayed"
 )
 
 // Auditor writes JSON Lines audit records. A disabled auditor discards

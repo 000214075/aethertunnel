@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -32,12 +33,16 @@ var (
 )
 
 type client struct {
-	cfg    *config.Config
-	cipher *crypto.Cipher
-	logger *log.Logger
+	cfg       *config.Config
+	cipher    *crypto.Cipher
+	identity  *crypto.Identity
+	tlsConfig *tls.Config
+	logger    *log.Logger
 
 	mu              sync.Mutex
 	session         string
+	p2pPort         int
+	sessionKey      []byte
 	activeStreams   sync.WaitGroup
 	registeredNames []string
 }
@@ -87,14 +92,27 @@ func main() {
 	if err != nil {
 		logger.Fatalf("encryption configuration: %v", err)
 	}
+	tlsConfig, err := cfg.ClientTLSConfig()
+	if err != nil {
+		logger.Fatalf("transport configuration: %v", err)
+	}
+	c := &client{cfg: cfg, cipher: cipher, tlsConfig: tlsConfig, logger: logger}
 
-	c := &client{cfg: cfg, cipher: cipher, logger: logger}
+	if cfg.Identity.Enabled {
+		identity, err := crypto.LoadIdentity(cfg.Identity.KeyFile)
+		if err != nil {
+			logger.Fatalf("identity configuration: %v", err)
+		}
+		c.identity = identity
+		logger.Printf("client identity %s (from %s)", identity.PublicKeyHex(), cfg.Identity.KeyFile)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	logger.Printf("AetherTunnel client %s (protocol %d) -> %s, encryption %s, %d tunnel(s) configured",
-		version, protocol.ProtocolVersion, cfg.Client.ServerAddr, cipher.Algorithm(), len(cfg.Proxies))
+	logger.Printf("AetherTunnel client %s (protocol %d) -> %s, encryption %s, %d tunnel(s), %d visitor(s) configured",
+		version, protocol.ProtocolVersion, cfg.Client.ServerAddr, cipher.Algorithm(),
+		len(cfg.Proxies), len(cfg.Visitors))
 
 	c.run(ctx)
 	c.logger.Printf("client stopped")
@@ -104,6 +122,10 @@ func main() {
 func (c *client) run(ctx context.Context) {
 	backoff := time.Duration(c.cfg.Client.ReconnectSeconds) * time.Second
 	maxBackoff := time.Duration(c.cfg.Client.MaxReconnectSeconds) * time.Second
+
+	// Visitor listeners are independent of the control session: each visiting
+	// connection opens its own connection to the server.
+	c.runVisitors(ctx)
 
 	for {
 		if ctx.Err() != nil {
@@ -152,10 +174,48 @@ func jitter(d time.Duration) time.Duration {
 	return d + time.Duration((rand.Float64()*2-1)*delta)
 }
 
+// dialServer opens a TCP connection to the server, wrapped in TLS when
+// [transport].enable_tls is set.
+func (c *client) dialServer() (net.Conn, error) {
+	dialTimeout := time.Duration(c.cfg.Client.DialTimeoutSecs) * time.Second
+	dialer := &net.Dialer{Timeout: dialTimeout}
+
+	if c.tlsConfig == nil {
+		return dialer.Dial("tcp", c.cfg.Client.ServerAddr)
+	}
+	return tls.DialWithDialer(dialer, "tcp", c.cfg.Client.ServerAddr, c.tlsConfig)
+}
+
+// attachIdentity adds the Ed25519 assertion the server checks when
+// [identity].enabled is set there.
+func (c *client) attachIdentity(request *protocol.AuthRequest) error {
+	if c.identity == nil {
+		return nil
+	}
+	nonce, err := crypto.Nonce()
+	if err != nil {
+		return err
+	}
+	now := time.Now().Unix()
+
+	request.Identity = c.identity.PublicKey()
+	request.IdentityNonce = nonce
+	request.IdentityTime = now
+	request.IdentitySignature = c.identity.SignChallenge(nonce, now)
+	return nil
+}
+
+// sessionKeyCopy returns the current post-quantum session key, or nil.
+func (c *client) sessionKeyCopy() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]byte(nil), c.sessionKey...)
+}
+
 // session runs one control connection until it fails or ctx is cancelled.
 func (c *client) runSession(ctx context.Context) error {
 	dialTimeout := time.Duration(c.cfg.Client.DialTimeoutSecs) * time.Second
-	conn, err := net.DialTimeout("tcp", c.cfg.Client.ServerAddr, dialTimeout)
+	conn, err := c.dialServer()
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", c.cfg.Client.ServerAddr, err)
 	}
@@ -170,6 +230,19 @@ func (c *client) runSession(ctx context.Context) error {
 		Protocol:      protocol.ProtocolVersion,
 		Encryption:    c.cipher.Algorithm(),
 	}
+
+	var kexState []byte
+	if c.cfg.PostQuantum() {
+		public, state, err := crypto.HybridClientInit()
+		if err != nil {
+			return fmt.Errorf("post-quantum key agreement: %w", err)
+		}
+		request.KEX, kexState = public, state
+	}
+	if err := c.attachIdentity(&request); err != nil {
+		return fmt.Errorf("identity assertion: %w", err)
+	}
+
 	if err := framer.WriteJSON(protocol.TypeAuthRequest, request); err != nil {
 		return fmt.Errorf("send auth request: %w", err)
 	}
@@ -187,11 +260,36 @@ func (c *client) runSession(ctx context.Context) error {
 	if response.Encryption != c.cipher.Algorithm() {
 		return fmt.Errorf("encryption mismatch: server uses %q, this client uses %q", response.Encryption, c.cipher.Algorithm())
 	}
+
+	// The server switched to the agreed key right after it wrote the response,
+	// so this side does the same here.
+	var sessionKey []byte
+	if len(request.KEX) > 0 {
+		if len(response.KEX) == 0 {
+			return errors.New("the server answered without a post-quantum key, but this client requires one")
+		}
+		sessionKey, err = crypto.HybridClientFinish(kexState, response.KEX)
+		if err != nil {
+			return fmt.Errorf("post-quantum key agreement: %w", err)
+		}
+		controlCipher, err := crypto.NewCipherFromKey(c.cfg.Encryption.Algorithm, sessionKey)
+		if err != nil {
+			return fmt.Errorf("post-quantum key agreement: %w", err)
+		}
+		framer = protocol.NewFramerWithOptions(conn, controlCipher, c.framerOptions())
+		c.logger.Printf("post-quantum session key %s agreed with the server", crypto.SessionKeyID(sessionKey))
+	}
 	_ = conn.SetDeadline(time.Time{})
 
 	c.mu.Lock()
 	c.session = response.Session
+	c.p2pPort = response.P2PPort
+	c.sessionKey = sessionKey
 	c.mu.Unlock()
+
+	if response.P2PPort > 0 {
+		c.logger.Printf("the server offers xtcp hole punching on udp port %d", response.P2PPort)
+	}
 
 	c.logger.Printf("connected to %s as session %s (server %s)", c.cfg.Client.ServerAddr, response.Session, response.ServerVersion)
 
@@ -224,6 +322,13 @@ func (c *client) runSession(ctx context.Context) error {
 				continue
 			}
 			go c.serveStream(response.Session, request)
+		case protocol.TypeP2PPrepare:
+			var prepare protocol.P2PPrepare
+			if err := json.Unmarshal(msg.Payload, &prepare); err != nil {
+				c.logger.Printf("malformed p2p-prepare: %v", err)
+				continue
+			}
+			go c.servePunch(prepare)
 		case protocol.TypeProxyList:
 			c.logProxyList(msg.Payload)
 		case protocol.TypeError:
@@ -248,11 +353,14 @@ func (c *client) registerProxies(framer *protocol.Framer) error {
 			Type:       proxy.Type,
 			LocalAddr:  proxy.LocalAddr(),
 			RemotePort: proxy.RemotePort,
+			Domains:    proxy.Domains,
+			SecretKey:  proxy.SecretKey,
 		}
 		if err := framer.WriteJSON(protocol.TypeRegisterProxy, spec); err != nil {
 			return fmt.Errorf("register proxy %q: %w", proxy.Name, err)
 		}
-		c.logger.Printf("requested tunnel %q -> %s (public port %d)", proxy.Name, spec.LocalAddr, proxy.RemotePort)
+		c.logger.Printf("requested tunnel %q (%s) -> %s (public port %d)",
+			proxy.Name, proxy.Type, spec.LocalAddr, proxy.RemotePort)
 	}
 	return nil
 }
@@ -316,7 +424,7 @@ func (c *client) serveStream(session string, request protocol.DataRequest) {
 		return
 	}
 
-	conn, err := net.DialTimeout("tcp", c.cfg.Client.ServerAddr, dialTimeout)
+	conn, err := c.dialServer()
 	if err != nil {
 		c.logger.Printf("stream for %q: cannot reach the server: %v", request.Proxy, err)
 		return
@@ -349,6 +457,25 @@ func (c *client) serveStream(session string, request protocol.DataRequest) {
 	}
 	_ = conn.SetDeadline(time.Time{})
 
+	// With a post-quantum session both ends switch to a key derived from the
+	// session key and this stream's identifier, so no two streams share a
+	// keystream. Without one, the configured cipher applies.
+	streamCipher := c.cipher
+	if key := c.sessionKeyCopy(); len(key) > 0 {
+		streamKey, keyErr := crypto.StreamKey(key, request.StreamID)
+		if cipher, cipherErr := crypto.NewCipherFromKey(c.cfg.Encryption.Algorithm, streamKey); keyErr == nil && cipherErr == nil {
+			streamCipher = cipher
+			framer = protocol.NewFramerWithOptions(conn, cipher, c.framerOptions())
+		} else {
+			c.logger.Printf("stream for %q: cannot derive a stream key: %v%v", request.Proxy, keyErr, cipherErr)
+		}
+	}
+
+	if config.IsDatagramProxyType(proxy.Type) {
+		c.serveDatagrams(request.Proxy, conn, framer, proxy.LocalAddr())
+		return
+	}
+
 	local, err := net.DialTimeout("tcp", proxy.LocalAddr(), dialTimeout)
 	if err != nil {
 		c.logger.Printf("stream for %q: cannot reach the local service %s: %v", request.Proxy, proxy.LocalAddr(), err)
@@ -356,11 +483,73 @@ func (c *client) serveStream(session string, request protocol.DataRequest) {
 		return
 	}
 
-	serverSide := &cryptoStreamConn{Stream: crypto.NewStream(conn, c.cipher), conn: conn}
+	serverSide := &cryptoStreamConn{Stream: crypto.NewStream(conn, streamCipher), conn: conn}
 	idle := time.Duration(c.cfg.Client.IdleTimeoutSecs) * time.Second
 	toServer, fromServer := flynet.Pipe(local, serverSide, idle)
 	c.logger.Printf("stream for %q finished (sent %d bytes to the server, received %d)",
 		request.Proxy, toServer, fromServer)
+}
+
+// serveDatagrams relays a datagram stream: each TypeUDPPacket frame carries one
+// datagram for the local UDP service, and each reply becomes one frame.
+//
+// The service is dialled as a connected UDP socket, so a reply is only accepted
+// from the address the requests were sent to — which is what a local service
+// does. The frames are already sealed individually by the framer, so no record
+// layer is layered on top.
+func (c *client) serveDatagrams(proxy string, conn net.Conn, framer *protocol.Framer, localAddr string) {
+	defer conn.Close()
+
+	local, err := net.Dial("udp", localAddr)
+	if err != nil {
+		c.logger.Printf("stream for %q: cannot reach the local service %s: %v", proxy, localAddr, err)
+		return
+	}
+	defer local.Close()
+
+	done := make(chan struct{}, 2)
+
+	go func() {
+		defer func() { done <- struct{}{} }()
+		for {
+			msg, err := framer.ReadFrame()
+			if err != nil {
+				return
+			}
+			if msg.Type != protocol.TypeUDPPacket {
+				continue
+			}
+			if _, err := local.Write(msg.Payload); err != nil {
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer func() { done <- struct{}{} }()
+		buf := make([]byte, 65535)
+		idle := time.Duration(c.cfg.Client.IdleTimeoutSecs) * time.Second
+		for {
+			if idle > 0 {
+				_ = local.SetReadDeadline(time.Now().Add(idle))
+			}
+			n, err := local.Read(buf)
+			if err != nil {
+				return
+			}
+			if err := framer.WriteFrame(&protocol.Message{
+				Type:    protocol.TypeUDPPacket,
+				Payload: buf[:n],
+			}); err != nil {
+				return
+			}
+		}
+	}()
+
+	<-done
+	_ = conn.Close()
+	_ = local.Close()
+	<-done
 }
 
 func (c *client) findProxy(name string) (config.ProxyConfig, error) {

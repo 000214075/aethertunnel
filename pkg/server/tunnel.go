@@ -1,10 +1,12 @@
 package server
 
 import (
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log"
 	"net"
+	"net/http/httputil"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -18,22 +20,38 @@ import (
 
 // Tunnel is one proxy published by a client.
 //
-// When the client asks for a remote port the server binds it here; every visit to
-// that port is matched with a fresh data connection from the client, which is what
-// makes a client behind NAT reachable. The v1 code never bound the remote port and
-// dialled the server's own loopback instead, so no traffic could ever flow.
+// What the server binds depends on the proxy type: a tcp tunnel gets its own
+// listening port, a udp tunnel its own datagram socket, an http/https tunnel a
+// share of the shared virtual-host listener, and a private tunnel (stcp, sudp,
+// xtcp) nothing at all — it is reachable only by a visitor that presents the
+// secret key.
 type Tunnel struct {
 	Name       string
 	Spec       protocol.ProxySpec
+	Type       string
 	RemotePort int
-	Session    *Session
+	Domains    []string
+	SecretKey  string
+	// AuthMethod is "secret" or "nizk".
+	AuthMethod string
+	// SecretPublicKey is g^x for the proxy's secret key, published so a visitor
+	// can prove knowledge of x without sending it.
+	SecretPublicKey []byte
+	Session         *Session
 
 	logger      *log.Logger
 	cipher      *crypto.Cipher
 	metrics     *Metrics
-	listener    net.Listener
 	idleTimeout time.Duration
 	dialTimeout time.Duration
+
+	listener net.Listener // tcp
+	packet   net.PacketConn
+	pump     *flynet.DatagramPump
+	vhost    *vhostBinding
+
+	proxyOnce sync.Once
+	proxy     *httputil.ReverseProxy
 
 	Active   atomic.Int64
 	Total    atomic.Int64
@@ -44,13 +62,21 @@ type Tunnel struct {
 	done chan struct{}
 }
 
+// Private reports whether the tunnel is reached through a visitor connection
+// instead of a public port.
+func (t *Tunnel) Private() bool { return config.IsPrivateProxyType(t.Type) }
+
 // Addr returns the address the tunnel is published on, or "" when it has no
-// public port.
+// public address.
 func (t *Tunnel) Addr() string {
-	if t.listener == nil {
+	switch {
+	case t.listener != nil:
+		return t.listener.Addr().String()
+	case t.packet != nil:
+		return t.packet.LocalAddr().String()
+	default:
 		return ""
 	}
-	return t.listener.Addr().String()
 }
 
 // Close stops accepting new visits and unblocks anything waiting on this tunnel.
@@ -60,11 +86,75 @@ func (t *Tunnel) Close(reason string) {
 		if t.listener != nil {
 			_ = t.listener.Close()
 		}
+		if t.packet != nil {
+			_ = t.packet.Close()
+		}
+		if t.pump != nil {
+			t.pump.Shutdown()
+		}
+		if t.vhost != nil {
+			t.vhost.remove()
+		}
 		t.logger.Printf("tunnel %q closed (%s)", t.Name, reason)
 	})
 }
 
-// acceptLoop publishes the tunnel until it is closed.
+// matchesSecret compares a visitor's secret with the tunnel's in constant time.
+func (t *Tunnel) matchesSecret(presented string) bool {
+	if t.SecretKey == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(presented), []byte(t.SecretKey)) == 1
+}
+
+// openStream asks the owning client for a fresh data connection and waits for it
+// to dial back.
+//
+// The returned release function accounts for the stream's lifetime and must be
+// called once the stream has ended.
+func (t *Tunnel) openStream(visitor bool) (*dataConn, func(), error) {
+	streamID := newID(8)
+
+	waiting, err := t.Session.AddPending(streamID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	request := protocol.DataRequest{Proxy: t.Name, StreamID: streamID, Visitor: visitor}
+	if err := t.Session.Framer().WriteJSON(protocol.TypeDataRequest, request); err != nil {
+		t.Session.DropPending(streamID)
+		return nil, nil, fmt.Errorf("cannot ask the client for a stream: %w", err)
+	}
+
+	t.Active.Add(1)
+	t.metrics.streamOpened(t.Name)
+	release := func() {
+		t.Active.Add(-1)
+		t.metrics.streamClosed(t.Name)
+	}
+
+	timer := time.NewTimer(t.dialTimeout)
+	defer timer.Stop()
+
+	select {
+	case dc := <-waiting:
+		if dc == nil {
+			release()
+			return nil, nil, errors.New("the client disconnected while the stream was pending")
+		}
+		return dc, release, nil
+	case <-timer.C:
+		t.Session.DropPending(streamID)
+		release()
+		return nil, nil, fmt.Errorf("the client did not provide a stream within %s", t.dialTimeout)
+	case <-t.done:
+		t.Session.DropPending(streamID)
+		release()
+		return nil, nil, errors.New("the tunnel was closed")
+	}
+}
+
+// acceptLoop publishes a tcp tunnel until it is closed.
 func (t *Tunnel) acceptLoop() {
 	for {
 		conn, err := t.listener.Accept()
@@ -83,51 +173,29 @@ func (t *Tunnel) acceptLoop() {
 }
 
 // handleVisit matches one public connection with a data connection opened by the
-// owning client.
+// owning client and copies bytes between them.
 func (t *Tunnel) handleVisit(public net.Conn) {
-	streamID := newID(8)
-
-	waiting, err := t.Session.AddPending(streamID, public)
+	dc, release, err := t.openStream(false)
 	if err != nil {
 		t.logger.Printf("tunnel %q: dropping visit from %s: %v", t.Name, public.RemoteAddr(), err)
 		_ = public.Close()
 		return
 	}
+	defer release()
 
-	request := protocol.DataRequest{Proxy: t.Name, StreamID: streamID}
-	if err := t.Session.Framer().WriteJSON(protocol.TypeDataRequest, request); err != nil {
-		t.Session.DropPending(streamID)
-		_ = public.Close()
-		t.logger.Printf("tunnel %q: cannot ask the client for a stream: %v", t.Name, err)
-		return
+	if err := t.pipeStream(public, dc, public.RemoteAddr().String()); err != nil {
+		t.logger.Printf("tunnel %q: %v", t.Name, err)
 	}
+}
 
-	t.Active.Add(1)
-	t.metrics.streamOpened(t.Name)
-	defer func() {
-		t.Active.Add(-1)
-		t.metrics.streamClosed(t.Name)
-	}()
+// pipeStream copies raw bytes between a public connection and a client data
+// connection, recording the traffic. Both connections are closed when it returns.
+func (t *Tunnel) pipeStream(public net.Conn, dc *dataConn, label string) error {
+	defer dc.Close()
 
-	var data net.Conn
-	select {
-	case data = <-waiting:
-	case <-time.After(t.dialTimeout):
-		t.Session.DropPending(streamID)
-	case <-t.done:
-		t.Session.DropPending(streamID)
-	}
-
-	if data == nil {
-		_ = public.Close()
-		t.logger.Printf("tunnel %q: client did not provide a stream for %s within %s",
-			t.Name, public.RemoteAddr(), t.dialTimeout)
-		return
-	}
-
-	// From here the visitor and the client's local service exchange raw bytes,
-	// wrapped by the record layer when encryption is enabled.
-	clientSide := &cryptoStreamConn{Stream: crypto.NewStream(data, t.cipher), conn: data}
+	// dc.cipher is the key derived for this stream: the configured cipher when
+	// the session agreed no post-quantum key, and a per-stream key when it did.
+	clientSide := &cryptoStreamConn{Stream: crypto.NewStream(dc.conn, dc.cipher), conn: dc.conn}
 	toClient, fromClient := flynet.Pipe(public, clientSide, t.idleTimeout)
 
 	t.BytesOut.Add(toClient)
@@ -136,8 +204,69 @@ func (t *Tunnel) handleVisit(public net.Conn) {
 	t.Session.RecordTraffic(toClient, fromClient)
 	t.metrics.recordStream(t.Name, toClient, fromClient)
 
-	t.logger.Printf("tunnel %q: stream from %s finished (%d bytes out, %d bytes in)",
-		t.Name, public.RemoteAddr(), toClient, fromClient)
+	t.logger.Printf("tunnel %q: stream for %s finished (%d bytes out, %d bytes in)",
+		t.Name, label, toClient, fromClient)
+	return nil
+}
+
+// pipeDatagrams relays datagrams between a visitor connection and a client data
+// connection. Both connections are closed when it returns.
+func (t *Tunnel) pipeDatagrams(visitor *protocol.Framer, dc *dataConn, label string) error {
+	defer dc.Close()
+
+	toClient, fromClient := relayDatagrams(visitor, dc.framer)
+
+	t.BytesOut.Add(toClient)
+	t.BytesIn.Add(fromClient)
+	t.Total.Add(1)
+	t.Session.RecordTraffic(toClient, fromClient)
+
+	t.logger.Printf("tunnel %q: datagram session for %s finished (%d bytes out, %d bytes in)",
+		t.Name, label, toClient, fromClient)
+	return nil
+}
+
+// relayDatagrams copies TypeUDPPacket frames between two framers until one of
+// them fails. The frame boundary is what preserves the datagram boundary.
+func relayDatagrams(a, b *protocol.Framer) (aToB, bToA int64) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	copyFrames := func(dst, src *protocol.Framer) int64 {
+		var total int64
+		for {
+			msg, err := src.ReadFrame()
+			if err != nil {
+				return total
+			}
+			if msg.Type != protocol.TypeUDPPacket {
+				continue
+			}
+			if err := dst.WriteFrame(&protocol.Message{
+				Type:    protocol.TypeUDPPacket,
+				Payload: msg.Payload,
+			}); err != nil {
+				return total
+			}
+			total += int64(len(msg.Payload))
+		}
+	}
+
+	go func() {
+		defer wg.Done()
+		aToB = copyFrames(b, a)
+		_ = a.Close()
+		_ = b.Close()
+	}()
+	go func() {
+		defer wg.Done()
+		bToA = copyFrames(a, b)
+		_ = a.Close()
+		_ = b.Close()
+	}()
+
+	wg.Wait()
+	return aToB, bToA
 }
 
 // cryptoStreamConn adapts crypto.Stream (an io.ReadWriteCloser) to net.Conn so the
@@ -165,6 +294,9 @@ type TunnelManager struct {
 	cipher   *crypto.Cipher
 	sessions *SessionManager
 	metrics  *Metrics
+
+	vhost *vhostSet
+	p2p   *p2pRendezvous
 }
 
 func newTunnelManager(cfg *config.Config, logger *log.Logger, cipher *crypto.Cipher, sessions *SessionManager, metrics *Metrics) *TunnelManager {
@@ -191,13 +323,22 @@ func (m *TunnelManager) Register(session *Session, spec protocol.ProxySpec) (*Tu
 		return nil, errors.New("proxy name is required")
 	}
 	if spec.Type == "" {
-		spec.Type = "tcp"
+		spec.Type = protocol.ProxyTypeTCP
 	}
-	if spec.Type != "tcp" {
-		return nil, fmt.Errorf("proxy type %q is not implemented; only \"tcp\" is supported", spec.Type)
+	if !config.IsProxyType(spec.Type) {
+		return nil, fmt.Errorf("proxy type %q is not supported (use one of %s)",
+			spec.Type, joinTypes(config.ProxyTypes))
 	}
 	if spec.RemotePort < 0 || spec.RemotePort > 65535 {
 		return nil, fmt.Errorf("remote_port %d is out of range", spec.RemotePort)
+	}
+	if config.IsPrivateProxyType(spec.Type) {
+		if spec.SecretKey == "" {
+			return nil, fmt.Errorf("proxy type %q is private and needs a secret_key", spec.Type)
+		}
+		if spec.RemotePort != 0 {
+			return nil, fmt.Errorf("proxy type %q is private and must not open a public port", spec.Type)
+		}
 	}
 
 	m.mu.Lock()
@@ -219,7 +360,11 @@ func (m *TunnelManager) Register(session *Session, spec protocol.ProxySpec) (*Tu
 	tunnel := &Tunnel{
 		Name:        spec.Name,
 		Spec:        spec,
+		Type:        spec.Type,
 		RemotePort:  spec.RemotePort,
+		Domains:     spec.Domains,
+		SecretKey:   spec.SecretKey,
+		AuthMethod:  spec.AuthMethod,
 		Session:     session,
 		logger:      m.logger,
 		cipher:      m.cipher,
@@ -228,22 +373,88 @@ func (m *TunnelManager) Register(session *Session, spec protocol.ProxySpec) (*Tu
 		dialTimeout: time.Duration(m.cfg.Server.DialTimeoutSecs) * time.Second,
 		done:        make(chan struct{}),
 	}
-
-	if spec.RemotePort > 0 {
-		addr := net.JoinHostPort(m.cfg.Server.BindAddr, strconv.Itoa(spec.RemotePort))
-		listener, err := net.Listen("tcp", addr)
+	if tunnel.AuthMethod == "" {
+		tunnel.AuthMethod = config.AuthMethodSecret
+	}
+	if tunnel.AuthMethod == config.AuthMethodNIZK {
+		public, err := crypto.SchnorrPublicKey([]byte(spec.SecretKey))
 		if err != nil {
-			return nil, fmt.Errorf("cannot publish %s on %s: %w", spec.Name, addr, err)
+			return nil, fmt.Errorf("proxy %q: cannot derive the proof key: %w", spec.Name, err)
 		}
-		tunnel.listener = listener
-		go tunnel.acceptLoop()
-		m.logger.Printf("tunnel %q published on %s -> client %s", spec.Name, addr, session.ID)
-	} else {
-		m.logger.Printf("tunnel %q registered with no public port (client %s)", spec.Name, session.ID)
+		tunnel.SecretPublicKey = public
+	}
+
+	if err := m.bind(tunnel); err != nil {
+		tunnel.Close("registration failed")
+		return nil, err
 	}
 
 	m.tunnels[spec.Name] = tunnel
 	return tunnel, nil
+}
+
+// bind gives a tunnel the listener its type calls for.
+func (m *TunnelManager) bind(t *Tunnel) error {
+	switch t.Type {
+	case protocol.ProxyTypeTCP:
+		if t.RemotePort == 0 {
+			m.logger.Printf("tunnel %q registered with no public port (client %s)", t.Name, t.Session.ID)
+			return nil
+		}
+		addr := net.JoinHostPort(m.cfg.Server.BindAddr, strconv.Itoa(t.RemotePort))
+		listener, err := net.Listen("tcp", addr)
+		if err != nil {
+			return fmt.Errorf("cannot publish %s on %s: %w", t.Name, addr, err)
+		}
+		t.listener = listener
+		go t.acceptLoop()
+		m.logger.Printf("tunnel %q (tcp) published on %s -> client %s", t.Name, addr, t.Session.ID)
+
+	case protocol.ProxyTypeUDP:
+		if t.RemotePort == 0 {
+			m.logger.Printf("tunnel %q registered with no public port (client %s)", t.Name, t.Session.ID)
+			return nil
+		}
+		addr := net.JoinHostPort(m.cfg.Server.BindAddr, strconv.Itoa(t.RemotePort))
+		packet, err := net.ListenPacket("udp", addr)
+		if err != nil {
+			return fmt.Errorf("cannot publish %s on %s/udp: %w", t.Name, addr, err)
+		}
+		t.packet = packet
+		t.startUDP()
+		m.logger.Printf("tunnel %q (udp) published on %s -> client %s", t.Name, addr, t.Session.ID)
+
+	case protocol.ProxyTypeHTTP, protocol.ProxyTypeHTTPS:
+		if m.vhost == nil {
+			return fmt.Errorf("proxy %q is type %s but server.http_port is not configured", t.Name, t.Type)
+		}
+		binding, err := m.vhost.add(t)
+		if err != nil {
+			return err
+		}
+		t.vhost = binding
+		m.logger.Printf("tunnel %q (%s) registered for %v via the shared listener (client %s)",
+			t.Name, t.Type, t.Domains, t.Session.ID)
+
+	case protocol.ProxyTypeSTCP, protocol.ProxyTypeSUDP, protocol.ProxyTypeXTCP:
+		m.logger.Printf("tunnel %q (%s) registered as private, reachable by visitors (client %s)",
+			t.Name, t.Type, t.Session.ID)
+
+	default:
+		return fmt.Errorf("proxy type %q has no binding", t.Type)
+	}
+	return nil
+}
+
+func joinTypes(types []string) string {
+	out := ""
+	for i, t := range types {
+		if i > 0 {
+			out += ", "
+		}
+		out += strconv.Quote(t)
+	}
+	return out
 }
 
 // isLive reports whether a tunnel's owning session is still usable.

@@ -30,6 +30,10 @@ type Metrics struct {
 	bytesToClients   atomic.Int64
 	udpDatagrams     atomic.Int64
 	udpSessions      atomic.Int64
+	httpRequests     atomic.Int64
+	p2pPunches       atomic.Int64
+	p2pDirect        atomic.Int64
+	p2pRelayed       atomic.Int64
 
 	mu        sync.RWMutex
 	perTunnel map[string]*tunnelMetrics
@@ -40,6 +44,7 @@ type tunnelMetrics struct {
 	streamsTotal     atomic.Int64
 	bytesFromClients atomic.Int64
 	bytesToClients   atomic.Int64
+	httpRequests     atomic.Int64
 }
 
 func newMetrics() *Metrics {
@@ -119,6 +124,10 @@ func (m *Metrics) Render() string {
 	counter("aethertunnel_bytes_to_clients_total", "Bytes sent to clients.", m.bytesToClients.Load())
 	counter("aethertunnel_udp_datagrams_total", "UDP datagrams relayed.", m.udpDatagrams.Load())
 	gauge("aethertunnel_udp_sessions_active", "UDP visitor sessions currently tracked.", m.udpSessions.Load())
+	counter("aethertunnel_http_requests_total", "Requests served by the shared virtual-host listener.", m.httpRequests.Load())
+	counter("aethertunnel_p2p_punches_total", "Hole punching attempts started for xtcp proxies.", m.p2pPunches.Load())
+	counter("aethertunnel_p2p_direct_total", "Hole punching attempts that produced a direct path.", m.p2pDirect.Load())
+	counter("aethertunnel_p2p_relayed_total", "Hole punching attempts that fell back to the relayed path.", m.p2pRelayed.Load())
 
 	names := make([]string, 0, len(m.perTunnel))
 	m.mu.RLock()
@@ -142,6 +151,10 @@ func (m *Metrics) Render() string {
 			entry := m.perTunnel[name]
 			fmt.Fprintf(&b, "aethertunnel_tunnel_bytes_total{tunnel=%q,direction=\"from_client\"} %d\n", name, entry.bytesFromClients.Load())
 			fmt.Fprintf(&b, "aethertunnel_tunnel_bytes_total{tunnel=%q,direction=\"to_client\"} %d\n", name, entry.bytesToClients.Load())
+		}
+		writeHelp("aethertunnel_tunnel_http_requests_total", "HTTP requests served per tunnel.", "counter")
+		for _, name := range names {
+			fmt.Fprintf(&b, "aethertunnel_tunnel_http_requests_total{tunnel=%q} %d\n", name, m.perTunnel[name].httpRequests.Load())
 		}
 	}
 

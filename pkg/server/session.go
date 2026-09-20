@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/aethertunnel/aethertunnel/pkg/crypto"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
 )
 
@@ -34,11 +35,15 @@ type Session struct {
 	done   chan struct{}
 	once   sync.Once
 
+	// streamKey is the post-quantum session key, empty when the session agreed
+	// none. It is the input for every data connection's own key.
+	streamKey []byte
+
 	heartbeatAt atomic.Int64 // unix nanoseconds
 
 	mu      sync.Mutex
 	tunnels map[string]*Tunnel
-	pending map[string]chan net.Conn
+	pending map[string]chan *dataConn
 	closed  bool
 
 	activeStreams   atomic.Int64
@@ -60,7 +65,7 @@ func newSession(conn net.Conn, framer *protocol.Framer, req *protocol.AuthReques
 		framer:           framer,
 		done:             make(chan struct{}),
 		tunnels:          make(map[string]*Tunnel),
-		pending:          make(map[string]chan net.Conn),
+		pending:          make(map[string]chan *dataConn),
 	}
 	s.touchHeartbeat()
 	return s
@@ -125,21 +130,36 @@ func (s *Session) Tunnels() []*Tunnel {
 	return out
 }
 
-// AddPending registers a public connection that is waiting for the client to dial
-// back with a matching stream id.
-func (s *Session) AddPending(streamID string, conn net.Conn) (<-chan net.Conn, error) {
+// dataConn is a client's data connection together with the framing that protects
+// it. A byte-stream proxy uses conn directly; a datagram proxy exchanges
+// TypeUDPPacket frames through the framer, whose frame boundaries preserve the
+// datagram boundaries.
+type dataConn struct {
+	conn   net.Conn
+	framer *protocol.Framer
+	// cipher protects the raw bytes of a byte-stream proxy. For a datagram
+	// proxy the framer already seals each frame, so it is unused.
+	cipher *crypto.Cipher
+}
+
+// Close releases the underlying connection.
+func (d *dataConn) Close() error { return d.conn.Close() }
+
+// AddPending registers a stream that a public connection or a visitor is waiting
+// to be paired with. The client answers with a DataOpen carrying the same id.
+func (s *Session) AddPending(streamID string) (<-chan *dataConn, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return nil, errSessionClosed
 	}
-	ch := make(chan net.Conn, 1)
+	ch := make(chan *dataConn, 1)
 	s.pending[streamID] = ch
 	return ch, nil
 }
 
 // TakePending hands a waiting stream to the data connection that claimed it.
-func (s *Session) TakePending(streamID string) (chan net.Conn, bool) {
+func (s *Session) TakePending(streamID string) (chan *dataConn, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ch, ok := s.pending[streamID]
@@ -169,7 +189,7 @@ func (s *Session) Close(reason string) {
 		s.mu.Lock()
 		s.closed = true
 		pending := s.pending
-		s.pending = make(map[string]chan net.Conn)
+		s.pending = make(map[string]chan *dataConn)
 		tunnels := make([]*Tunnel, 0, len(s.tunnels))
 		for _, t := range s.tunnels {
 			tunnels = append(tunnels, t)

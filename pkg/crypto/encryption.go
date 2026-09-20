@@ -74,6 +74,22 @@ func NewCipher(algorithm, passphrase, salt string) (*Cipher, error) {
 		return nil, fmt.Errorf("crypto: derive key: %w", err)
 	}
 
+	return newCipherWithKey(algorithm, key)
+}
+
+// newCipherWithKey builds a Cipher over an existing 32-byte key, which is how an
+// agreed session key (see HybridClientFinish) becomes an AEAD.
+func newCipherWithKey(algorithm string, key []byte) (*Cipher, error) {
+	if len(key) != keySize {
+		return nil, fmt.Errorf("crypto: key must be %d bytes, got %d", keySize, len(key))
+	}
+	if algorithm == "" {
+		algorithm = AlgorithmNone
+	}
+	if algorithm == AlgorithmNone {
+		return nil, nil
+	}
+
 	var (
 		aead cipher.AEAD
 		err  error

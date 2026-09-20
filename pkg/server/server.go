@@ -2,7 +2,11 @@ package server
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -47,6 +51,12 @@ type Server struct {
 	metrics  *Metrics
 	acl      *AccessControl
 	auditor  *Auditor
+	vhost    *vhostSet
+	p2p      *p2pRendezvous
+
+	tlsConfig  *tls.Config
+	identities []ed25519.PublicKey
+	nonces     *crypto.NonceCache
 
 	listener net.Listener
 
@@ -76,22 +86,40 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open audit log: %w", err)
 	}
+	tlsConfig, err := cfg.ServerTLSConfig()
+	if err != nil {
+		return nil, err
+	}
+	identities, err := cfg.AllowedIdentities()
+	if err != nil {
+		return nil, err
+	}
 
 	s := &Server{
-		cfg:       cfg,
-		cipher:    cipher,
-		logger:    logger,
-		version:   opts.Version,
-		buildTime: opts.BuildTime,
-		gitCommit: opts.GitCommit,
-		startedAt: time.Now(),
-		metrics:   newMetrics(),
-		acl:       acl,
-		auditor:   auditor,
+		cfg:        cfg,
+		cipher:     cipher,
+		logger:     logger,
+		version:    opts.Version,
+		buildTime:  opts.BuildTime,
+		gitCommit:  opts.GitCommit,
+		startedAt:  time.Now(),
+		metrics:    newMetrics(),
+		acl:        acl,
+		auditor:    auditor,
+		tlsConfig:  tlsConfig,
+		identities: identities,
+		nonces:     crypto.NewNonceCache(0),
 	}
 	sessions := newSessionManager(cfg.Server.MaxConnections)
 	s.sessions = sessions
 	s.tunnels = newTunnelManager(cfg, logger, cipher, sessions, s.metrics)
+
+	s.vhost = newVhostSet(cfg, logger, s.metrics)
+	s.tunnels.vhost = s.vhost
+	if cfg.Server.P2PPort > 0 {
+		s.p2p = newP2PRendezvous(logger)
+		s.tunnels.p2p = s.p2p
+	}
 	return s, nil
 }
 
@@ -121,12 +149,37 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", s.cfg.ListenAddr(), err)
 	}
+	if s.tlsConfig != nil {
+		listener = tls.NewListener(listener, s.tlsConfig)
+	}
 	s.listener = listener
 
 	s.logger.Printf("AetherTunnel server %s (protocol %d) listening on %s", s.version, protocol.ProtocolVersion, listener.Addr())
 	s.logger.Printf("encryption: %s", s.Cipher())
+	if s.cfg.PostQuantum() {
+		s.logger.Printf("post-quantum key agreement: X25519 with ML-KEM-768, one key per data connection")
+	}
+	if s.tlsConfig != nil {
+		s.logger.Printf("the control port is wrapped in TLS")
+	}
+	if s.cfg.Identity.Enabled {
+		s.logger.Printf("client identities: %d allowed key(s), require_identity=%v",
+			len(s.identities), s.cfg.Identity.RequireIdentity)
+	}
 	s.logger.Printf("max connections: %d, heartbeat: %ds, idle timeout: %ds",
 		s.cfg.Server.MaxConnections, s.cfg.Server.HeartbeatSeconds, s.cfg.Server.ReadTimeoutSecs)
+
+	if err := s.vhost.start(); err != nil {
+		_ = listener.Close()
+		return err
+	}
+	if s.p2p != nil {
+		if err := s.p2p.Start(s.cfg.P2PAddr()); err != nil {
+			s.vhost.stop()
+			_ = listener.Close()
+			return err
+		}
+	}
 
 	go func() {
 		<-ctx.Done()
@@ -189,10 +242,44 @@ func (s *Server) Shutdown(reason string) {
 	if s.listener != nil {
 		_ = s.listener.Close()
 	}
+	s.vhost.stop()
+	if s.p2p != nil {
+		_ = s.p2p.Close()
+	}
 	s.sessions.CloseAll(reason)
 	if err := s.auditor.Close(); err != nil {
 		s.logger.Printf("closing the audit log: %v", err)
 	}
+}
+
+// checkIdentity verifies the Ed25519 assertion a client may attach to its auth
+// request. It returns nil when no assertion was offered and none is required.
+func (s *Server) checkIdentity(req *protocol.AuthRequest) error {
+	if !s.cfg.Identity.Enabled {
+		return nil
+	}
+	if len(req.Identity) == 0 {
+		if s.cfg.Identity.RequireIdentity {
+			return errors.New("this server requires a client identity; set [identity].enabled and [identity].key_file")
+		}
+		return nil
+	}
+
+	publicKey, err := crypto.ParseIdentityKey(hex.EncodeToString(req.Identity))
+	if err != nil {
+		return err
+	}
+	if err := crypto.VerifyIdentity(crypto.IdentityCheckInput{
+		PublicKey: publicKey,
+		Nonce:     req.IdentityNonce,
+		Timestamp: req.IdentityTime,
+		Signature: req.IdentitySignature,
+		Allowed:   s.identities,
+		Seen:      s.nonces,
+	}); err != nil {
+		return err
+	}
+	return nil
 }
 
 // handleConn dispatches the first frame: an auth request opens a control session,
@@ -228,11 +315,13 @@ func (s *Server) handleConn(conn net.Conn) {
 		s.handleControl(conn, framer, msg)
 	case protocol.TypeDataOpen:
 		s.handleData(conn, framer, msg)
+	case protocol.TypeVisitorConnect:
+		s.handleVisitor(conn, framer, msg)
 	default:
 		s.logger.Printf("unexpected first frame %s from %s", msg.Type, conn.RemoteAddr())
 		_ = framer.WriteJSON(protocol.TypeError, protocol.ErrorPayload{
-			Error: fmt.Sprintf("first frame must be %s or %s, got %s",
-				protocol.TypeAuthRequest, protocol.TypeDataOpen, msg.Type),
+			Error: fmt.Sprintf("first frame must be %s, %s or %s, got %s",
+				protocol.TypeAuthRequest, protocol.TypeDataOpen, protocol.TypeVisitorConnect, msg.Type),
 		})
 		_ = conn.Close()
 	}
@@ -268,12 +357,59 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 		return
 	}
 
+	reject := func(reason string, identityRequired bool) {
+		_ = framer.WriteJSON(protocol.TypeAuthResponse, protocol.AuthResponse{
+			OK: false, ServerVersion: s.version, Protocol: protocol.ProtocolVersion,
+			Encryption: s.Cipher(), Error: reason, IdentityRequired: identityRequired,
+		})
+		_ = conn.Close()
+	}
+
+	if err := s.checkIdentity(&req); err != nil {
+		s.metrics.authFailures.Add(1)
+		s.metrics.controlRejected.Add(1)
+		s.auditor.Record(AuditEvent{
+			Event: EventAuthFailed, Remote: conn.RemoteAddr().String(),
+			Outcome: "denied", Detail: err.Error(),
+		})
+		s.logger.Printf("identity check failed for %s: %v", conn.RemoteAddr(), err)
+		reject(err.Error(), s.cfg.Identity.RequireIdentity)
+		return
+	}
+
+	// The post-quantum handshake runs before the session exists, because the
+	// session's key is what protects every stream it later opens.
+	sessionCipher := s.cipher
+	var sessionKey, kexResponse []byte
+	if s.cfg.PostQuantum() {
+		if len(req.KEX) == 0 {
+			reject("this server requires a post-quantum key exchange (encryption.post_quantum)", false)
+			return
+		}
+		response, key, err := crypto.HybridServerFinish(req.KEX)
+		if err != nil {
+			s.metrics.authFailures.Add(1)
+			s.metrics.controlRejected.Add(1)
+			s.logger.Printf("post-quantum key agreement with %s failed: %v", conn.RemoteAddr(), err)
+			reject("post-quantum key agreement failed", false)
+			return
+		}
+		sessionCipher, err = crypto.NewCipherFromKey(s.cfg.Encryption.Algorithm, key)
+		if err != nil {
+			s.logger.Printf("post-quantum session key for %s is unusable: %v", conn.RemoteAddr(), err)
+			reject("post-quantum key agreement failed", false)
+			return
+		}
+		sessionKey, kexResponse = key, response
+	}
+
 	if req.Protocol != protocol.ProtocolVersion {
 		s.logger.Printf("client %s speaks protocol %d, this server speaks %d: continuing, but upgrade the client if traffic misbehaves",
 			conn.RemoteAddr(), req.Protocol, protocol.ProtocolVersion)
 	}
 
-	session := newSession(conn, framer, &req, s.cipher.Enabled(), s.cfg.Server.HeartbeatSeconds)
+	session := newSession(conn, framer, &req, sessionCipher.Enabled(), s.cfg.Server.HeartbeatSeconds)
+	session.streamKey = sessionKey
 	if err := s.sessions.Add(session); err != nil {
 		s.metrics.controlRejected.Add(1)
 		s.auditor.Record(AuditEvent{
@@ -281,11 +417,7 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 			Outcome: "denied", Detail: err.Error(),
 		})
 		s.logger.Printf("rejecting %s: %v", conn.RemoteAddr(), err)
-		_ = framer.WriteJSON(protocol.TypeAuthResponse, protocol.AuthResponse{
-			OK: false, ServerVersion: s.version, Protocol: protocol.ProtocolVersion,
-			Encryption: s.Cipher(), Error: err.Error(),
-		})
-		_ = conn.Close()
+		reject(err.Error(), false)
 		return
 	}
 	s.metrics.controlAccepted.Add(1)
@@ -298,11 +430,19 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 		Encryption:       s.Cipher(),
 		HeartbeatSecs:    s.cfg.Server.HeartbeatSeconds,
 		ProtocolMismatch: req.Protocol != protocol.ProtocolVersion,
+		P2PPort:          s.cfg.Server.P2PPort,
+		KEX:              kexResponse,
 	}
+	// The response itself is still protected by the configured cipher; both
+	// sides switch to the agreed key immediately afterwards.
 	if err := framer.WriteJSON(protocol.TypeAuthResponse, response); err != nil {
 		s.sessions.Remove(session.ID)
 		session.Close("failed to send auth response")
 		return
+	}
+	if len(sessionKey) > 0 {
+		session.framer = protocol.NewFramerWithOptions(conn, sessionCipher, s.framerOptions())
+		s.logger.Printf("post-quantum session key %s agreed with %s", crypto.SessionKeyID(sessionKey), conn.RemoteAddr())
 	}
 
 	s.logger.Printf("client %s connected as %s (protocol %d, encryption %s, version %s)",
@@ -456,10 +596,28 @@ func (s *Server) handleData(conn net.Conn, framer *protocol.Framer, msg *protoco
 		return
 	}
 
-	// The ack has been written; from here the stream is raw bytes. Handing the
-	// connection over is a non-blocking send because waiting is buffered with
-	// capacity 1 and only ever used once.
-	waiting <- conn
+	// The ack has been written, and both ends now switch to the key derived for
+	// this stream, so the bytes that follow never share a keystream with another
+	// stream of the same session.
+	dc := &dataConn{conn: conn, framer: framer, cipher: s.cipher}
+	if len(session.streamKey) > 0 {
+		streamKey, keyErr := crypto.StreamKey(session.streamKey, open.StreamID)
+		streamCipher, cipherErr := crypto.NewCipherFromKey(s.cfg.Encryption.Algorithm, streamKey)
+		switch {
+		case keyErr != nil || cipherErr != nil:
+			s.logger.Printf("data connection from %s: cannot derive a stream key: %v%v",
+				conn.RemoteAddr(), keyErr, cipherErr)
+		default:
+			dc.cipher = streamCipher
+			dc.framer = protocol.NewFramerWithOptions(conn, streamCipher, s.framerOptions())
+		}
+	}
+
+	// From here the connection carries the stream — raw bytes for a stream
+	// proxy, TypeUDPPacket frames for a datagram proxy. Handing it over is a
+	// non-blocking send because waiting is buffered with capacity 1 and only
+	// ever used once.
+	waiting <- dc
 }
 
 // totalBytes reports aggregate tunnel traffic.

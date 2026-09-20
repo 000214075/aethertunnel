@@ -47,7 +47,28 @@ const (
 	TypeDataRequest   MessageType = 7 // server -> client, JSON DataRequest: please open a stream
 	TypeDataOpen      MessageType = 8 // client -> server, JSON DataOpen, then raw bytes
 	TypeDataOpenAck   MessageType = 9 // server -> client, JSON DataOpenAck, then raw bytes
-	TypeError         MessageType = 10
+
+	TypeError MessageType = 10
+
+	// TypeUDPPacket carries exactly one datagram as its payload. It is only sent
+	// on a data connection that was accepted for a udp/sudp proxy, where the
+	// frame boundary preserves the datagram boundary.
+	TypeUDPPacket MessageType = 11
+	// TypeVisitorConnect is the first frame of a visitor connection: it asks the
+	// server to pair this connection with the owner of a private proxy.
+	TypeVisitorConnect MessageType = 12
+	// TypeP2PPrepare asks the owner of a proxy to open a punch socket.
+	TypeP2PPrepare MessageType = 13
+	// TypeP2PPeer carries the peer's observed address during hole punching. The
+	// same payload is returned in the server's reply to a UDP punch datagram.
+	TypeP2PPeer MessageType = 14
+	// TypeP2PFallback asks the server for the relayed path after a failed punch.
+	TypeP2PFallback MessageType = 15
+	// TypeVisitorChallenge carries the nonce a visitor must prove knowledge of
+	// the proxy secret against, for auth_method = "nizk".
+	TypeVisitorChallenge MessageType = 16
+	// TypeVisitorProve carries the visitor's proof.
+	TypeVisitorProve MessageType = 17
 )
 
 // String makes logs readable.
@@ -73,6 +94,20 @@ func (t MessageType) String() string {
 		return "data-open-ack"
 	case TypeError:
 		return "error"
+	case TypeUDPPacket:
+		return "udp-packet"
+	case TypeVisitorConnect:
+		return "visitor-connect"
+	case TypeP2PPrepare:
+		return "p2p-prepare"
+	case TypeP2PPeer:
+		return "p2p-peer"
+	case TypeP2PFallback:
+		return "p2p-fallback"
+	case TypeVisitorChallenge:
+		return "visitor-challenge"
+	case TypeVisitorProve:
+		return "visitor-prove"
 	default:
 		return fmt.Sprintf("unknown(%d)", uint8(t))
 	}
@@ -150,6 +185,16 @@ func NewFramerWithOptions(conn io.ReadWriter, cipher *crypto.Cipher, opts Framer
 
 // MaxPayload returns the configured frame limit.
 func (f *Framer) MaxPayload() uint32 { return f.maxPayload }
+
+// Close closes the underlying connection when it implements io.Closer. It is
+// used by relays that need to unblock a reader on the other side; the framer must
+// not be used afterwards.
+func (f *Framer) Close() error {
+	if closer, ok := f.conn.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
+}
 
 // WriteFrame encodes and sends one frame with a single Write call, so two frames
 // written concurrently cannot interleave on the wire.
@@ -315,6 +360,16 @@ type AuthRequest struct {
 	Protocol       int    `json:"protocol"`
 	Encryption     string `json:"encryption"`
 	EncryptionSalt string `json:"encryption_salt,omitempty"`
+	// KEX carries the client's X25519 public key followed by its ML-KEM-768
+	// encapsulation key when [encryption].post_quantum is on.
+	KEX []byte `json:"kex,omitempty"`
+	// Identity is the client's Ed25519 public key, and IdentityNonce,
+	// IdentityTime and IdentitySignature are the assertion it signs. See
+	// crypto.IdentityChallenge for the exact message.
+	Identity          []byte `json:"identity,omitempty"`
+	IdentityNonce     []byte `json:"identity_nonce,omitempty"`
+	IdentityTime      int64  `json:"identity_time,omitempty"`
+	IdentitySignature []byte `json:"identity_signature,omitempty"`
 }
 
 // AuthResponse reports whether the session was accepted.
@@ -327,7 +382,30 @@ type AuthResponse struct {
 	Error            string `json:"error,omitempty"`
 	HeartbeatSecs    int    `json:"heartbeat_seconds,omitempty"`
 	ProtocolMismatch bool   `json:"protocol_mismatch,omitempty"`
+	// P2PPort is the server's UDP rendezvous port for xtcp hole punching. Zero
+	// means the server does not offer hole punching.
+	P2PPort int `json:"p2p_port,omitempty"`
+	// KEX carries the server's X25519 public key followed by the ML-KEM-768
+	// ciphertext when the client offered one.
+	KEX []byte `json:"kex,omitempty"`
+	// IdentityRequired tells the client that the server refuses sessions without
+	// a valid identity assertion, so the error is actionable.
+	IdentityRequired bool `json:"identity_required,omitempty"`
 }
+
+// Tunnel types a client may publish. "tcp" and "udp" take a public port on the
+// server; "http" and "https" are reached through the server's shared virtual-host
+// listener and are selected by the request's Host header; "stcp", "sudp" and
+// "xtcp" are private and reachable only by a visitor that knows the secret.
+const (
+	ProxyTypeTCP   = "tcp"
+	ProxyTypeUDP   = "udp"
+	ProxyTypeHTTP  = "http"
+	ProxyTypeHTTPS = "https"
+	ProxyTypeSTCP  = "stcp"
+	ProxyTypeSUDP  = "sudp"
+	ProxyTypeXTCP  = "xtcp"
+)
 
 // ProxySpec describes a tunnel a client wants to publish.
 type ProxySpec struct {
@@ -335,19 +413,95 @@ type ProxySpec struct {
 	Type       string `json:"type"`
 	LocalAddr  string `json:"local_addr"`
 	RemotePort int    `json:"remote_port,omitempty"`
+	// Domains selects the Host values that reach an http/https tunnel.
+	Domains []string `json:"domains,omitempty"`
+	// SecretKey gates a private proxy. It is sent on the control connection,
+	// which is encrypted only when [encryption] is enabled on both peers.
+	SecretKey string `json:"secret_key,omitempty"`
+	// AuthMethod is "secret" or "nizk".
+	AuthMethod string `json:"auth_method,omitempty"`
+}
+
+// VisitorConnect is the first frame of a visitor connection. A visitor is a
+// second client that wants to reach a private proxy without the traffic passing
+// through a public port on the server.
+type VisitorConnect struct {
+	Proxy string `json:"proxy"`
+	// Secret is the proxy's secret key, sent only when the proxy uses
+	// auth_method = "secret".
+	Secret string `json:"secret,omitempty"`
+	// Type is the transport the visitor wants: "tcp", "udp" or "xtcp".
+	Type string `json:"type,omitempty"`
+	// AuthToken is the server's auth token, so a visitor connection is
+	// authenticated exactly like a control connection.
+	AuthToken string `json:"auth_token,omitempty"`
+	// KEX carries the visitor's hybrid public key when
+	// [encryption].post_quantum is on.
+	KEX []byte `json:"kex,omitempty"`
+}
+
+// VisitorChallenge is the server's reply when a proxy uses auth_method = "nizk":
+// the visitor must prove knowledge of the secret against this nonce.
+type VisitorChallenge struct {
+	Proxy string `json:"proxy"`
+	Nonce []byte `json:"nonce"`
+	// KEX is the server's hybrid response, when the visitor offered one.
+	KEX []byte `json:"kex,omitempty"`
+}
+
+// VisitorProve is the visitor's answer to a challenge.
+type VisitorProve struct {
+	Proof []byte `json:"proof"`
+}
+
+// VisitorProofContext builds the context a visitor's Schnorr proof is bound to.
+// Binding the proxy name stops a proof for one proxy from being replayed against
+// another, and the server's nonce stops it from being replayed at all.
+func VisitorProofContext(proxy string, nonce []byte) []byte {
+	out := make([]byte, 0, len(visitorProofDomain)+1+len(proxy)+1+len(nonce))
+	out = append(out, visitorProofDomain...)
+	out = append(out, byte(len(proxy)))
+	out = append(out, proxy...)
+	out = append(out, byte(len(nonce)))
+	out = append(out, nonce...)
+	return out
+}
+
+const visitorProofDomain = "aethertunnel/v3/visitor-proof\x00"
+
+// P2PPrepare asks the owner of a proxy to open a UDP socket for hole punching.
+type P2PPrepare struct {
+	Proxy string `json:"proxy"`
+	Token string `json:"token"`
+}
+
+// P2PPeer reports the address the rendezvous server observed for the other end
+// of a hole-punch attempt, or, when it carries only a token, the token itself.
+type P2PPeer struct {
+	Token string `json:"token"`
+	Addr  string `json:"addr,omitempty"`
+	// KEX is the server's hybrid response, when the visitor offered one.
+	KEX []byte `json:"kex,omitempty"`
+}
+
+// P2PFallback asks the server for the relayed path after a punch failed.
+type P2PFallback struct {
+	Proxy string `json:"proxy"`
+	Token string `json:"token"`
 }
 
 // ProxyStatus is one row of the proxy table reported to the dashboard.
 type ProxyStatus struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	LocalAddr   string `json:"local_addr"`
-	RemotePort  int    `json:"remote_port,omitempty"`
-	ClientID    string `json:"client_id"`
-	Active      int64  `json:"active_connections"`
-	TotalOpened int64  `json:"total_connections"`
-	BytesIn     int64  `json:"bytes_in"`
-	BytesOut    int64  `json:"bytes_out"`
+	Name        string   `json:"name"`
+	Type        string   `json:"type"`
+	LocalAddr   string   `json:"local_addr"`
+	RemotePort  int      `json:"remote_port,omitempty"`
+	Domains     []string `json:"domains,omitempty"`
+	ClientID    string   `json:"client_id"`
+	Active      int64    `json:"active_connections"`
+	TotalOpened int64    `json:"total_connections"`
+	BytesIn     int64    `json:"bytes_in"`
+	BytesOut    int64    `json:"bytes_out"`
 }
 
 // DataRequest tells the client that a public connection is waiting and asks it to
@@ -355,6 +509,9 @@ type ProxyStatus struct {
 type DataRequest struct {
 	Proxy    string `json:"proxy"`
 	StreamID string `json:"stream_id"`
+	// Visitor marks a stream that was requested by a visitor connection rather
+	// than by a visit to a public port.
+	Visitor bool `json:"visitor,omitempty"`
 }
 
 // DataOpen asks the server to open a new data stream for a proxy. After the ack
@@ -369,6 +526,9 @@ type DataOpen struct {
 type DataOpenAck struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+	// KEX is the server's hybrid response, when the peer offered one. It is
+	// present on the first reply of a data or visitor connection.
+	KEX []byte `json:"kex,omitempty"`
 }
 
 // ErrorPayload carries a human-readable failure.

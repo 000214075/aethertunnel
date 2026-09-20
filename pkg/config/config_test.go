@@ -76,10 +76,10 @@ auth_token = "0123456789abcdef0123456789abcdef"
 
 [[proxies]]
 name = "web"
-type = "udp"
+type = "carrier-pigeon"
 local_port = 80
 `,
-			want: `type "udp" is not implemented`,
+			want: `type "carrier-pigeon" is not supported`,
 		},
 		{
 			name: "duplicate proxy names",

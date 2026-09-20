@@ -571,7 +571,7 @@ func TestUnknownProxyTypeIsRefused(t *testing.T) {
 		t.Fatalf("authenticate: %v", err)
 	}
 
-	if err := client.register(protocol.ProxySpec{Name: "udp-thing", Type: "udp", LocalAddr: "127.0.0.1:53"}); err != nil {
+	if err := client.register(protocol.ProxySpec{Name: "carrier-pigeon", Type: "carrier-pigeon", LocalAddr: "127.0.0.1:53"}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	msg, err := client.framer.ReadFrame()
