@@ -23,6 +23,7 @@ import (
 	"github.com/aethertunnel/aethertunnel/pkg/crypto"
 	"github.com/aethertunnel/aethertunnel/pkg/dht"
 	"github.com/aethertunnel/aethertunnel/pkg/discovery"
+	"github.com/aethertunnel/aethertunnel/pkg/obfs"
 	"github.com/aethertunnel/aethertunnel/pkg/vpn"
 )
 
@@ -336,7 +337,8 @@ type DHTConfig struct {
 }
 
 // ObfuscationConfig is the [obfuscation] section. Padding hides exact frame
-// lengths; it does not make the traffic look like TLS.
+// lengths and the disguise hides the framing itself; neither encrypts anything, so
+// they complement [encryption] rather than replacing it.
 type ObfuscationConfig struct {
 	Enabled     bool   `toml:"enabled"`
 	DefaultType string `toml:"default_type"`
@@ -346,6 +348,22 @@ type ObfuscationConfig struct {
 	PadTo int `toml:"pad_to"`
 	// JitterMillis adds a random delay in [0, JitterMillis) before each write.
 	JitterMillis int `toml:"jitter_millis"`
+	// Disguise wraps every TCP connection so what an observer sees is not this
+	// program's frame header. "none" writes the frames as they are; "tls-record"
+	// puts each write inside TLS 1.2 application-data records.
+	//
+	// It is not a TLS handshake: there is no ClientHello and no key exchange, so a
+	// detector that models a TLS session can still tell the connection apart.
+	Disguise string `toml:"disguise"`
+}
+
+// ObfuscationDisguise is the disguise in force, with the empty value read as
+// "none".
+func (c *Config) ObfuscationDisguise() string {
+	if c.Obfuscation.Disguise == "" {
+		return obfs.DisguiseNone
+	}
+	return c.Obfuscation.Disguise
 }
 
 // VPNConfig is the [vpn] section: a layer-3 tunnel that gives each client an
@@ -520,6 +538,11 @@ const (
 	LoadBalanceRandom     = "random"
 	LoadBalanceLatency    = "latency"
 	LoadBalanceFailover   = "failover"
+	// LoadBalanceAdaptive picks the member with the lowest cost, where the cost is
+	// the member's moving-average response time multiplied by a penalty for its
+	// recent failures. It is a moving average, not a learned model: nothing is
+	// trained and no history beyond the average is kept.
+	LoadBalanceAdaptive = "adaptive"
 )
 
 // MaxMultipath bounds [[proxies]].multipath.
@@ -782,16 +805,25 @@ func (c *Config) Validate(role string) error {
 	if c.Obfuscation.JitterMillis < 0 {
 		problems = append(problems, "obfuscation.jitter_millis cannot be negative")
 	}
+	if c.Obfuscation.Disguise != "" && !obfs.IsDisguise(c.Obfuscation.Disguise) {
+		problems = append(problems, fmt.Sprintf("obfuscation.disguise %q is not supported (use one of %s)",
+			c.Obfuscation.Disguise, strings.Join(obfs.Disguises, ", ")))
+	}
+	if c.Obfuscation.Disguise != "" && !c.Obfuscation.Enabled {
+		c.Warnings = append(c.Warnings,
+			"obfuscation.disguise is set but obfuscation.enabled is false: the disguise is a wrapper on the connection, "+
+				"so it is applied only when the section is enabled")
+	}
 	if c.Server.RateLimitPerSecond < 0 {
 		problems = append(problems, "server.rate_limit_per_second cannot be negative")
 	}
 	switch c.Server.LoadBalance {
-	case LoadBalanceRoundRobin, LoadBalanceRandom, LoadBalanceLatency, LoadBalanceFailover:
+	case LoadBalanceRoundRobin, LoadBalanceRandom, LoadBalanceLatency, LoadBalanceFailover, LoadBalanceAdaptive:
 	default:
 		problems = append(problems, fmt.Sprintf(
-			"server.load_balance %q is not supported (use %s, %s, %s or %s)",
+			"server.load_balance %q is not supported (use %s, %s, %s, %s or %s)",
 			c.Server.LoadBalance, LoadBalanceRoundRobin, LoadBalanceRandom,
-			LoadBalanceLatency, LoadBalanceFailover))
+			LoadBalanceLatency, LoadBalanceFailover, LoadBalanceAdaptive))
 	}
 	if c.Server.LoadBalance != LoadBalanceRoundRobin {
 		c.Warnings = append(c.Warnings,

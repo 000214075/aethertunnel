@@ -16,6 +16,7 @@ import (
 
 	"github.com/aethertunnel/aethertunnel/pkg/config"
 	"github.com/aethertunnel/aethertunnel/pkg/crypto"
+	"github.com/aethertunnel/aethertunnel/pkg/obfs"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
 )
 
@@ -173,14 +174,50 @@ func (s *Server) framerOptions() protocol.FramerOptions {
 // Cipher reports the encryption algorithm in use ("none" when disabled).
 func (s *Server) Cipher() string { return s.cipher.Algorithm() }
 
+// disguisedListener wraps what it accepts: TLS first, then the obfuscation wrapper.
+//
+// The order matters. The disguise has to be the outermost layer, because that is
+// what an observer sees; wrapping inside TLS would put record headers inside a TLS
+// session, where they are not visible.
+type disguisedListener struct {
+	net.Listener
+	tlsConfig *tls.Config
+	disguise  string
+}
+
+func (l *disguisedListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+
+	wrapped := conn
+	if l.tlsConfig != nil {
+		wrapped = tls.Server(wrapped, l.tlsConfig)
+	}
+	if l.disguise != "" && l.disguise != obfs.DisguiseNone {
+		disguised, err := obfs.Wrap(wrapped, l.disguise)
+		if err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		wrapped = disguised
+	}
+	return wrapped, nil
+}
+
 // Run listens and serves until the listener is closed or ctx is cancelled.
 func (s *Server) Run(ctx context.Context) error {
 	listener, err := net.Listen("tcp", s.cfg.ListenAddr())
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", s.cfg.ListenAddr(), err)
 	}
-	if s.tlsConfig != nil {
-		listener = tls.NewListener(listener, s.tlsConfig)
+	if s.tlsConfig != nil || s.cfg.ObfuscationDisguise() != obfs.DisguiseNone {
+		listener = &disguisedListener{
+			Listener:  listener,
+			tlsConfig: s.tlsConfig,
+			disguise:  s.cfg.ObfuscationDisguise(),
+		}
 	}
 	s.listener = listener
 
@@ -191,6 +228,10 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	if s.tlsConfig != nil {
 		s.logger.Printf("the control port is wrapped in TLS")
+	}
+	if s.cfg.ObfuscationDisguise() != obfs.DisguiseNone {
+		s.logger.Printf("connection disguise: %s (nothing is encrypted by it; see [encryption] and [transport])",
+			s.cfg.ObfuscationDisguise())
 	}
 	if s.cfg.Identity.Enabled {
 		s.logger.Printf("client identities: %d allowed key(s), require_identity=%v",

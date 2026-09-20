@@ -90,9 +90,13 @@ type Tunnel struct {
 	group *ProxyGroup
 
 	// dialLatency is an exponentially weighted average of how long this member
-	// took to answer a request for a stream, in nanoseconds. The latency
-	// strategy picks the smallest.
+	// took to answer a request for a stream, in nanoseconds. The latency and
+	// adaptive strategies use it, and zero means the member has never answered.
 	dialLatency atomic.Int64
+
+	// failures counts consecutive failed requests for a stream. A success resets
+	// it, so it measures the member's present state rather than its history.
+	failures atomic.Int64
 
 	Active   atomic.Int64
 	Total    atomic.Int64
@@ -408,11 +412,56 @@ func (g *ProxyGroup) pickExcluding(tried map[*Tunnel]bool) *Tunnel {
 		// it stops being healthy.
 		return candidates[0]
 
+	case config.LoadBalanceAdaptive:
+		return g.pickByCost(candidates)
+
 	default: // round-robin
 		n := g.counter.Add(1) - 1
 		return candidates[int(n%uint64(len(candidates)))]
 	}
 }
+
+// pickByCost returns the member with the lowest cost, breaking ties by rotating
+// through the candidates so that equal members share the load.
+//
+// Cost is the member's moving-average response time multiplied by a penalty for its
+// consecutive failures. A member that has never answered a stream has no average and
+// therefore the lowest possible cost: it is tried first, which is how a pool learns
+// what a new member costs.
+func (g *ProxyGroup) pickByCost(candidates []*Tunnel) *Tunnel {
+	start := int((g.counter.Add(1) - 1) % uint64(len(candidates)))
+
+	best := candidates[start]
+	bestScore := best.cost()
+	for offset := 1; offset < len(candidates); offset++ {
+		candidate := candidates[(start+offset)%len(candidates)]
+		if score := candidate.cost(); score < bestScore {
+			best, bestScore = candidate, score
+		}
+	}
+	return best
+}
+
+// cost is the adaptive strategy's estimate of what one stream through this member
+// costs, in nanoseconds. An unmeasured member scores zero.
+func (t *Tunnel) cost() int64 {
+	latency := t.dialLatency.Load()
+	if latency <= 0 {
+		return 0
+	}
+
+	// The penalty is capped so that a member with a long outage is still tried:
+	// without a cap it could never recover, because every other member would
+	// outscore it forever.
+	failures := t.failures.Load()
+	if failures > maxCostFailures {
+		failures = maxCostFailures
+	}
+	return latency * (1 + 2*failures)
+}
+
+// maxCostFailures bounds how many consecutive failures are counted against a member.
+const maxCostFailures = 4
 
 // --- tcp ----------------------------------------------------------------------
 
@@ -484,8 +533,10 @@ func (g *ProxyGroup) openStream(member *Tunnel, visitor bool) (*openedStream, er
 	started := time.Now()
 	dc, release, err := member.openStream(visitor)
 	if err != nil {
+		member.failures.Add(1)
 		return nil, err
 	}
+	member.failures.Store(0)
 
 	elapsed := time.Since(started).Nanoseconds()
 	if previous := member.dialLatency.Load(); previous == 0 {
@@ -714,6 +765,7 @@ type MemberSummary struct {
 	ClientID  string  `json:"client_id"`
 	LocalAddr string  `json:"local_addr"`
 	LatencyMS float64 `json:"latency_ms"`
+	Failures  int64   `json:"consecutive_failures"`
 	Active    int64   `json:"active_connections"`
 	Total     int64   `json:"total_connections"`
 	BytesIn   int64   `json:"bytes_in"`
@@ -729,6 +781,7 @@ func (g *ProxyGroup) Summary() []MemberSummary {
 			ClientID:  member.Session.ID,
 			LocalAddr: member.Spec.LocalAddr,
 			LatencyMS: float64(member.Latency().Microseconds()) / 1000,
+			Failures:  member.failures.Load(),
 			Active:    member.Active.Load(),
 			Total:     member.Total.Load(),
 			BytesIn:   member.BytesIn.Load(),

@@ -333,7 +333,8 @@ func TestMultipathSpreadsDatagramsOverSeveralConnections(t *testing.T) {
 	cfg := testConfig(t, false)
 	cfg.Server.DialTimeoutSecs = 3
 
-	port := freePort(t)
+	// A udp proxy binds UDP, so the port comes from a UDP probe.
+	port := freeUDPPort(t)
 	rs := startServer(t, cfg)
 
 	agent := startAgent(t, rs.addr, false, map[string]dataHandler{

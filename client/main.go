@@ -23,6 +23,7 @@ import (
 	"github.com/aethertunnel/aethertunnel/pkg/crypto"
 	"github.com/aethertunnel/aethertunnel/pkg/discovery"
 	flynet "github.com/aethertunnel/aethertunnel/pkg/net"
+	"github.com/aethertunnel/aethertunnel/pkg/obfs"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
 	"github.com/aethertunnel/aethertunnel/pkg/vpn"
 )
@@ -288,10 +289,28 @@ func (c *client) dialServer() (net.Conn, error) {
 	dialer := &net.Dialer{Timeout: dialTimeout}
 
 	target := c.serverAddr()
+	var conn net.Conn
+	var err error
 	if c.tlsConfig == nil {
-		return dialer.Dial("tcp", target)
+		conn, err = dialer.Dial("tcp", target)
+	} else {
+		conn, err = tls.DialWithDialer(dialer, "tcp", target, c.tlsConfig)
 	}
-	return tls.DialWithDialer(dialer, "tcp", target, c.tlsConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	// The disguise is the outermost layer, so an observer sees it rather than this
+	// program's frame header. Wrapping inside TLS would hide them instead.
+	if disguise := c.cfg.ObfuscationDisguise(); disguise != obfs.DisguiseNone {
+		disguised, err := obfs.Wrap(conn, disguise)
+		if err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		return disguised, nil
+	}
+	return conn, nil
 }
 
 // attachIdentity adds the Ed25519 assertion the server checks when
