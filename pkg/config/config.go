@@ -586,6 +586,42 @@ func (c *Config) DHTSettings(logger *log.Logger) discovery.Config {
 	}
 }
 
+// Environment variables that override the values in the file.
+//
+// They exist for deployments where the configuration file is a ConfigMap, which is
+// world-readable inside the cluster, while the credentials are a Secret. The file
+// then never contains a credential at all.
+const (
+	EnvAuthToken            = "AETHERTUNNEL_AUTH_TOKEN"
+	EnvDashboardToken       = "AETHERTUNNEL_DASHBOARD_TOKEN"
+	EnvEncryptionPassphrase = "AETHERTUNNEL_ENCRYPTION_PASSPHRASE"
+)
+
+// ApplyEnv overrides the credentials with the values of the environment variables
+// above, and reports which ones it used. An unset or empty variable leaves the file's
+// value in place, so this does nothing outside a container.
+//
+// The auth token feeds the encryption passphrase as well when no passphrase is set,
+// which is why the override happens before anything derives a key from it.
+func (c *Config) ApplyEnv() []string {
+	var applied []string
+
+	if token := os.Getenv(EnvAuthToken); token != "" {
+		c.Server.AuthToken = token
+		c.Client.AuthToken = token
+		applied = append(applied, EnvAuthToken)
+	}
+	if token := os.Getenv(EnvDashboardToken); token != "" {
+		c.Dashboard.Token = token
+		applied = append(applied, EnvDashboardToken)
+	}
+	if passphrase := os.Getenv(EnvEncryptionPassphrase); passphrase != "" {
+		c.Encryption.Passphrase = passphrase
+		applied = append(applied, EnvEncryptionPassphrase)
+	}
+	return applied
+}
+
 // EncryptionPassphrase returns the passphrase used for key derivation. An empty
 // [encryption].passphrase falls back to the auth token, so enabling encryption
 // does not require distributing a second secret.
@@ -1156,6 +1192,16 @@ func Load(filename string, opts ValidateOptions) (*Config, error) {
 	}
 
 	cfg.applyDefaults()
+
+	// Credentials from the environment are applied before validation, so a
+	// configuration file that deliberately holds no secret passes the checks that
+	// require one. The names used are reported as warnings so the operator can see
+	// that the file was not the whole story.
+	if applied := cfg.ApplyEnv(); len(applied) > 0 {
+		cfg.Warnings = append(cfg.Warnings,
+			fmt.Sprintf("%s overrode the configuration file", strings.Join(applied, ", ")))
+	}
+
 	if err := cfg.Validate(opts.Role); err != nil {
 		return nil, err
 	}

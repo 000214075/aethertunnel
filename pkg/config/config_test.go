@@ -508,3 +508,106 @@ func TestDHTNodeIDRoundTrip(t *testing.T) {
 		t.Errorf("the parsed node id ends in %#x, want 0xff", id[19])
 	}
 }
+
+// --- environment overrides ----------------------------------------------------
+
+func TestEnvironmentSuppliesTheCredentialsTheFileOmits(t *testing.T) {
+	// A container configuration: the file holds no secret at all, because the
+	// ConfigMap it is stored in is readable by anyone with access to the namespace.
+	path := writeConfig(t, `
+[server]
+bind_addr = "0.0.0.0"
+bind_port = 7001
+
+[dashboard]
+enabled = true
+bind_addr = "0.0.0.0"
+port = 7500
+`)
+	t.Setenv(EnvAuthToken, "from-the-environment-0123456789")
+	t.Setenv(EnvDashboardToken, "dashboard-token-0123456789")
+
+	cfg, err := LoadServer(path)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if cfg.Server.AuthToken != "from-the-environment-0123456789" {
+		t.Errorf("auth_token is %q, want the value from the environment", cfg.Server.AuthToken)
+	}
+	if cfg.Dashboard.Token != "dashboard-token-0123456789" {
+		t.Errorf("dashboard.token is %q, want the value from the environment", cfg.Dashboard.Token)
+	}
+	if !strings.Contains(strings.Join(cfg.Warnings, "\n"), EnvAuthToken) {
+		t.Errorf("expected a warning naming the overriding variable, got %v", cfg.Warnings)
+	}
+}
+
+func TestEnvironmentPassphraseOverridesTheFile(t *testing.T) {
+	path := writeConfig(t, `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[encryption]
+enabled = true
+passphrase = "from-the-file"
+`)
+	t.Setenv(EnvEncryptionPassphrase, "from-the-environment")
+
+	cfg, err := LoadServer(path)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if got := cfg.EncryptionPassphrase(RoleServer); got != "from-the-environment" {
+		t.Fatalf("the passphrase is %q, want the value from the environment", got)
+	}
+}
+
+func TestAnUnsetEnvironmentLeavesTheFileAlone(t *testing.T) {
+	t.Setenv(EnvAuthToken, "")
+	t.Setenv(EnvDashboardToken, "")
+	t.Setenv(EnvEncryptionPassphrase, "")
+
+	path := writeConfig(t, `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[encryption]
+enabled = true
+passphrase = "from-the-file"
+`)
+	cfg, err := LoadServer(path)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if cfg.Server.AuthToken != "0123456789abcdef0123456789abcdef" {
+		t.Errorf("auth_token is %q, want the file's value", cfg.Server.AuthToken)
+	}
+	if got := cfg.EncryptionPassphrase(RoleServer); got != "from-the-file" {
+		t.Errorf("the passphrase is %q, want the file's value", got)
+	}
+	for _, warning := range cfg.Warnings {
+		if strings.Contains(warning, "overrode the configuration file") {
+			t.Errorf("an unset variable reported an override: %q", warning)
+		}
+	}
+}
+
+func TestEnvironmentAppliesToAClientAsWell(t *testing.T) {
+	path := writeConfig(t, `
+[client]
+server_addr = "example.com:7001"
+`)
+	t.Setenv(EnvAuthToken, "client-token-0123456789ab")
+
+	cfg, err := LoadClient(path)
+	if err != nil {
+		t.Fatalf("LoadClient: %v", err)
+	}
+	if cfg.Client.AuthToken != "client-token-0123456789ab" {
+		t.Fatalf("client.auth_token is %q, want the value from the environment", cfg.Client.AuthToken)
+	}
+}

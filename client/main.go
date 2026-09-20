@@ -141,6 +141,7 @@ func main() {
 	if err != nil {
 		logger.Fatalf("%v", err)
 	}
+
 	for _, warning := range cfg.Warnings {
 		logger.Printf("warning: %s", warning)
 	}

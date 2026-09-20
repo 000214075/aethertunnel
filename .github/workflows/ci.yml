@@ -24,18 +24,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Go 1.22's macOS linker does not emit LC_UUID, and the dyld on
-          # macos-latest refuses to run such binaries ("missing LC_UUID load
-          # command", signal: abort trap) — including the test binaries. 1.23+
-          # builds fine, and the module still declares 1.22.2 as its minimum.
+          # 1.24 is the minimum: the post-quantum key agreement uses crypto/mlkem
+          # from the standard library, which first shipped in that release. The
+          # macOS job also needs 1.23 or later, because 1.22's linker omitted
+          # LC_UUID and the dyld on macos-latest refuses to run such binaries.
           - os: ubuntu-latest
-            go: '1.23'
+            go: '1.24'
             exe: ''
           - os: windows-latest
-            go: '1.23'
+            go: '1.24'
             exe: '.exe'
           - os: macos-latest
-            go: '1.23'
+            go: '1.24'
             exe: ''
     steps:
       - uses: actions/checkout@v4
@@ -59,7 +59,22 @@ jobs:
         run: go vet ./...
 
       - name: go test
-        run: go test ./... -count=1 -timeout 180s
+        run: go test ./... -count=1 -timeout 300s
+
+      # The tun device binding is compiled only on Linux, so a change there is
+      # invisible to a build on any other platform. This cross-build is what keeps
+      # every supported target compiling.
+      - name: every release target compiles
+        if: runner.os == 'Linux'
+        run: |
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            GOOS="${target%/*}" GOARCH="${target#*/}" CGO_ENABLED=0 go build ./...
+            echo "built $target"
+          done
+
+      - name: go test -race
+        if: runner.os == 'Linux'
+        run: go test ./... -count=1 -race -timeout 600s
 
       # -o with an explicit name does not append .exe on Windows, so the suffix is
       # part of the artifact name on every platform.

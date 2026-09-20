@@ -1,0 +1,12 @@
+.git
+.github
+bin
+dist
+release
+*.exe
+*.test
+*.jsonl
+*.key
+*.pem
+aethertunnel-audit*.jsonl
+aethertunnel-ledger*
