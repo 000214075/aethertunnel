@@ -23,13 +23,26 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          # Go 1.22's macOS linker does not emit LC_UUID, and the dyld on
+          # macos-latest refuses to run such binaries ("missing LC_UUID load
+          # command", signal: abort trap) — including the test binaries. 1.23+
+          # builds fine, and the module still declares 1.22.2 as its minimum.
+          - os: ubuntu-latest
+            go: '1.23'
+            exe: ''
+          - os: windows-latest
+            go: '1.23'
+            exe: '.exe'
+          - os: macos-latest
+            go: '1.23'
+            exe: ''
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: ${{ matrix.go }}
           cache: true
 
       - name: gofmt
@@ -48,20 +61,17 @@ jobs:
       - name: go test
         run: go test ./... -count=1 -timeout 180s
 
+      # -o with an explicit name does not append .exe on Windows, so the suffix is
+      # part of the artifact name on every platform.
       - name: build
         run: |
-          go build -o bin/aethertunnel-server .
-          go build -o bin/aethertunnel-client ./client
+          go build -o bin/aethertunnel-server${{ matrix.exe }} .
+          go build -o bin/aethertunnel-client${{ matrix.exe }} ./client
 
-      - name: configuration examples are valid
+      - name: the example configurations are valid
         run: |
-          ./bin/aethertunnel-server --config server.toml.example --check
-          ./bin/aethertunnel-client --config client.toml.example --check
-        shell: bash
-        if: runner.os != 'Windows'
+          ./bin/aethertunnel-server${{ matrix.exe }} --config server.toml.example --check
+          ./bin/aethertunnel-client${{ matrix.exe }} --config client.toml.example --check
 
-      - name: configuration examples are valid (windows)
-        run: |
-          .\bin\aethertunnel-server.exe --config server.toml.example --check
-          .\bin\aethertunnel-client.exe --config client.toml.example --check
-        if: runner.os == 'Windows'
+      - name: the binaries report their version
+        run: ./bin/aethertunnel-server${{ matrix.exe }} --version
