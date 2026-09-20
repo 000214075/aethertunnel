@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: aethertunnel
+  namespace: aethertunnel
+  labels:
+    app.kubernetes.io/name: aethertunnel
+    app.kubernetes.io/component: server
+spec:
+  type: LoadBalancer
+  # externalTrafficPolicy: Local keeps the client's source address, which is what the
+  # access-control lists and the per-address rate limit act on. With Cluster, every
+  # connection appears to come from a node address.
+  externalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/name: aethertunnel
+    app.kubernetes.io/component: server
+  ports:
+    - name: control
+      port: 7001
+      targetPort: control
+      protocol: TCP
+    - name: rendezvous
+      port: 7002
+      targetPort: rendezvous
+      protocol: UDP
+    - name: dashboard
+      port: 7500
+      targetPort: dashboard
+      protocol: TCP

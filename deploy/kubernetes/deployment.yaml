@@ -1,0 +1,108 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aethertunnel-server
+  namespace: aethertunnel
+  labels:
+    app.kubernetes.io/name: aethertunnel
+    app.kubernetes.io/component: server
+spec:
+  replicas: 1
+  # The server publishes the proxies its clients register on the pod that runs it,
+  # and a client session lives on exactly one pod, so a rolling update drops every
+  # client once. Two replicas do not share proxied ports.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aethertunnel
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aethertunnel
+        app.kubernetes.io/component: server
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: server
+          image: ghcr.io/aethertunnel/aethertunnel:latest
+          args: ["--config", "/etc/aethertunnel/server.toml"]
+          envFrom:
+            - secretRef:
+                name: aethertunnel-secrets
+          ports:
+            - name: control
+              containerPort: 7001
+              protocol: TCP
+            - name: dashboard
+              containerPort: 7500
+              protocol: TCP
+            - name: rendezvous
+              containerPort: 7002
+              protocol: UDP
+            - name: dht
+              containerPort: 7001
+              protocol: UDP
+          # The control port cannot answer an HTTP probe, so liveness and readiness
+          # are taken from the dashboard's own probes. Both are public and cheap.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: dashboard
+            initialDelaySeconds: 5
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: dashboard
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # To use the [vpn] section, uncomment the capability and the device mount
+          # below, set vpn.enabled and vpn.address in the ConfigMap, and run the pod
+          # with a tun device on the node. Without them the server refuses to start
+          # when vpn.enabled is true, rather than running without a tunnel.
+          #
+          # securityContext:
+          #   capabilities:
+          #     drop: ["ALL"]
+          #     add: ["NET_ADMIN"]
+          # volumeMounts:
+          #   - name: tun
+          #     mountPath: /dev/net/tun
+          # volumes:
+          #   - name: tun
+          #     hostPath:
+          #       path: /dev/net/tun
+          #       type: CharDevice
+          volumeMounts:
+            - name: config
+              mountPath: /etc/aethertunnel
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/aethertunnel
+      volumes:
+        - name: config
+          configMap:
+            name: aethertunnel-server
+        - name: state
+          emptyDir: {}

@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aethertunnel-server
+  namespace: aethertunnel
+  labels:
+    app.kubernetes.io/name: aethertunnel
+    app.kubernetes.io/component: server
+data:
+  # server.toml. It holds no credential: the auth token and the dashboard token come
+  # from the Secret, which the Deployment mounts as environment variables, and
+  # config.ApplyEnv puts them into the loaded configuration.
+  server.toml: |
+    [server]
+    bind_addr = "0.0.0.0"
+    bind_port = 7001
+    max_connections = 512
+    heartbeat_seconds = 30
+    read_timeout_seconds = 120
+    dial_timeout_seconds = 10
+    p2p_port = 7002
+    load_balance = "adaptive"
+
+    [dashboard]
+    enabled = true
+    bind_addr = "0.0.0.0"
+    port = 7500
+
+    [metrics]
+    enabled = true
+
+    [audit]
+    enabled = true
+    path = "/var/lib/aethertunnel/audit.jsonl"
+    max_bytes = 33554432
+
+    [ledger]
+    enabled = true
+    path = "/var/lib/aethertunnel/ledger.jsonl"
+    signing_key_file = "/var/lib/aethertunnel/ledger.key"
+
+    [dht]
+    enabled = true
+    listen_addr = "0.0.0.0:7001"
+    advertise_host = "aethertunnel.aethertunnel.svc.cluster.local"
+
+    [obfuscation]
+    enabled = true
+    pad_to = 256
+    disguise = "tls-record"

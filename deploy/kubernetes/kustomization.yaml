@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: aethertunnel
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - deployment.yaml
+  - service.yaml
+  # Create the Secret from secret.example.yaml after replacing both tokens:
+  #   kubectl -n aethertunnel create secret generic aethertunnel-secrets \
+  #     --from-literal=auth-token="$(head -c 32 /dev/urandom | base64)" \
+  #     --from-literal=dashboard-token="$(head -c 32 /dev/urandom | base64)"
+  # The Secret is not listed here so that it is never applied from a file that is
+  # tracked in git.
+
+images:
+  - name: ghcr.io/aethertunnel/aethertunnel
+    newTag: v3.2.0

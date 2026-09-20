@@ -134,7 +134,8 @@ package-lock.json
 .terraform/
 
 # === 部署工具 ===
-deploy/
+# deploy/ is a deliverable of this project (the Kubernetes manifests), so it is not
+# ignored here. Only the build outputs of a deployment are: see dist/ and bin/ above.
 deployment/
 
 # === 其他 ===
