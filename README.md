@@ -361,7 +361,7 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 | Containers and orchestration | ✅ works | a multi-stage `Dockerfile` ending in distroless, and manifests under `deploy/kubernetes/`; credentials can come from environment variables instead of the ConfigMap |
 | Platforms | ✅ works | linux/darwin/windows × amd64/arm64; `scripts/build-release.*` produces 12 binaries + SHA256 |
 | Config validation | ✅ works | unknown keys are **reported**, not ignored; `--check` validates without starting |
-| Tests | ✅ works | unit tests, a real end-to-end tunnel test in cleartext and encrypted modes, a 75-check operations script `scripts/smoke-test.ps1`, and a layer-3 run on real tun devices in `scripts/vpn-linux-test.sh` |
+| Tests | ✅ works | unit tests, a real end-to-end tunnel test in cleartext and encrypted modes, an 83-check operations script `scripts/smoke-test.ps1`, and a layer-3 run on real tun devices in `scripts/vpn-linux-test.sh` |
 
 ### What this release does not do
 
