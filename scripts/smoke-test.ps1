@@ -2017,6 +2017,20 @@ Test-Check 'the ban appears in the server log and the audit log' {
     return $true
 }
 
+Test-Check 'every failed authentication is in the audit log' {
+    # The record is what makes a brute-force attempt visible after the fact, and it
+    # was written by the code but no check ever read it back.
+    $records = @()
+    foreach ($line in Read-AuditLines (Join-Path $Root 'ban-audit.jsonl')) {
+        try { $parsed = $line | ConvertFrom-Json } catch { continue }
+        if ($parsed.event -eq 'auth_failed') { $records += $parsed }
+    }
+    if ($records.Count -lt 3) { throw "$($records.Count) auth_failed records, want at least the three failures that earned the ban" }
+    if ($records[0].outcome -ne 'denied') { throw "the record's outcome is '$($records[0].outcome)'" }
+    if (-not $records[0].remote) { throw "the record names no source" }
+    return $true
+}
+
 if ($banBadClient -and -not $banBadClient.HasExited) { Stop-Process -Id $banBadClient.Id -Force -ErrorAction SilentlyContinue }
 
 $banOkClientLog = Join-Path $Root 'ban-ok-client.log'
@@ -2069,6 +2083,128 @@ Test-Check 'the ban lapses after ban_seconds' {
 
 if ($banOkClient -and -not $banOkClient.HasExited) { Stop-Process -Id $banOkClient.Id -Force -ErrorAction SilentlyContinue }
 if ($banServer -and -not $banServer.HasExited) { Stop-Process -Id $banServer.Id -Force -ErrorAction SilentlyContinue }
+
+Write-Step "checking the dashboard disconnect and a refused registration"
+
+# A server of its own with two owner clients: one publishes a tcp proxy, the other
+# asks for the same name as a udp proxy, which the server refuses. Both of those
+# outcomes are administrative: a disconnect ordered from the dashboard, and a
+# registration the server turned down. Both are written to the audit log and neither
+# record was ever read back by a check.
+$dashControlPort = Get-FreePort
+$dashDashboardPort = Get-FreePort
+$dashAudit = Join-Path $Root 'dashboard-action-audit.jsonl'
+$dashToml = Join-Path $Root 'dashboard-action.toml'
+$dashServerLog = Join-Path $Root 'dashboard-action-server.log'
+@"
+[server]
+bind_addr = "127.0.0.1"
+bind_port = $dashControlPort
+auth_token = "$token"
+
+[dashboard]
+enabled = true
+bind_addr = "127.0.0.1"
+port = $dashDashboardPort
+token = "$token"
+
+[metrics]
+enabled = true
+
+[audit]
+enabled = true
+path = "$RootFwd/dashboard-action-audit.jsonl"
+"@ | Set-Content -Path $dashToml -Encoding UTF8
+$dashServer = Start-Background -FilePath $serverExe -Arguments @('-config', $dashToml) -LogPath $dashServerLog -WorkingDirectory $Root
+Wait-ForPort -Port $dashControlPort | Out-Null
+
+$dashRemotePort = Get-FreePort
+$dashOwnerToml = Join-Path $Root 'dashboard-owner.toml'
+@"
+[client]
+server_addr = "127.0.0.1:$dashControlPort"
+auth_token = "$token"
+reconnect_seconds = 1
+
+[[proxies]]
+name = "dashboard-owner"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = 19100
+remote_port = $dashRemotePort
+"@ | Set-Content -Path $dashOwnerToml -Encoding UTF8
+$dashOwnerLog = Join-Path $Root 'dashboard-owner.log'
+$dashOwner = Start-Background -FilePath $clientExe -Arguments @('-config', $dashOwnerToml) -LogPath $dashOwnerLog -WorkingDirectory $Root
+
+$conflictToml = Join-Path $Root 'dashboard-conflict.toml'
+@"
+[client]
+server_addr = "127.0.0.1:$dashControlPort"
+auth_token = "$token"
+reconnect_seconds = 1
+
+# The same name as the owner's proxy, published as another type: the server refuses
+# the second registration rather than serving one name from two kinds of socket.
+[[proxies]]
+name = "dashboard-owner"
+type = "udp"
+local_ip = "127.0.0.1"
+local_port = 19102
+remote_port = $dashRemotePort
+"@ | Set-Content -Path $conflictToml -Encoding UTF8
+$conflictLog = Join-Path $Root 'dashboard-conflict.log'
+$conflictClient = Start-Background -FilePath $clientExe -Arguments @('-config', $conflictToml) -LogPath $conflictLog -WorkingDirectory $Root
+
+Test-Check 'a registration the server refuses is in the audit log and changes nothing' {
+    $deadline = (Get-Date).AddSeconds(20)
+    $record = $null
+    while ((Get-Date) -lt $deadline) {
+        foreach ($line in (Read-AuditLines $dashAudit)) {
+            try { $parsed = $line | ConvertFrom-Json } catch { continue }
+            if ($parsed.event -eq 'proxy_rejected') { $record = $parsed; break }
+        }
+        if ($record) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    if (-not $record) { throw "no proxy_rejected record after twenty seconds" }
+    if ($record.proxy -ne 'dashboard-owner') { throw "the record names proxy '$($record.proxy)'" }
+    if ($record.outcome -ne 'denied') { throw "the record's outcome is '$($record.outcome)'" }
+
+    $proxies = (Invoke-Curl @('-s', '-H', "Authorization: Bearer $token", "http://127.0.0.1:$dashDashboardPort/api/proxies") | ConvertFrom-Json).proxies
+    $published = @($proxies | Where-Object { $_.name -eq 'dashboard-owner' })
+    if ($published.Count -ne 1) { throw "$($published.Count) proxies named dashboard-owner are published" }
+    if ($published[0].type -ne 'tcp') { throw "the published proxy is of type $($published[0].type), so the refused one replaced it" }
+    return $true
+}
+
+Test-Check 'a disconnect ordered from the dashboard is in the audit log' {
+    $clients = (Invoke-Curl @('-s', '-H', "Authorization: Bearer $token", "http://127.0.0.1:$dashDashboardPort/api/clients") | ConvertFrom-Json).clients
+    $owner = $clients | Where-Object { $_.proxies -contains 'dashboard-owner' }
+    if (-not $owner) { throw "the owner client is not in /api/clients: $($clients | ConvertTo-Json -Compress)" }
+
+    $answer = Invoke-Curl @('-s', '-X', 'DELETE', '-H', "Authorization: Bearer $token", "http://127.0.0.1:$dashDashboardPort/api/clients/$($owner.id)")
+    if ($answer -notmatch '"ok":true') { throw "the dashboard answered '$answer'" }
+
+    $record = $null
+    $deadline = (Get-Date).AddSeconds(10)
+    while ((Get-Date) -lt $deadline) {
+        foreach ($line in (Read-AuditLines $dashAudit)) {
+            try { $parsed = $line | ConvertFrom-Json } catch { continue }
+            if ($parsed.event -eq 'dashboard_action') { $record = $parsed; break }
+        }
+        if ($record) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    if (-not $record) { throw "no dashboard_action record after the disconnect" }
+    if ($record.client_id -ne $owner.id) { throw "the record names client '$($record.client_id)', want '$($owner.id)'" }
+    if ($record.outcome -ne 'ok') { throw "the record's outcome is '$($record.outcome)'" }
+    if (-not (Read-Log $dashServerLog) -match 'disconnecting client') { throw "the server log does not say it disconnected anyone" }
+    return $true
+}
+
+if ($conflictClient -and -not $conflictClient.HasExited) { Stop-Process -Id $conflictClient.Id -Force -ErrorAction SilentlyContinue }
+if ($dashOwner -and -not $dashOwner.HasExited) { Stop-Process -Id $dashOwner.Id -Force -ErrorAction SilentlyContinue }
+if ($dashServer -and -not $dashServer.HasExited) { Stop-Process -Id $dashServer.Id -Force -ErrorAction SilentlyContinue }
 
 Write-Step "checking the server-wide access controls"
 

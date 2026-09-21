@@ -51,6 +51,7 @@ tunnel_net="192.168.99"
 cleanup() {
   for pid in $(ip netns pids "$ns" 2>/dev/null); do kill "$pid" 2>/dev/null; done
   [ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null
+  [ -n "${no_vpn_pid:-}" ] && kill "$no_vpn_pid" 2>/dev/null
   ip netns del "$ns" 2>/dev/null
   ip link del "atveth-h$$" 2>/dev/null
   if [ "$failures" -eq 0 ]; then
@@ -102,6 +103,9 @@ enabled = true
 device = "at0"
 address = "$tunnel_net.0/24"
 mtu = 1400
+# Every session has to be on the tunnel: the check at the end uses this to produce a
+# refusal, which is the other half of the address handling.
+require = true
 EOF
 
 cat >"$work/client.toml" <<EOF
@@ -281,6 +285,48 @@ else
 fi
 released="$(json_number "$(http_get /api/vpn)" addresses_used)"
 [ "${released:-1}" = "0" ] && pass "the address went back to the pool" || fail "the tunnel still reports ${released:-?} addresses handed out"
+
+echo "== a session that does not ask for the tunnel is refused"
+# The server requires the tunnel, and this client's configuration has no [vpn]
+# section, so the server turns the session away. The refusal is an administrative
+# event: it says which session was not admitted and why, and it was written by the
+# code without any check ever reading it back.
+cat >"$work/no-vpn-client.toml" <<EOF
+[client]
+server_addr = "$veth_host:$control_port"
+auth_token = "vpn-linux-test-token-0123456789"
+
+[[proxies]]
+name = "no-vpn-proxy"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = 9
+remote_port = $((control_port + 100))
+EOF
+"$client_bin" --config "$work/no-vpn-client.toml" >"$work/no-vpn-client.log" 2>&1 &
+no_vpn_pid=$!
+deadline=$((SECONDS + 20))
+until grep -q '"event":"vpn_address_rejected"' "$work/audit.jsonl"; do
+  [ "$SECONDS" -lt "$deadline" ] || break
+  sleep 0.2
+done
+if grep -q '"event":"vpn_address_rejected"' "$work/audit.jsonl"; then
+  pass "the audit log recorded the refusal of a session that did not ask for the tunnel"
+else
+  fail "the audit log has no vpn_address_rejected event" "$(tail -n 3 "$work/audit.jsonl")"
+fi
+if grep -q 'requires a layer-3 tunnel' "$work/server.log"; then
+  pass "the server named the reason for the refusal"
+else
+  fail "the server did not name the reason" "$(tail -n 3 "$work/server.log")"
+fi
+refusal_record="$(grep 'vpn_address_rejected' "$work/audit.jsonl" | tail -n 1)"
+if echo "$refusal_record" | grep -q 'requires a layer-3 tunnel'; then
+  pass "the record itself carries the reason"
+else
+  fail "the record does not carry the reason" "$refusal_record"
+fi
+kill "$no_vpn_pid" 2>/dev/null
 
 echo
 if [ "$failures" -eq 0 ]; then

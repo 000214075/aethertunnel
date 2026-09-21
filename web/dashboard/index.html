@@ -476,6 +476,7 @@ a { color: var(--accent); }
                 <th data-i18n="proxies.col.remotePort">Remote port</th>
                 <th data-i18n="proxies.col.client">Client</th>
                 <th data-i18n="proxies.col.members">Members</th>
+                <th data-i18n="proxies.col.strategy">Load balancing</th>
                 <th data-i18n="proxies.col.activeConns">Active conns</th>
                 <th data-i18n="proxies.col.totalConns">Total conns</th>
                 <th data-i18n="proxies.col.bytesIn">Bytes in</th>
@@ -502,6 +503,7 @@ a { color: var(--accent); }
               <tr>
                 <th data-i18n="clients.col.id">Client ID</th>
                 <th data-i18n="clients.col.remoteAddr">Remote address</th>
+                <th data-i18n="clients.col.version">Client version</th>
                 <th data-i18n="clients.col.connectedAt">Connected at</th>
                 <th data-i18n="clients.col.lastHeartbeat">Last heartbeat</th>
                 <th data-i18n="clients.col.encrypted">Encrypted</th>
@@ -534,6 +536,7 @@ a { color: var(--accent); }
           <div><dt data-i18n="config.enabled">Encryption enabled</dt><dd id="cfgEncEnabled">—</dd></div>
           <div><dt data-i18n="config.algorithm">Algorithm</dt><dd id="cfgEncAlgorithm">—</dd></div>
           <div><dt data-i18n="config.authRequired">Token required</dt><dd id="cfgAuthRequired">—</dd></div>
+          <div><dt data-i18n="config.proxies">Published proxies</dt><dd id="cfgProxies">—</dd></div>
         </dl>
         <p class="panel-note" data-i18n="config.note">The API returns a redacted summary only — secrets and keys are never sent to the browser.</p>
       </div>
@@ -654,6 +657,7 @@ a { color: var(--accent); }
       'proxies.col.remotePort': 'Remote port',
       'proxies.col.client': 'Client',
       'proxies.col.members': 'Members',
+      'proxies.col.strategy': 'Load balancing',
       'proxies.membersOne': '1 member ({healthy} healthy)',
       'proxies.members': '{n} members ({healthy} healthy)',
       'proxies.col.activeConns': 'Active conns',
@@ -665,6 +669,7 @@ a { color: var(--accent); }
       'clients.count': '{n} connected',
       'clients.col.id': 'Client ID',
       'clients.col.remoteAddr': 'Remote address',
+      'clients.col.version': 'Client version',
       'clients.col.connectedAt': 'Connected at',
       'clients.col.lastHeartbeat': 'Last heartbeat',
       'clients.col.encrypted': 'Encrypted',
@@ -688,6 +693,7 @@ a { color: var(--accent); }
       'config.enabled': 'Encryption enabled',
       'config.algorithm': 'Algorithm',
       'config.authRequired': 'Token required',
+      'config.proxies': 'Published proxies',
       'config.refresh': 'Refresh',
       'config.note': 'The API returns a redacted summary only — secrets and keys are never sent to the browser.',
       'vpn.title': 'Layer-3 tunnel',
@@ -783,6 +789,7 @@ a { color: var(--accent); }
       'proxies.col.remotePort': '远端端口',
       'proxies.col.client': '客户端',
       'proxies.col.members': '成员',
+      'proxies.col.strategy': '负载均衡',
       'proxies.membersOne': '1 个成员（{healthy} 个可用）',
       'proxies.members': '{n} 个成员（{healthy} 个可用）',
       'proxies.col.activeConns': '活动连接',
@@ -794,6 +801,7 @@ a { color: var(--accent); }
       'clients.count': '已连接 {n} 个',
       'clients.col.id': '客户端 ID',
       'clients.col.remoteAddr': '远端地址',
+      'clients.col.version': '客户端版本',
       'clients.col.connectedAt': '连接时间',
       'clients.col.lastHeartbeat': '最近心跳',
       'clients.col.encrypted': '加密',
@@ -817,6 +825,7 @@ a { color: var(--accent); }
       'config.enabled': '已启用加密',
       'config.algorithm': '加密算法',
       'config.authRequired': '需要令牌',
+      'config.proxies': '发布的代理',
       'config.refresh': '刷新',
       'config.note': 'API 只返回脱敏摘要 —— 密钥等敏感信息不会发送到浏览器。',
       'vpn.title': '三层隧道',
@@ -1302,6 +1311,7 @@ a { color: var(--accent); }
       tr.appendChild(makeCell(proxy.remote_port, 'proxies.col.remotePort', 'num'));
       tr.appendChild(makeCell(proxy.client_id, 'proxies.col.client', 'id'));
       tr.appendChild(makeCell(membersLabel(proxy), 'proxies.col.members', 'num'));
+      tr.appendChild(makeCell(proxy.load_balance || proxy.group, 'proxies.col.strategy', 'id'));
       tr.appendChild(makeCell(fmtInt(proxy.active_connections), 'proxies.col.activeConns', 'num'));
       tr.appendChild(makeCell(fmtInt(proxy.total_connections), 'proxies.col.totalConns', 'num'));
       tr.appendChild(makeCell(fmtBytes(proxy.bytes_in), 'proxies.col.bytesIn', 'num'));
@@ -1357,6 +1367,7 @@ a { color: var(--accent); }
 
       tr.appendChild(makeCell(id, 'clients.col.id', 'id wrap'));
       tr.appendChild(makeCell(client.remote_addr, 'clients.col.remoteAddr', 'id'));
+      tr.appendChild(makeCell(client.client_version, 'clients.col.version', 'id'));
       tr.appendChild(withTitle(makeCell(fmtRelative(client.connected_at), 'clients.col.connectedAt'), fmtAbsolute(client.connected_at)));
 
       var hb = fmtRelative(client.last_heartbeat);
@@ -1425,7 +1436,7 @@ a { color: var(--accent); }
 
   function renderConfig(payload, errorMessage) {
     if (errorMessage) {
-      ['cfgBindAddr', 'cfgBindPort', 'cfgMaxConn', 'cfgEncEnabled', 'cfgEncAlgorithm', 'cfgAuthRequired']
+      ['cfgBindAddr', 'cfgBindPort', 'cfgMaxConn', 'cfgEncEnabled', 'cfgEncAlgorithm', 'cfgAuthRequired', 'cfgProxies']
         .concat(VPN_FIELDS)
         .forEach(function (id) { setText(el(id), null); });
       showError(t('err.config', { msg: errorMessage }));
@@ -1442,6 +1453,9 @@ a { color: var(--accent); }
     setText(el('cfgEncEnabled'), enc.enabled === undefined ? null : (enc.enabled ? t('common.yes') : t('common.no')));
     setText(el('cfgEncAlgorithm'), enc.algorithm);
     setText(el('cfgAuthRequired'), dash.auth_required === undefined ? null : (dash.auth_required ? t('common.yes') : t('common.no')));
+    // The count of proxies this server publishes for its own clients, which is not the
+    // same as the registered count on the overview: those belong to connected clients.
+    setText(el('cfgProxies'), cfg.proxies_configured === undefined ? null : fmtInt(cfg.proxies_configured));
     renderVPN(cfg.vpn);
   }
 
