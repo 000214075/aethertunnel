@@ -173,6 +173,28 @@ aethertunnel-server v3.2.0 (protocol 4, built 2026-09-20T07:12:44Z, commit 12345
   现在是真的计数；同一张表里的 `active conns` 之前只增不减，现在流结束就归零。
   升级后如果看到这两个数字发生变化，那是在读真实状态，不是在读旧版本的常量。
 
+## 4.2 从 v3.4.0 到 v3.5.0
+
+**配置与线协议都没有破坏性变化**：`ProtocolVersion` 仍是 4，没有删除任何键，
+两端的旧配置可以直接用。变的是几件"一直没做到"的事：
+
+- **Linux 上的 `[vpn] enabled = true` 之前根本起不来。** 服务端给自己的 tun 设备配地址时
+  把整个 `sockaddr_in` 交给了只接受 4 字节地址的接口，内核以 `EINVAL` 拒绝，
+  服务端随后拒绝启动。这个缺陷只在真实设备上出现，用假设备的单测看不到。
+  现在 Linux 上这条路径已在真实 tun 设备上跑通（`scripts/vpn-linux-test.sh`），
+  `pkg/vpn` 也补上了打开真设备并回读地址的测试。
+- **客户端收到停止信号后不会立刻退出。** 会话循环阻塞在读控制帧上，只有心跳应答到达时
+  才会重新检查取消状态，因此 `Ctrl-C` 之后最长要等一个 `heartbeat_seconds`（默认 30 秒）。
+  现在取消会直接关闭控制连接，会话立即结束。
+- **打洞结果有了真实来源。** 访客在直连建立后通过会合端口回报路径（`ATP3` 数据报）。
+  v3.4.0 及更早的客户端不会发这个数据报，因此这类会话的打洞结果记为 `p2p_abandoned`
+  （未知），`aethertunnel_p2p_direct_total` 对它们保持为 0；升级客户端后才会出现直连计数。
+  服务端不认识这个数据报也不会出错：旧服务端会把它当作无效的会合请求丢弃。
+- **`proxy_removed` 与 `dashboard_action` 现在真的会写出来。** 代理池少一个成员也会记录，
+  从面板断开客户端也会记录。之前这两个事件名只出现在文档里。
+- **新增只读接口 `GET /api/vpn`**，并把它并入 `GET /api/config` 的 `vpn` 段；
+  面板的"三层隧道"一栏读的就是它。之前 `[vpn]` 的运行时状态在面板上完全看不到。
+
 ## 5. 升级检查清单
 
 1. 两端一起换成 v3.2.0 的二进制。
@@ -184,5 +206,7 @@ aethertunnel-server v3.2.0 (protocol 4, built 2026-09-20T07:12:44Z, commit 12345
    `server confirms N tunnel(s)`；面板 `/api/status` 的连接数与隧道数符合预期。
 6. 用真实客户端做一次访问（例如 `ssh -p <remote_port> ...`），确认数据真的通。
 7. 用到的新功能各自验证一次：`--dht-lookup`、`--verify-ledger`、`--discover`、`--dht-key`，
-   或直接跑 `scripts/smoke-test.ps1`（59 项检查，覆盖全部代理类型、签名通告、按代理 ACL、
-   自动封禁与优雅关闭）。
+   或直接跑 `scripts/smoke-test.ps1`（66 项检查，覆盖全部代理类型、签名通告、按代理 ACL、
+   自动封禁、优雅关闭、代理池、多路径与打洞结果）。Linux 上再用
+   `sudo scripts/vpn-linux-test.sh bin/aethertunnel-server bin/aethertunnel-client`
+   验一次三层隧道。

@@ -334,15 +334,28 @@ func (m *TunnelManager) Unregister(name string, session *Session, reason string)
 		if session != nil && member.Session != session {
 			continue
 		}
-		if group.remove(member) {
-			m.mu.Lock()
-			if current, still := m.groups[name]; still && current == group {
-				delete(m.groups, name)
+		// The name stays published while another member holds it, so the audit
+		// trail follows every member while the map entry and the DHT record follow
+		// the group.
+		if removed, empty := group.remove(member); removed {
+			clientID := ""
+			if member.Session != nil {
+				clientID = member.Session.ID
 			}
-			m.mu.Unlock()
-			// The last member is gone, so the name is no longer served here.
-			// Copies already replicated to DHT peers lapse within one TTL.
-			m.directory.withdraw(name)
+			m.auditor.Record(AuditEvent{
+				Event: EventProxyRemoved, ClientID: clientID, Proxy: name,
+				Outcome: "removed", Detail: reason,
+			})
+			if empty {
+				m.mu.Lock()
+				if current, still := m.groups[name]; still && current == group {
+					delete(m.groups, name)
+				}
+				m.mu.Unlock()
+				// The last member is gone, so the name is no longer served here.
+				// Copies already replicated to DHT peers lapse within one TTL.
+				m.directory.withdraw(name)
+			}
 		}
 		if session != nil {
 			return

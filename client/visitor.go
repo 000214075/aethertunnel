@@ -147,6 +147,9 @@ func (c *client) openVisitorPath(ctx context.Context, cfg config.VisitorConfig) 
 		direct, err := c.tryPunch(ctx, conn, framer, *offer)
 		if err == nil {
 			// The relayed connection is not needed once the direct path is up.
+			// The server is told which path was taken, because from here on it
+			// sees this visitor stop using the connection and nothing else.
+			go c.reportPath(offer.Token, protocol.PunchPathDirect)
 			_ = conn.Close()
 			return &visitorPath{conn: direct, stream: c.wrapWith(direct, c.cipher), direct: true}, nil
 		}

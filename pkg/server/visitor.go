@@ -15,6 +15,12 @@ import (
 // visitor attempts a direct path before falling back to relaying.
 const punchWait = 15 * time.Second
 
+// punchReportWait is how long the server waits for a path report on the
+// rendezvous socket after a visitor's control connection has gone away. The
+// report is sent over UDP at the same moment the control connection closes, so a
+// short wait is enough to tell a working punch from a visitor that gave up.
+const punchReportWait = 2 * time.Second
+
 // visitorSession is the state a visitor connection carries after the handshake.
 type visitorSession struct {
 	conn   net.Conn
@@ -321,12 +327,34 @@ func (s *Server) serveXTCPVisitor(session *visitorSession, group *ProxyGroup) {
 
 	switch {
 	case err != nil:
-		// The visitor closed the connection: either the punch worked and the
-		// visitor is talking to the owner directly, or the visitor gave up.
+		// The visitor closed the control connection. A visitor that punched a
+		// direct path stops using this connection without saying so, which is why
+		// it reports the path over the rendezvous socket instead. That datagram
+		// can land just after the connection is gone, so it is given a moment.
+		path, reported := s.p2p.awaitPath(token, punchReportWait)
 		s.p2p.forget(token)
+
+		if reported && path == protocol.PunchPathDirect {
+			s.metrics.p2pDirect.Add(1)
+			s.auditor.Record(AuditEvent{
+				Event: EventP2PDirect, Remote: session.remote, Proxy: group.Name,
+				Outcome: "ok", Detail: "the visitor reported a direct path to the owner",
+			})
+			s.logger.Printf("visitor %s for %q reports a direct path", session.remote, group.Name)
+			_ = session.conn.Close()
+			return
+		}
+
+		// Nothing was reported: the visitor gave up, was killed, or lost the
+		// report on the way. It is not known to have reached the owner, so it is
+		// not counted as a direct path.
+		detail := "the visitor left the rendezvous without asking for a relay or reporting a direct path"
+		if reported {
+			detail = fmt.Sprintf("the visitor reported path %q, which this server does not act on", string(path))
+		}
 		s.auditor.Record(AuditEvent{
-			Event: EventP2PDirect, Remote: session.remote, Proxy: group.Name,
-			Outcome: "ok", Detail: "visitor left the rendezvous without asking for a relay",
+			Event: EventP2PAbandoned, Remote: session.remote, Proxy: group.Name,
+			Outcome: "unknown", Detail: detail,
 		})
 		_ = session.conn.Close()
 		return

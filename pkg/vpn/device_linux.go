@@ -134,10 +134,12 @@ func (d *tunDevice) SetAddress(address string) error {
 	if err != nil {
 		return fmt.Errorf("vpn: interface name %q is not usable: %w", d.name, err)
 	}
-	var raw [16]byte
-	raw[0] = unix.AF_INET
-	copy(raw[2:6], ip.To4())
-	addr.SetInet4Addr(raw[:])
+	// SetInet4Addr takes the four address bytes and builds the sockaddr_in around
+	// them, family included. Handing it a whole sockaddr_in leaves the union
+	// empty, and SIOCSIFADDR then rejects it with EINVAL.
+	if err := addr.SetInet4Addr(ip.To4()); err != nil {
+		return fmt.Errorf("vpn: %s is not a usable address: %w", address, err)
+	}
 	if err := unix.IoctlIfreq(fd, unix.SIOCSIFADDR, addr); err != nil {
 		return fmt.Errorf("vpn: assigning %s to %s: %w", address, d.name, err)
 	}

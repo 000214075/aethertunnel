@@ -29,6 +29,7 @@ import (
 //	GET    /api/config          redacted configuration summary
 //	GET    /api/ledger          signed bandwidth ledger and its public key
 //	GET    /api/dht             DHT node identity and the proxies it announces
+//	GET    /api/vpn             layer-3 tunnel state and packet counters
 //	DELETE /api/clients/{id}    disconnect one client
 //
 // When [dashboard].token is set, everything except /api/health requires
@@ -85,6 +86,7 @@ func NewDashboard(srv *Server, logger *log.Logger) (*Dashboard, error) {
 	d.handle("GET /api/config", d.withAuth(true, d.apiConfig))
 	d.handle("GET /api/ledger", d.withAuth(true, d.apiLedger))
 	d.handle("GET /api/dht", d.withAuth(true, d.apiDHT))
+	d.handle("GET /api/vpn", d.withAuth(true, d.apiVPN))
 	d.handle("DELETE /api/clients/", d.withAuth(true, d.apiDisconnect))
 	// Health probes are always public and cheap: orchestrators poll them often.
 	d.handle("GET /healthz", d.withAuth(false, d.healthz))
@@ -352,8 +354,17 @@ func (d *Dashboard) apiConfig(w http.ResponseWriter, r *http.Request) {
 			"path":    d.cfg.Ledger.Path,
 		},
 		"dht":                d.server.directory.summary(),
+		"vpn":                d.server.vpn.summary(),
 		"proxies_configured": len(d.cfg.Proxies),
 	})
+}
+
+// apiVPN reports the layer-3 tunnel: the interface it runs on, the subnet and
+// pool the server hands addresses from, and the packet counters. The interface
+// lives inside this process, so this endpoint is the only place an operator can
+// see whether the tunnel is up and carrying packets.
+func (d *Dashboard) apiVPN(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, d.server.vpn.summary())
 }
 
 // apiLedger publishes the bandwidth ledger: the signing public key an auditor
@@ -395,6 +406,13 @@ func (d *Dashboard) apiDisconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.logger.Printf("dashboard: disconnecting client %s on request", id)
+	// Who asked is only known to the extent the request carried a token, but that
+	// a client was disconnected from the dashboard is an administrative action and
+	// belongs in the audit log next to everything else that happened to it.
+	d.server.auditor.Record(AuditEvent{
+		Event: EventDashboardAction, ClientID: id, Remote: r.RemoteAddr,
+		Outcome: "ok", Detail: "disconnect requested through DELETE /api/clients/{id}",
+	})
 	go session.Close("disconnected from the dashboard")
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

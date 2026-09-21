@@ -56,6 +56,19 @@ zero while such a proxy is in use. 客户端一行的「活动流 / 累计流」
 或一个数据报会话按比例计入每个成员，因为服务端并不把它归给某一个成员；成员断开后，它的计数
 不再计入池的合计（合计等于当前成员之和）。
 
+## Layer-3 tunnel / 三层隧道
+
+The Configuration view has a second panel for `[vpn]`: whether the tunnel is on, the
+interface, the server's own address, the subnet, the MTU, how many addresses have been
+handed out of how many, the peers, and the packets read from the interface, delivered to
+it, and dropped or unroutable. Every number comes from the same section of `GET /api/config`
+that `GET /api/vpn` returns, and both are read from the tunnel inside the server process:
+the interface lives there, so this is the only way to see whether it is up and carrying
+traffic. With the section disabled the panel reports "no" and leaves the rows as `—`.
+配置页的第二个面板显示 `[vpn]`：是否启用、接口、服务端地址、子网、MTU、地址池已用/总数、
+对端数，以及从接口读到的包、送入接口的包和丢弃或无法路由的包。这些数字与 `GET /api/vpn`
+同源，都读自服务端进程内的隧道；未启用时该面板显示「否」，其余各行为 `—`。
+
 ## Dashboard token / 启用令牌
 
 ```toml

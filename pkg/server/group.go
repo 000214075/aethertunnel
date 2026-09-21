@@ -319,7 +319,12 @@ func (g *ProxyGroup) add(session *Session, spec protocol.ProxySpec) (*Tunnel, er
 }
 
 // remove drops one member and closes the endpoint once the last one is gone.
-func (g *ProxyGroup) remove(member *Tunnel) bool {
+//
+// removed reports whether the member was in the group, and empty whether no member
+// is left: a pool that loses one of its members keeps the name published, and the
+// caller has to tell the two cases apart to know whether the endpoint and the DHT
+// record still belong to somebody.
+func (g *ProxyGroup) remove(member *Tunnel) (removed, empty bool) {
 	member.closed.Store(true)
 
 	g.mu.Lock()
@@ -328,15 +333,16 @@ func (g *ProxyGroup) remove(member *Tunnel) bool {
 			continue
 		}
 		g.members = append(g.members[:index], g.members[index+1:]...)
+		removed = true
 		break
 	}
-	empty := len(g.members) == 0
+	empty = len(g.members) == 0
 	g.mu.Unlock()
 
 	if empty {
 		g.close("no member is left")
 	}
-	return empty
+	return removed, empty
 }
 
 // close releases the group's endpoint exactly once.

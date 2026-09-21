@@ -45,8 +45,14 @@ const (
 
 	EventVisitorAccepted = "visitor_accepted"
 	EventVisitorRejected = "visitor_rejected"
-	EventP2PDirect       = "p2p_direct"
-	EventP2PRelayed      = "p2p_relayed"
+	// EventP2PDirect is recorded when a visitor reports that it reached the owner
+	// over a punched path, and EventP2PRelayed when the punch failed and the
+	// server carried the traffic instead. EventP2PAbandoned is recorded when a
+	// visitor's control connection goes away without either answer: the server
+	// then does not know whether the direct path came up.
+	EventP2PDirect    = "p2p_direct"
+	EventP2PRelayed   = "p2p_relayed"
+	EventP2PAbandoned = "p2p_abandoned"
 
 	EventVPNAssigned = "vpn_address_assigned"
 	EventVPNRejected = "vpn_address_rejected"

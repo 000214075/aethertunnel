@@ -367,6 +367,20 @@ func (c *client) runSession(ctx context.Context) error {
 	}
 	defer conn.Close()
 
+	// A stop signal has to end the session at once rather than at the next frame:
+	// the reader below blocks on the control connection, and the only frames that
+	// arrive unprompted are heartbeat acknowledgements, which are one
+	// heartbeat_seconds apart.
+	sessionDone := make(chan struct{})
+	defer close(sessionDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-sessionDone:
+		}
+	}()
+
 	framer := protocol.NewFramerWithOptions(conn, c.cipher, c.framerOptions())
 
 	_ = conn.SetDeadline(time.Now().Add(dialTimeout))

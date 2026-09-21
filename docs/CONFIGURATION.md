@@ -141,8 +141,10 @@ SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` �
 
 指标序列：控制连接、被拒绝的控制连接、认证失败、ACL 拒绝、限流拒绝、被封禁的来源、
 因封禁被拒的连接、按代理拒绝的访客、socks5 请求数、因服务器关闭而拒绝的流、
-数据连接、活动与累计流数、双向字节、UDP 数据报与活动会话，以及按 `tunnel` 标签的活动流、
-累计流与双向字节。每一行都直接读自运行中的计数器，没有估算值。
+数据连接、活动与累计流数、双向字节、UDP 数据报与活动会话、共享监听上的 HTTP 请求数、
+打洞尝试数与结果（直连/中继），以及按 `tunnel` 标签的活动流、累计流、双向字节与 HTTP 请求数。
+每一行都直接读自运行中的计数器，没有估算值；`aethertunnel_p2p_direct_total` 只在访客
+用 `ATP3` 数据报回报了直连路径时才增加，访客没回报的尝试不会计入直连。
 
 ## `[audit]`（服务端）
 
@@ -156,8 +158,14 @@ SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` �
 `event` 取值为 `control_accepted`、`control_rejected`、`auth_failed`、`client_disconnected`、
 `proxy_registered`、`proxy_rejected`、`proxy_removed`、`acl_denied`、`rate_limited`、
 `source_banned`、`ban_refused`、`proxy_visitor_denied`、
-`dashboard_action`、`visitor_accepted`、`visitor_rejected`、`p2p_direct`、`p2p_relayed`、
+`dashboard_action`、`visitor_accepted`、`visitor_rejected`、
+`p2p_direct`、`p2p_relayed`、`p2p_abandoned`、
 `vpn_address_assigned`、`vpn_address_rejected`。
+
+`proxy_removed` 在成员真正被移除时记录：代理池里少一个成员也记录，`detail` 是移除原因，
+`proxy` 是代理名。`dashboard_action` 记录从面板发起的操作（目前是断开客户端）。
+`p2p_abandoned` 表示访客的控制连接消失了，既没有要求中继、也没有回报直连路径，
+服务器因此不知道那条尝试的结果，不会把它记成直连。
 
 ## `[ledger]`（服务端）
 
@@ -212,6 +220,15 @@ SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` �
 地址分配与路由是两个独立动作：本程序只分配地址，**不会**改动主机路由表。
 服务端需要自行加上指向该子网的路由，例如 `ip route add 10.7.0.0/24 dev tun0`。
 非 Linux 平台打开设备会失败，服务端因此拒绝启动并说明原因。
+
+运行状态可以这样看：`GET /api/vpn` 返回接口名、服务端地址、子网、掩码、MTU、地址池大小与
+已分配数、对端数，以及从设备读到的包、送入设备的包、已投递、无法路由、丢弃与出错计数；
+`GET /api/config` 里也带同一份摘要，面板的"三层隧道"一栏读的就是它。这些数字由服务端进程
+自己维护，设备在进程内部，面板看不到网卡本身。
+
+Linux 上的这条路径由 `scripts/vpn-linux-test.sh` 在真实 tun 设备上验证：两端处于不同的
+网络命名空间，因此内核不会把隧道地址当成自己的地址直接应答，ICMP 必须真的穿过隧道；
+脚本同时核对 `ip -s link` 的收发包计数与上面的接口。具体步骤见 README 的"运维"一节。
 
 ## `[obfuscation]`（两端）
 

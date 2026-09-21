@@ -263,6 +263,18 @@ function Invoke-Curl {
     return ($output | Out-String).Trim()
 }
 
+# Get-Metric reads one series out of /metrics. The whole body is one string, so the
+# line is matched with the multiline flag; a plain match would only ever look at the
+# first line.
+function Get-Metric {
+    param([string]$Name)
+
+    $body = Invoke-Curl @('-s', "http://127.0.0.1:$dashboardPort/metrics")
+    $match = [regex]::Match($body, '(?m)^' + [regex]::Escape($Name) + ' (-?\d+)')
+    if (-not $match.Success) { throw "the metrics output has no $Name" }
+    return [int]$match.Groups[1].Value
+}
+
 # Invoke-CurlExit reports what a request did as well as what it said, which is what
 # a check that expects curl to fail needs. Like Invoke-Binary it goes through cmd,
 # because a native command's standard error becomes an error record and ends the
@@ -384,6 +396,8 @@ $sudpVisitorPort = Get-FreePort
 $xtcpVisitorPort = Get-FreePort
 $socksPort = Get-FreePort
 $aclProxyPort = Get-FreePort
+$poolProxyPort = Get-FreePort
+$spreadProxyPort = Get-FreePort
 $banControlPort = Get-FreePort
 $banDashboardPort = Get-FreePort
 $banProxyPort = Get-FreePort
@@ -1182,6 +1196,198 @@ Test-Check 'the ledger has no entry while the client is still connected' {
     if ($ledger.public_key.Length -ne 64) { throw "the public key is '$($ledger.public_key)'" }
     return $true
 }
+
+Write-Step "checking the proxy pool, the multipath spread and the punch outcome"
+
+# Two separate clients publish the same proxy name on the same port with the same
+# group, which is what makes the server pool them behind one endpoint. Both serve the
+# same echo, so the members are told apart by their own counters in /api/proxies
+# rather than by what they answer.
+$poolAToml = Join-Path $Root 'pool-a.toml'
+$poolBToml = Join-Path $Root 'pool-b.toml'
+@"
+[client]
+server_addr = "127.0.0.1:$controlPort"
+auth_token = "$token"
+
+$commonSecurity
+ca_file = ""
+server_name = "127.0.0.1"
+insecure_skip_verify = true
+
+$commonObfuscation
+
+[identity]
+enabled = true
+key_file = "$identityFile"
+
+[[proxies]]
+name = "pooled"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = $tcpEchoPort
+remote_port = $poolProxyPort
+group = "smoke-pool"
+
+# A datagram proxy with multipath opens this many data connections for one visitor
+# address, so one session shows up as several connections on the server.
+[[proxies]]
+name = "spread"
+type = "udp"
+local_ip = "127.0.0.1"
+local_port = $udpEchoPort
+remote_port = $spreadProxyPort
+multipath = 3
+"@ | Set-Content -Path $poolAToml -Encoding UTF8
+
+@"
+[client]
+server_addr = "127.0.0.1:$controlPort"
+auth_token = "$token"
+
+$commonSecurity
+ca_file = ""
+server_name = "127.0.0.1"
+insecure_skip_verify = true
+
+$commonObfuscation
+
+[identity]
+enabled = true
+key_file = "$identityFile"
+
+[[proxies]]
+name = "pooled"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = $tcpEchoPort
+remote_port = $poolProxyPort
+group = "smoke-pool"
+"@ | Set-Content -Path $poolBToml -Encoding UTF8
+
+$poolALog = Join-Path $Root 'pool-a.log'
+$poolBLog = Join-Path $Root 'pool-b.log'
+$poolA = Start-Background -FilePath $clientExe -Arguments @('-config', $poolAToml) -LogPath $poolALog -WorkingDirectory $Root
+$poolB = Start-Background -FilePath $clientExe -Arguments @('-config', $poolBToml) -LogPath $poolBLog -WorkingDirectory $Root
+Wait-ForPort -Port $poolProxyPort | Out-Null
+Start-Sleep -Seconds 1
+
+# The members of a pool, as the dashboard reports them.
+function Get-PoolMembers {
+    $proxies = @((Invoke-Curl @('-s', '-H', "Authorization: Bearer $token", "http://127.0.0.1:$dashboardPort/api/proxies") | ConvertFrom-Json).proxies)
+    $pooled = $proxies | Where-Object { $_.name -eq 'pooled' } | Select-Object -First 1
+    if (-not $pooled) { throw "the pooled proxy is not published" }
+    return @($pooled.members)
+}
+
+Test-Check 'two clients publishing the same name share one endpoint' {
+    $members = Get-PoolMembers
+    if ($members.Count -ne 2) { throw "the pool has $($members.Count) member(s), want 2" }
+    return $true
+}
+
+Test-Check 'the load balancer spreads requests over both members' {
+    # Round-robin is the default strategy, so six requests have to reach both
+    # members. Every request is checked, not just counted: a pool that answered with
+    # an error would otherwise look busy.
+    $deadline = (Get-Date).AddSeconds(10)
+    while ($true) {
+        for ($attempt = 0; $attempt -lt 6; $attempt++) {
+            $reply = Invoke-TcpEcho -Port $poolProxyPort -Payload 'pooled-request'
+            if ($reply -ne 'pooled-request') { throw "the pool answered '$reply'" }
+        }
+        $members = Get-PoolMembers
+        $served = @($members | Where-Object { [int]$_.total_connections -ge 1 })
+        if ($served.Count -eq 2) { return $true }
+        if ((Get-Date) -gt $deadline) {
+            throw "only $($served.Count) of $($members.Count) members served a request: $(($members | ForEach-Object { $_.client_id + '=' + $_.total_connections }) -join ', ')"
+        }
+    }
+}
+
+Test-Check 'the multipath proxy opens several data connections for one session' {
+    $before = Get-Metric 'aethertunnel_data_connections_total'
+    $reply = Invoke-UdpEcho -Port $spreadProxyPort -Payload 'spread-over-three-paths'
+    if ($reply -ne 'spread-over-three-paths') { throw "the multipath proxy answered '$reply'" }
+
+    $deadline = (Get-Date).AddSeconds(10)
+    while ($true) {
+        $opened = (Get-Metric 'aethertunnel_data_connections_total') - $before
+        if ($opened -ge 3) {
+            Write-Host "   the session opened $opened data connection(s)"
+            return $true
+        }
+        if ((Get-Date) -gt $deadline) { throw "one datagram session opened $opened data connection(s), want at least 3" }
+        Start-Sleep -Milliseconds 200
+    }
+}
+
+Test-Check 'the punch outcome in the metrics is the one the visitor reported' {
+    # The visitor says which path it took in its own log. The server cannot see a
+    # direct path at all: a visitor that goes direct simply stops using its control
+    # connection, which is why it reports the path over the rendezvous socket. That
+    # report travels over UDP, so the counters are given a moment to settle.
+    $deadline = (Get-Date).AddSeconds(10)
+    while ((Get-Metric 'aethertunnel_p2p_direct_total') + (Get-Metric 'aethertunnel_p2p_relayed_total') -lt 1) {
+        if ((Get-Date) -gt $deadline) { throw "no punch outcome was counted although an xtcp visitor connected" }
+        Start-Sleep -Milliseconds 250
+    }
+
+    $log = Read-Log $visitorLog
+    $direct = Get-Metric 'aethertunnel_p2p_direct_total'
+    $relayed = Get-Metric 'aethertunnel_p2p_relayed_total'
+    if ((Get-Metric 'aethertunnel_p2p_punches_total') -lt 1) { throw "no punch was counted although an xtcp visitor connected" }
+    if ($log -match 'direct path to .* established') {
+        if ($direct -lt 1) { throw "the visitor took the direct path but the server counted no direct outcome" }
+    } elseif ($direct -ge 1) {
+        throw "the server counted a direct outcome although the visitor reported the relayed path"
+    }
+    Write-Host "   direct $direct, relayed $relayed"
+    return $true
+}
+
+Test-Check 'the punch outcome is recorded in the audit log' {
+    $audit = Get-Content -Raw (Join-Path $Root 'audit.jsonl')
+    $direct = $audit -match '"event":"p2p_direct"'
+    $relayed = $audit -match '"event":"p2p_relayed"'
+    $abandoned = $audit -match '"event":"p2p_abandoned"'
+    if (-not ($direct -or $relayed -or $abandoned)) { throw "the audit log records no punch outcome" }
+    if ($direct -and $abandoned) { throw "the same attempt is recorded as both direct and abandoned" }
+    return $true
+}
+
+# Stopping the second member has to leave the pool serving: that is what the pool is
+# for, and it is also where the removal is audited.
+if ($poolB -and -not $poolB.HasExited) { Stop-Process -Id $poolB.Id -Force -ErrorAction SilentlyContinue }
+
+Test-Check 'the pool keeps serving after one member leaves' {
+    $deadline = (Get-Date).AddSeconds(15)
+    while ($true) {
+        $members = @(Get-PoolMembers)
+        if ($members.Count -eq 1) {
+            $reply = Invoke-TcpEcho -Port $poolProxyPort -Payload 'after-the-member-left'
+            if ($reply -ne 'after-the-member-left') { throw "the remaining member answered '$reply'" }
+            return $true
+        }
+        if ((Get-Date) -gt $deadline) { throw "the pool still reports $($members.Count) members" }
+        Start-Sleep -Milliseconds 250
+    }
+}
+
+Test-Check 'the removal of a proxy is recorded in the audit log' {
+    # The member is removed from the group before the record is written, so the API
+    # can report one member while the audit line is still on its way.
+    $deadline = (Get-Date).AddSeconds(10)
+    while ($true) {
+        $audit = Get-Content -Raw (Join-Path $Root 'audit.jsonl')
+        if ($audit -match '"event":"proxy_removed"' -and $audit -match '"proxy":"pooled"') { return $true }
+        if ((Get-Date) -gt $deadline) { throw "the audit log has no proxy_removed record for the pooled proxy" }
+        Start-Sleep -Milliseconds 250
+    }
+}
+
+if ($poolA -and -not $poolA.HasExited) { Stop-Process -Id $poolA.Id -Force -ErrorAction SilentlyContinue }
+Start-Sleep -Seconds 1
 
 Write-Step "stopping the owner client so its usage is recorded"
 if ($client -and -not $client.HasExited) { Stop-Process -Id $client.Id -Force -ErrorAction SilentlyContinue }

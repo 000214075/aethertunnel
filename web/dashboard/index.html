@@ -530,6 +530,25 @@ a { color: var(--accent); }
         </dl>
         <p class="panel-note" data-i18n="config.note">The API returns a redacted summary only — secrets and keys are never sent to the browser.</p>
       </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3 data-i18n="vpn.title">Layer-3 tunnel</h3>
+        </div>
+        <dl class="kv">
+          <div><dt data-i18n="vpn.state">State</dt><dd id="vpnState">—</dd></div>
+          <div><dt data-i18n="vpn.device">Interface</dt><dd id="vpnDevice">—</dd></div>
+          <div><dt data-i18n="vpn.serverAddress">Server address</dt><dd id="vpnServerAddress">—</dd></div>
+          <div><dt data-i18n="vpn.subnet">Subnet</dt><dd id="vpnSubnet">—</dd></div>
+          <div><dt data-i18n="vpn.mtu">MTU</dt><dd id="vpnMTU">—</dd></div>
+          <div><dt data-i18n="vpn.pool">Addresses handed out</dt><dd id="vpnPool">—</dd></div>
+          <div><dt data-i18n="vpn.peers">Peers</dt><dd id="vpnPeers">—</dd></div>
+          <div><dt data-i18n="vpn.fromDevice">Packets read from the interface</dt><dd id="vpnFromDevice">—</dd></div>
+          <div><dt data-i18n="vpn.toDevice">Packets delivered to the interface</dt><dd id="vpnToDevice">—</dd></div>
+          <div><dt data-i18n="vpn.dropped">Packets dropped or unroutable</dt><dd id="vpnDropped">—</dd></div>
+        </dl>
+        <p class="panel-note" data-i18n="vpn.note">These counters come from the tunnel inside this process. When the tunnel is disabled the table stays empty.</p>
+      </div>
     </section>
   </main>
 </div>
@@ -657,6 +676,18 @@ a { color: var(--accent); }
       'config.authRequired': 'Token required',
       'config.refresh': 'Refresh',
       'config.note': 'The API returns a redacted summary only — secrets and keys are never sent to the browser.',
+      'vpn.title': 'Layer-3 tunnel',
+      'vpn.state': 'State',
+      'vpn.device': 'Interface',
+      'vpn.serverAddress': 'Server address',
+      'vpn.subnet': 'Subnet',
+      'vpn.mtu': 'MTU',
+      'vpn.pool': 'Addresses handed out',
+      'vpn.peers': 'Peers',
+      'vpn.fromDevice': 'Packets read from the interface',
+      'vpn.toDevice': 'Packets delivered to the interface',
+      'vpn.dropped': 'Packets dropped or unroutable',
+      'vpn.note': 'These counters come from the tunnel inside this process. When the tunnel is disabled the table stays empty.',
       'rel.justNow': 'just now',
       'rel.seconds': '{n}s ago',
       'rel.minutes': '{n}m ago',
@@ -767,6 +798,18 @@ a { color: var(--accent); }
       'config.authRequired': '需要令牌',
       'config.refresh': '刷新',
       'config.note': 'API 只返回脱敏摘要 —— 密钥等敏感信息不会发送到浏览器。',
+      'vpn.title': '三层隧道',
+      'vpn.state': '状态',
+      'vpn.device': '接口',
+      'vpn.serverAddress': '服务端地址',
+      'vpn.subnet': '子网',
+      'vpn.mtu': 'MTU',
+      'vpn.pool': '已分配地址',
+      'vpn.peers': '对端数',
+      'vpn.fromDevice': '从接口读到的包',
+      'vpn.toDevice': '送入接口的包',
+      'vpn.dropped': '丢弃或无法路由的包',
+      'vpn.note': '这些计数来自本进程内的隧道。隧道未启用时表格保持为空。',
       'rel.justNow': '刚刚',
       'rel.seconds': '{n} 秒前',
       'rel.minutes': '{n} 分钟前',
@@ -1280,9 +1323,36 @@ a { color: var(--accent); }
     return cell;
   }
 
+  var VPN_FIELDS = ['vpnState', 'vpnDevice', 'vpnServerAddress', 'vpnSubnet', 'vpnMTU',
+    'vpnPool', 'vpnPeers', 'vpnFromDevice', 'vpnToDevice', 'vpnDropped'];
+
+  function renderVPN(vpn) {
+    vpn = vpn || {};
+    setText(el('vpnState'), vpn.enabled ? t('common.yes') : t('common.no'));
+    if (!vpn.enabled) {
+      ['vpnDevice', 'vpnServerAddress', 'vpnSubnet', 'vpnMTU', 'vpnPool', 'vpnPeers',
+        'vpnFromDevice', 'vpnToDevice', 'vpnDropped'].forEach(function (id) { setText(el(id), null); });
+      return;
+    }
+    setText(el('vpnDevice'), vpn.device);
+    setText(el('vpnServerAddress'), vpn.server_address);
+    setText(el('vpnSubnet'), vpn.subnet);
+    setText(el('vpnMTU'), vpn.mtu);
+    setText(el('vpnPool'), vpn.addresses_used + ' / ' + vpn.pool_size);
+    setText(el('vpnPeers'), vpn.peers);
+    var packets = vpn.packets || {};
+    setText(el('vpnFromDevice'), packets.from_device);
+    setText(el('vpnToDevice'), packets.to_device);
+    // Both the packets that could not be routed and the ones that were dropped
+    // leave the operator with the same question, so they are shown together.
+    var lost = (packets.unroutable || 0) + (packets.dropped || 0);
+    setText(el('vpnDropped'), lost);
+  }
+
   function renderConfig(payload, errorMessage) {
     if (errorMessage) {
       ['cfgBindAddr', 'cfgBindPort', 'cfgMaxConn', 'cfgEncEnabled', 'cfgEncAlgorithm', 'cfgAuthRequired']
+        .concat(VPN_FIELDS)
         .forEach(function (id) { setText(el(id), null); });
       showError(t('err.config', { msg: errorMessage }));
       return;
@@ -1298,6 +1368,7 @@ a { color: var(--accent); }
     setText(el('cfgEncEnabled'), enc.enabled === undefined ? null : (enc.enabled ? t('common.yes') : t('common.no')));
     setText(el('cfgEncAlgorithm'), enc.algorithm);
     setText(el('cfgAuthRequired'), dash.auth_required === undefined ? null : (dash.auth_required ? t('common.yes') : t('common.no')));
+    renderVPN(cfg.vpn);
   }
 
   function disconnectClient(id, button) {

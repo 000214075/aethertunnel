@@ -133,8 +133,13 @@ Schnorr 证明在 NIST P-256 上，用 Fiat-Shamir 去交互；上下文含服�
 审计 `event` 取值：`control_accepted`、`control_rejected`、`auth_failed`、
 `client_disconnected`、`proxy_registered`、`proxy_rejected`、`proxy_removed`、`acl_denied`、
 `rate_limited`、`source_banned`、`ban_refused`、`proxy_visitor_denied`、
-`dashboard_action`、`visitor_accepted`、`visitor_rejected`、`p2p_direct`、`p2p_relayed`、
+`dashboard_action`、`visitor_accepted`、`visitor_rejected`、
+`p2p_direct`、`p2p_relayed`、`p2p_abandoned`、
 `vpn_address_assigned`、`vpn_address_rejected`。
+
+`proxy_removed` 在代理成员被移除时记录，`dashboard_action` 记录从面板发起的操作；
+`p2p_abandoned` 表示那次打洞的结果无法判定（访客既没有要求中继、也没有回报直连路径），
+所以它不会被当成直连成功记进审计或指标。
 
 公开的 `remote_port` 仍然可以被上面这些规则之外的任何人连接：按来源的名单挡的是"谁能连"，
 挡不住"连上之后能做什么"。`socks5` 出口多一层 `allow_targets`，它限制的是客户端能拨到哪些

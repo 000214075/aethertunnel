@@ -76,6 +76,17 @@ jobs:
         if: runner.os == 'Linux'
         run: go test ./... -count=1 -race -timeout 600s
 
+      # The layer-3 path runs on a real tun device, with the two ends in separate
+      # network namespaces so that no packet can take a shortcut through the local
+      # routing table. It skips itself, with a message, where the runner cannot
+      # provide root, /dev/net/tun or a network namespace.
+      - name: the layer-3 tunnel carries packets on a real device
+        if: runner.os == 'Linux'
+        run: |
+          go build -o bin/aethertunnel-server .
+          go build -o bin/aethertunnel-client ./client
+          sudo bash scripts/vpn-linux-test.sh bin/aethertunnel-server bin/aethertunnel-client
+
       # -o with an explicit name does not append .exe on Windows, so the suffix is
       # part of the artifact name on every platform.
       - name: build

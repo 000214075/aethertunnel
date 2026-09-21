@@ -71,10 +71,10 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 | 能力 | 状态 | 说明 |
 |---|---|---|
 | 代理类型 | ✅ 可用 | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`；http/https 走服务器的共享监听并按 Host 头选择隧道，stcp/sudp/xtcp 为私有隧道，socks5 是出口代理（访客指定目标，客户端拨号，`allow_targets` 限定可达范围） |
-| XTCP 直连 | ✅ 可用 | 自研 UDP 打洞（HMAC-SHA256 同时打开 + 可靠有序字节流），打洞失败自动回退到服务器中继；两者都会写进日志与审计 |
+| XTCP 直连 | ✅ 可用 | 自研 UDP 打洞（HMAC-SHA256 同时打开 + 可靠有序字节流），打洞失败自动回退到服务器中继；访客把实际走通的路径回报给服务器（`ATP3` 数据报），因此指标与审计记录的是真实结果而不是猜测 |
 | TCP/UDP 转发 | ✅ 可用 | 访问者 → 服务器端口 → 客户端 → 本地服务；TCP 保留半关闭，UDP 按来源地址分会话 |
-| 负载均衡 | ✅ 可用 | 同名代理可由多个客户端组成代理池，策略：`round-robin` `random` `latency` `failover` `adaptive` |
-| 多路径 | ✅ 可用 | 数据报代理可把流量分散到最多 8 条数据连接（`multipath`），单条故障不影响整体 |
+| 负载均衡 | ✅ 可用 | 同名代理可由多个客户端组成代理池，策略：`round-robin` `random` `latency` `failover` `adaptive`；`scripts/smoke-test.ps1` 用两个真实客户端验到池成员都被分流、掉一个成员后仍继续服务 |
+| 多路径 | ✅ 可用 | 数据报代理可把流量分散到最多 8 条数据连接（`multipath`），单条故障不影响整体；运维脚本用一次数据报会话验到确实开了 3 条数据连接 |
 | 控制连接与会话 | ✅ 可用 | 认证、心跳、断线自动重连（指数退避 + 抖动）、连接数上限 |
 | 可选的数据包加密 | ✅ 可用 | XChaCha20-Poly1305 或 AES-256-GCM，默认**关闭**；控制消息与隧道字节都加密 |
 | 密钥派生 | ✅ 可用 | 口令经 HKDF-SHA256 派生 32 字节密钥；口令留空则用 auth_token |
@@ -85,20 +85,20 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 | 带宽账本 | ✅ 可用 | Ed25519 签名、哈希链式追加的用量记录（JSONL），`GET /api/ledger` 发布公钥与条目，`--verify-ledger` 可离线校验；改一个字节或换一串公钥都会失败 |
 | 去中心化目录 | ✅ 可用 | 基于 Kademlia 的 DHT（160 位、k 桶、迭代查找）；服务端把已发布的代理写成记录，客户端可用 `dht.discover` 按名字找服务器，运维可用 `--dht-lookup` / `--discover` / `--dht-key` |
 | 通告签名 | ✅ 可用 | DHT 上任何节点都能写同一个键，所以服务端用 Ed25519 给每条通告签名；读取端 `require_signed` 拒绝无签名记录，`trusted_keys` 只认指定公钥。改一个字段或换一把key都会失败 |
-| 三层隧道 | ⚠️ 仅 Linux | `[vpn]`：客户端从服务端领取地址，IP 包经控制连接转发；服务端是共享一张网卡的路由器。Linux 上打开或创建 tun 设备；其它平台**明确拒绝启动**并说明缺少什么，不会静默降级 |
+| 三层隧道 | ⚠️ 仅 Linux | `[vpn]`：客户端从服务端领取地址，IP 包经控制连接转发；服务端是共享一张网卡的路由器。Linux 上打开或创建 tun 设备；其它平台**明确拒绝启动**并说明缺少什么，不会静默降级。Linux 路径已在真实 tun 设备上跑通（`scripts/vpn-linux-test.sh`，两端放在不同网络命名空间里互相 ping），`GET /api/vpn` 与面板的"三层隧道"一栏显示接口、地址池与包计数 |
 | 流量混淆 | ✅ 可用 | `pad_to` 补齐帧长度、`jitter_millis` 加抖动；`disguise = "tls-record"` 把每个写入包进 TLS 1.2 应用数据记录 |
 | 访问控制 | ✅ 可用 | `allow_cidrs` / `deny_cidrs` 在握手前执行；无法解析的来源在存在规则时按拒绝处理。单个代理还能再限定自己的访客来源（`[[proxies]]` 的 `allow_cidrs` / `deny_cidrs`） |
 | 连接限流 | ✅ 可用 | 按来源地址的令牌桶，在握手前执行；空闲桶会被回收 |
 | 自动封禁 | ✅ 可用 | 同一来源认证失败 `ban_after_failures` 次后，在握手前拒绝该来源 `ban_seconds` 秒，期间任何凭据都被拒；再次违规时长翻倍，上限 `ban_max_seconds`；`ban_ignore_cidrs` 排除负载均衡与监控地址 |
-| 审计日志 | ✅ 可用 | JSON Lines，记录接入/拒绝、认证失败、上下线、代理注册与拒绝、封禁与被封拒绝、按代理拒绝的访客、访客接受与拒绝、打洞结果、隧道地址分配；按大小轮转 |
-| Prometheus 指标 | ✅ 可用 | `GET /metrics`（文本格式 0.0.4），含连接、认证失败、拒绝、封禁、按代理拒绝的访客、socks5 请求数、因关闭被拒的流、流、双向字节与按隧道的序列；每个数字都读自运行中的计数器 |
+| 审计日志 | ✅ 可用 | JSON Lines，记录接入/拒绝、认证失败、上下线、代理注册/移除与拒绝、面板断连、封禁与被封拒绝、按代理拒绝的访客、访客接受与拒绝、打洞结果（直连/中继/未知）、隧道地址分配；按大小轮转 |
+| Prometheus 指标 | ✅ 可用 | `GET /metrics`（文本格式 0.0.4），含连接、认证失败、拒绝、封禁、按代理拒绝的访客、socks5 请求数、因关闭被拒的流、流、双向字节、打洞结果与按隧道的序列；每个数字都读自运行中的计数器 |
 | 优雅关闭 | ✅ 可用 | 收到停止信号后停止接受新连接，给正在传输的流最多 `server.graceful_shutdown_seconds`（默认 5）秒完成再断开客户端；期间到达的访客被立即拒绝并计入指标；没有流在传时立刻退出，不会空等 |
 | 健康探针 | ✅ 可用 | `GET /healthz` 恒 200；`GET /readyz` 在监听器未就绪或正在关闭时返回 503 |
-| Web 面板 | ✅ 可用 | 单页、自带资源（编译进二进制）、中英双语、手机可用；含 `/api/ledger` 与 `/api/dht`，代理池的成员数与可用数在代理表格中显示 |
+| Web 面板 | ✅ 可用 | 单页、自带资源（编译进二进制）、中英双语、手机可用；含 `/api/ledger`、`/api/dht` 与 `/api/vpn`，代理池的成员数与可用数在代理表格中显示 |
 | 容器与编排 | ✅ 可用 | `Dockerfile`（多阶段 → distroless）与 `deploy/kubernetes/` 清单；凭据可用环境变量提供，不必写进 ConfigMap |
 | 多平台 | ✅ 可用 | linux/darwin/windows × amd64/arm64，`scripts/build-release.*` 一键出 12 个产物 + SHA256 |
 | 配置校验 | ✅ 可用 | 未知配置项会**报出来**而不是静默忽略；`--check` 只校验不启动 |
-| 单元 + 端到端测试 | ✅ 可用 | 含"访问者→隧道→本地服务"的真实回环测试，明文与加密两种模式；另有 59 项检查的运维脚本 `scripts/smoke-test.ps1` |
+| 单元 + 端到端测试 | ✅ 可用 | 含"访问者→隧道→本地服务"的真实回环测试，明文与加密两种模式；另有 66 项检查的运维脚本 `scripts/smoke-test.ps1` 与真实 tun 设备上的 `scripts/vpn-linux-test.sh` |
 
 ### 这一版没有什么
 
@@ -113,10 +113,9 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
   `socks5: a visitor reaches the address it asks for`、`socks5: a target outside allow_targets is refused`
   两项就是用真实二进制与 curl 跑通这条路径的。
 - ❌ **Windows 与 macOS 的 tun 设备**。三层隧道只在 Linux 上打开设备；Windows 需要 Wintun
-  驱动，macOS 需要 utun 控制套接字，本程序都不安装也不打开。Linux 那条路径每次 CI 都会
-  交叉编译，但**没有在真实 tun 设备上运行过**；非 Linux 平台启动 `vpn.enabled = true`
-  会直接报错退出，smoke test 的 `the vpn section refuses to start where there is no tun device`
-  一项断言了这个拒绝行为与报错内容。
+  驱动，macOS 需要 utun 控制套接字，本程序都不安装也不打开，也没有对应的驱动加载或系统调用代码。
+  非 Linux 平台启动 `vpn.enabled = true` 会直接报错退出，smoke test 的
+  `the vpn section refuses to start where there is no tun device` 一项断言了这个拒绝行为与报错内容。
   **可用的替代**：非 Linux 上按端口转发使用 `tcp` / `udp` 代理，按地址使用上面那个 `socks5` 出口；
   两者都不需要驱动，也不需要改动路由表。
 - ❌ **机器学习的路由或调度**。`load_balance = "adaptive"` 的代价函数是"移动平均时延 ×
@@ -196,11 +195,28 @@ grep -E 'source_banned|ban_refused|proxy_visitor_denied' aethertunnel-audit.json
 Windows 上发信号用不带 `/F` 的 `taskkill`，Linux 与 macOS 上等价于 `kill -TERM`；
 `Stop-Process` 是硬杀，会跳过整个排空过程，因此脚本不用它来测这一项。
 
+另外三项用两个真实客户端组成代理池，验证负载均衡：两个客户端都把成员数报成 2、
+六个请求确实分到两个成员、停掉其中一个成员后池子仍继续服务且移除被写进审计。
+多路径一项从 `/metrics` 读 `aethertunnel_data_connections_total` 的增量，确认一次 UDP 会话
+真的开了 3 条数据连接。打洞一项把服务器上的 `aethertunnel_p2p_direct_total` /
+`aethertunnel_p2p_relayed_total` 与访客自己日志里报的路径对照，两边必须一致。
+
 ```bash
 # 手工做一次同样的验证：起服务、保持一条流、发信号、看日志
 taskkill /PID <服务器PID>            # Windows，不带 /F
 kill -TERM <服务器PID>               # Linux 与 macOS
 # 日志里应出现 shutting down: 以及 graceful shutdown: ...（一行）
+```
+
+三层隧道没法在 Windows 上验，脚本 `scripts/vpn-linux-test.sh` 在 Linux 上做这件事：
+它把两端放进两个网络命名空间（否则内核会把隧道地址当成自己的地址，绕开隧道直接应答），
+在真实的 tun 设备上互相 ping，然后核对两个接口的收发包计数、`GET /api/vpn`、
+`GET /api/config` 的 `[vpn]` 段以及审计日志里的地址分配。需要 root、`/dev/net/tun`
+和网络命名空间；缺任何一样就打印原因并以 0 退出，不会把 CI 弄红。
+
+```bash
+sudo scripts/vpn-linux-test.sh bin/aethertunnel-server bin/aethertunnel-client
+# 关键行：PASS  服务端与客户端跨隧道互相 ping 通；两侧接口双向都有包
 ```
 
 ### 构建与测试
@@ -305,10 +321,10 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 | Capability | State | Notes |
 |---|---|---|
 | Proxy types | ✅ works | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`; http and https use one shared listener and are selected by the Host header; stcp, sudp and xtcp are private; socks5 is an exit, where the visitor names the target and `allow_targets` bounds what may be reached |
-| XTCP direct path | ✅ works | its own UDP hole punching (HMAC-SHA256 simultaneous open over a reliable ordered byte stream) with an automatic fall back to the server's relay; both outcomes are logged and audited |
+| XTCP direct path | ✅ works | its own UDP hole punching (HMAC-SHA256 simultaneous open over a reliable ordered byte stream) with an automatic fall back to the server's relay; the visitor reports the path it actually took with an `ATP3` datagram, so the metrics and the audit log record the outcome rather than a guess |
 | TCP and UDP forwarding | ✅ works | visitor → server port → client → local service; TCP preserves half-close, UDP keeps one session per source address |
-| Load balancing | ✅ works | several clients may publish one name as a pool; strategies `round-robin`, `random`, `latency`, `failover`, `adaptive` |
-| Multipath | ✅ works | a datagram proxy spreads traffic over up to 8 data connections (`multipath`), and the loss of one does not stop the rest |
+| Load balancing | ✅ works | several clients may publish one name as a pool; strategies `round-robin`, `random`, `latency`, `failover`, `adaptive`. `scripts/smoke-test.ps1` runs two real clients and checks that both members serve, and that the pool keeps serving after one of them leaves |
+| Multipath | ✅ works | a datagram proxy spreads traffic over up to 8 data connections (`multipath`), and the loss of one does not stop the rest; the operations script checks that one datagram session really opens three connections |
 | Control session | ✅ works | auth, heartbeat, exponential-backoff reconnect with jitter, connection limit |
 | Optional packet encryption | ✅ works | XChaCha20-Poly1305 or AES-256-GCM, **off** by default, covers control frames and tunnelled bytes |
 | Key derivation | ✅ works | HKDF-SHA256 over the passphrase; an empty passphrase falls back to `auth_token` |
@@ -319,12 +335,12 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 | Bandwidth ledger | ✅ works | Ed25519-signed, hash-chained usage records (JSONL); `GET /api/ledger` publishes the public key and the entries, and `--verify-ledger` checks them offline; one altered byte or a different key fails |
 | Decentralised directory | ✅ works | a Kademlia DHT (160-bit, k-buckets, iterative lookup); the server publishes one record per proxy, a client resolves a name with `dht.discover`, and operators use `--dht-lookup`, `--discover` or `--dht-key` |
 | Signed announcements | ✅ works | any node can write to a proxy's key, so the server signs every record with Ed25519; a reader sets `require_signed` to refuse unsigned records and `trusted_keys` to believe named keys only. One altered field or a different key fails |
-| Layer-3 tunnel | ⚠️ Linux only | `[vpn]`: a client is given an address and its IP packets travel on the control connection; the server is a router over one shared interface. Linux opens or creates a tun device; every other platform **refuses to start** and says what is missing instead of degrading silently |
+| Layer-3 tunnel | ⚠️ Linux only | `[vpn]`: a client is given an address and its IP packets travel on the control connection; the server is a router over one shared interface. Linux opens or creates a tun device; every other platform **refuses to start** and says what is missing instead of degrading silently. The Linux path runs on a real tun device in `scripts/vpn-linux-test.sh`, with the two ends in separate network namespaces, and `GET /api/vpn` plus the dashboard's layer-3 panel report the interface, the pool and the packet counters |
 | Traffic obfuscation | ✅ works | `pad_to` rounds frame lengths, `jitter_millis` adds delay, and `disguise = "tls-record"` puts every write inside TLS 1.2 application-data records |
 | Access control | ✅ works | `allow_cidrs` / `deny_cidrs` before the handshake; an unparseable source is refused when any rule exists. A single proxy can restrict its own visitors further with `allow_cidrs` / `deny_cidrs` in its `[[proxies]]` block |
 | Rate limiting | ✅ works | a per-source token bucket before the handshake, with idle buckets reclaimed |
 | Automatic ban | ✅ works | after `ban_after_failures` failed authentications one source is refused before the handshake for `ban_seconds`, and every attempt from it is refused in the meantime whatever credential it carries; the window doubles for a repeat offender up to `ban_max_seconds`, and `ban_ignore_cidrs` exempts load balancers and monitors |
-| Audit log | ✅ works | JSON Lines for accepted and refused connections, authentication failures, disconnects, proxy registrations and refusals, bans and ban refusals, per-proxy visitor refusals, visitor outcomes, punch results and tunnel address assignments; rotates by size |
+| Audit log | ✅ works | JSON Lines for accepted and refused connections, authentication failures, disconnects, proxy registrations and refusals, bans and ban refusals, per-proxy visitor refusals, proxy removals, dashboard disconnects, visitor outcomes, punch results (direct, relayed or unknown) and tunnel address assignments; rotates by size |
 | Prometheus metrics | ✅ works | `GET /metrics` in the text format 0.0.4: connections, authentication failures, refusals, bans, per-proxy visitor refusals, socks5 requests, streams refused while shutting down, streams, bytes both ways and per-tunnel series; every number is read from a live counter |
 | Graceful shutdown | ✅ works | on a stop signal the server stops accepting, gives the streams already running up to `server.graceful_shutdown_seconds` (5 by default) to finish, and only then disconnects the clients; a visitor that arrives meanwhile is refused and counted, and an idle server exits at once instead of sitting out the grace period |
 | Health probes | ✅ works | `GET /healthz` is always 200; `GET /readyz` is 503 before the listener is up and while shutting down |
@@ -332,7 +348,7 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 | Containers and orchestration | ✅ works | a multi-stage `Dockerfile` ending in distroless, and manifests under `deploy/kubernetes/`; credentials can come from environment variables instead of the ConfigMap |
 | Platforms | ✅ works | linux/darwin/windows × amd64/arm64; `scripts/build-release.*` produces 12 binaries + SHA256 |
 | Config validation | ✅ works | unknown keys are **reported**, not ignored; `--check` validates without starting |
-| Tests | ✅ works | unit tests, a real end-to-end tunnel test in cleartext and encrypted modes, and a 59-check operations script, `scripts/smoke-test.ps1` |
+| Tests | ✅ works | unit tests, a real end-to-end tunnel test in cleartext and encrypted modes, a 66-check operations script `scripts/smoke-test.ps1`, and a layer-3 run on real tun devices in `scripts/vpn-linux-test.sh` |
 
 ### What this release does not do
 
@@ -423,6 +439,15 @@ HTTP echoes), starts the server and two clients, exercises every capability in t
 and prints the number of checks that passed and any that failed. It binds loopback ports and
 removes its working directory when it finishes; `-Keep` preserves the directory and
 `-ProgressLog <path>` appends each step and verdict as it happens.
+
+Three of its checks drive the graceful shutdown with a real stop signal against a server of
+their own, and three more run two clients as a pool to check load balancing, multipath and the
+hole-punch outcome. The layer-3 tunnel cannot be checked on Windows: `scripts/vpn-linux-test.sh`
+does that on Linux, with the two ends in separate network namespaces so that the kernel cannot
+answer for a tunnel address itself, and checks the ping, both interfaces' packet counters,
+`GET /api/vpn`, the `[vpn]` section of `GET /api/config` and the address assignment in the audit
+log. It needs root, `/dev/net/tun` and a network namespace; when one of those is missing it says
+which and exits 0 rather than turning a CI run red.
 
 ### Build and test
 

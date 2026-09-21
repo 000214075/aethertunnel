@@ -101,6 +101,26 @@ them on disconnect; every number the dashboard shows is read from those managers
 成员每次回答一条流时更新移动平均（新值 = 旧值 − 旧值/4 + 本次/4，单位纳秒），
 失败时连续失败数加一、成功时清零。未测量过的成员代价为 0，因此总会被优先尝试。
 
+## 5.1 打洞与结果上报
+
+xtcp 的私有通道走 UDP 打洞：服务器在 `server.p2p_port` 上做会合，两端各发一条请求数据报，
+服务器把对方的 NAT 映射地址回给双方，之后两端用 `pkg/reliable` 的可靠有序字节流直连。
+
+```
+请求     "ATP1" | role:1 | token:32
+应答     "ATP2" | token:32 | length:1 | "ip:port"
+结果     "ATP3" | token:32 | path:1      ('D' 直连，'R' 中继)
+```
+
+结果数据报是打洞结果**唯一**的可信来源。走直连的访客不再使用控制连接，也不再发任何帧，
+服务器只能看到那条连接消失；同一个动作也可能是访客中途放弃。因此访客在直连建立后先给
+会合端口发一次结果，服务器在控制连接消失后再等最多 2 秒（`punchReportWait`），
+收到 `'D'` 才计入 `aethertunnel_p2p_direct_total` 并写 `p2p_direct` 审计；
+什么都没收到时写 `p2p_abandoned`，不猜测、不计数。旧版服务端不认识 `ATP3`：魔法前缀不同，
+会被当作无效的会合请求丢掉。
+
+结果数据报不重传也不确认，访客连发三份；丢失的代价只是那条尝试记为"未知"。
+
 ## 6. 加密、传输与伪装
 
 三层互相独立，按需开启：
@@ -216,7 +236,8 @@ web/dashboard           面板单页（内嵌进二进制）
 deploy/kubernetes        Namespace、ConfigMap、Secret 示例、Deployment、Service、kustomization
 Dockerfile              多阶段构建 → distroless
 scripts/build-release.* 跨平台构建与校验和
-scripts/smoke-test.ps1  端到端运维脚本（38 项检查）
+scripts/smoke-test.ps1  端到端运维脚本（66 项检查）
+scripts/vpn-linux-test.sh  真实 tun 设备上的三层隧道检查（两端各在一个网络命名空间）
 ```
 
 ## 11. 扩展点

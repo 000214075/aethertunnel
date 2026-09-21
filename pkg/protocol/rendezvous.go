@@ -9,17 +9,34 @@ package protocol
 //
 //	request   "ATP1" | role:1 | token:32
 //	response  "ATP2" | token:32 | length:1 | "ip:port"
+//	result    "ATP3" | token:32 | path:1
 //
 // The token is 32 ASCII characters (16 random bytes in hex) handed out over the
 // authenticated control connection, so a third party cannot join an attempt.
+//
+// The result datagram is how a peer reports which path it ended up using. A
+// visitor that punches a direct path stops using its control connection without
+// saying anything, so the control connection alone cannot distinguish a working
+// punch from a visitor that gave up; the result datagram is sent on the same
+// socket the peers already use for the rendezvous. A server that predates it
+// ignores the datagram, because the magic differs from every request it knows.
 const (
 	PunchRequestMagic  = "ATP1"
 	PunchResponseMagic = "ATP2"
+	PunchResultMagic   = "ATP3"
 	PunchTokenLen      = 32
 	PunchRequestLen    = len(PunchRequestMagic) + 1 + PunchTokenLen
+	PunchResultLen     = len(PunchResultMagic) + PunchTokenLen + 1
 
 	PunchRoleVisitor = 'V'
 	PunchRoleOwner   = 'O'
+
+	// PunchPathDirect is the path byte a visitor reports after punching a direct
+	// path to the owner.
+	PunchPathDirect = 'D'
+	// PunchPathRelayed is the path byte a peer reports when it fell back to the
+	// relayed path.
+	PunchPathRelayed = 'R'
 )
 
 // EncodePunchRequest builds the datagram a peer sends to the rendezvous port.
@@ -72,4 +89,30 @@ func DecodePunchResponse(data []byte) (token, peer string, ok bool) {
 		return "", "", false
 	}
 	return token, string(rest[:length]), true
+}
+
+// EncodePunchResult builds the datagram with which a peer reports the path it
+// took after punching.
+func EncodePunchResult(token string, path byte) []byte {
+	if len(token) != PunchTokenLen || (path != PunchPathDirect && path != PunchPathRelayed) {
+		return nil
+	}
+	out := make([]byte, 0, PunchResultLen)
+	out = append(out, PunchResultMagic...)
+	out = append(out, token...)
+	out = append(out, path)
+	return out
+}
+
+// DecodePunchResult parses a path report.
+func DecodePunchResult(data []byte) (token string, path byte, ok bool) {
+	if len(data) != PunchResultLen || string(data[:len(PunchResultMagic)]) != PunchResultMagic {
+		return "", 0, false
+	}
+	token = string(data[len(PunchResultMagic) : len(PunchResultMagic)+PunchTokenLen])
+	path = data[len(PunchResultMagic)+PunchTokenLen]
+	if path != PunchPathDirect && path != PunchPathRelayed {
+		return "", 0, false
+	}
+	return token, path, true
 }

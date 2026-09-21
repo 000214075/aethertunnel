@@ -162,6 +162,49 @@ func (c *client) rendezvousAddr() (net.Addr, error) {
 	return addr, nil
 }
 
+// reportPath tells the rendezvous server which path this peer took. The server
+// cannot tell on its own: a visitor that punched a direct path stops using its
+// control connection without a word, so without this report a working punch is
+// indistinguishable from a visitor that gave up.
+//
+// The datagram is not acknowledged, so it is sent a few times; the server only
+// needs one copy and ignores the rest. The caller runs this in the background, so
+// a slow rendezvous port never delays the visitor's first byte.
+func (c *client) reportPath(token string, path byte) {
+	payload := protocol.EncodePunchResult(token, path)
+	if payload == nil {
+		return
+	}
+	addr, err := c.rendezvousAddr()
+	if err != nil {
+		return
+	}
+	conn, err := net.Dial("udp", addr.String())
+	if err != nil {
+		c.logger.Printf("cannot report the punched path: %v", err)
+		return
+	}
+	defer func() { _ = conn.Close() }()
+
+	for attempt := 0; attempt < pathReportAttempts; attempt++ {
+		if _, err := conn.Write(payload); err != nil {
+			c.logger.Printf("cannot report the punched path: %v", err)
+			return
+		}
+		if attempt+1 < pathReportAttempts {
+			time.Sleep(pathReportInterval)
+		}
+	}
+}
+
+const (
+	// pathReportAttempts is how many copies of the path report are sent. The
+	// datagram is never acknowledged, and losing it only costs a counter.
+	pathReportAttempts = 3
+	// pathReportInterval spaces the copies out.
+	pathReportInterval = 40 * time.Millisecond
+)
+
 // rendezvousAccept selects the rendezvous server's answer out of the datagrams
 // arriving on a punch socket. The peer's hello datagrams arrive on the same
 // socket as soon as the server has told it where to send, so the reply has to be

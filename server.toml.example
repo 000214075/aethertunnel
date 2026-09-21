@@ -166,9 +166,14 @@ trusted_keys = []
 #   ip route add 10.7.0.0/24 dev tun0
 [vpn]
 enabled = false
+# Linux only: the interface is opened from /dev/net/tun. Every other platform refuses
+# to start and says what is missing. GET /api/vpn and the dashboard's layer-3 panel
+# report the interface, the pool and the packet counters once it is up.
 # Interface name. Empty asks the kernel for the next free one.
 device = "tun0"
 # The subnet clients are allocated from. The server keeps the first usable address.
+# This program does not touch the host's routing table; add the route yourself, for
+# example: ip route add 10.7.0.0/24 dev tun0
 address = "10.7.0.0/24"
 # Overrides the interface MTU. Zero uses the interface's own value.
 mtu = 0
