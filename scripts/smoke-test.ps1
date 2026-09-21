@@ -275,6 +275,22 @@ function Invoke-Curl {
     return ($output | Out-String).Trim()
 }
 
+# Read-AuditLines reads a file the server may be rotating at that moment. On Windows
+# a rename onto an existing file removes the destination first, so a reader can hit a
+# moment where the generation is not there at all; the read is retried instead of
+# failing a check on a rotation in flight.
+function Read-AuditLines {
+    param([string]$Path, [int]$Attempts = 8)
+
+    for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
+        if (Test-Path $Path) {
+            try { return @(Get-Content $Path -ErrorAction Stop | Where-Object { $_ -ne '' }) } catch { }
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    throw "could not read $Path"
+}
+
 # Get-Metric reads one series out of /metrics. The whole body is one string, so the
 # line is matched with the multiline flag; a plain match would only ever look at the
 # first line. Port defaults to the main server's dashboard.
@@ -2193,8 +2209,7 @@ Test-Check 'the audit log rotates once it reaches audit.max_bytes' {
     # every line has to parse.
     $parsed = 0
     $malformed = 0
-    foreach ($line in (Get-Content $rotated)) {
-        if ($line -eq '') { continue }
+    foreach ($line in (Read-AuditLines $rotated)) {
         try { $null = $line | ConvertFrom-Json; $parsed++ } catch { $malformed++ }
     }
     if ($malformed -ne 0) { throw "$malformed of the $($parsed + $malformed) lines in the rotated generation do not parse" }
@@ -2211,7 +2226,7 @@ Test-Check 'the audit log rotates once it reaches audit.max_bytes' {
 Test-Check 'the rotated generation holds the records written before it' {
     $rotated = "$rotateAudit.1"
     if (-not (Test-Path $rotated)) { throw "the audit log never rotated, so there is no previous generation to read" }
-    $records = @(Get-Content $rotated | Where-Object { $_ -match '"event":"acl_denied"' })
+    $records = @(Read-AuditLines $rotated | Where-Object { $_ -match '"event":"acl_denied"' })
     if ($records.Count -lt 1) { throw "the rotated generation holds no acl_denied record" }
     if ($records[0] -notmatch '127\.0\.0\.1') { throw "the rotated record does not name the source: $($records[0])" }
     return $true
@@ -2240,17 +2255,10 @@ Test-Check 'audit.keep decides how many generations survive a rotation' {
     }
 
     # Both generations hold whole records, and .2 holds the ones written earlier.
-    # A read can catch a generation while the server rotates it, so each one is
-    # read again rather than failing the check on a rename in flight.
     $newest = $null
     $older = $null
     foreach ($pair in @(@("$rotateAudit.2", 'older'), @("$rotateAudit.1", 'newest'))) {
-        $lines = $null
-        for ($try = 0; $try -lt 5 -and $null -eq $lines; $try++) {
-            try { $lines = @(Get-Content $pair[0] -ErrorAction Stop | Where-Object { $_ -ne '' }) }
-            catch { $lines = $null; Start-Sleep -Milliseconds 200 }
-        }
-        if ($null -eq $lines) { throw "$($pair[0]) could not be read" }
+        $lines = Read-AuditLines $pair[0]
         if ($lines.Count -lt 1) { throw "$($pair[0]) holds no record" }
         foreach ($line in $lines) {
             try { $null = $line | ConvertFrom-Json } catch {
