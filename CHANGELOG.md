@@ -10,6 +10,97 @@
 
 ---
 
+## [3.7.0] — 2026-09-21
+
+本版本修掉审计日志的一个静默失败：写不进去时它会停止记录，而服务器看起来一切正常。
+同时补上了一些"声明了但没有任何测试或脚本用过"的命令行参数、接口与指标的真实运维检查。
+配置键与线协议都没有破坏性变化，两端的旧配置可以直接用。
+
+### 修复
+
+- **审计日志写不进去时会悄悄停止记录。** `Auditor.Record` 丢弃写入错误，代码注释说这个错误
+  会"在下一次抓取文件大小时通过面板的错误横幅浮现出来"——而没有任何代码抓取过它。
+  两种情况都会命中：外部日志轮转把文件改名并新建（logrotate 的默认模式）之后，服务器手上
+  的句柄指向的是已被改名的旧文件，操作者查看的路径从此不再有新记录；句柄失效或路径被替换时，
+  重开失败会把 `file` 与 `encoder` 置空，此后每一条记录都被丢掉，重启之前再也写不出来。
+  实测：把日志文件换成同名目录，再产生 4 条记录，丢失计数从 0 涨到 4，而 `/healthz` 仍是 200。
+  现在写入失败会重新打开 `path` 并重试该条记录一次（瞬时的错误不留下空洞），仍然失败才计入
+  丢失；每条记录写入前还会核对配置路径是否仍指向手上这个文件，被轮转走时会重开。
+  写不进去**不会**让服务器停止服务，这是有意的：否则一个只读的日志目录就能让隧道下线。
+- **`aethertunnel_control_rejected_total` 漏掉了 ACL 与限流两条路径。** 这个计数器的说明是
+  "被拒绝的控制连接（容量、ACL、限流或封禁）"，但 `deny_cidrs` 与令牌桶只增加各自那条更具体的
+  计数器（`connections_denied_by_acl_total`、`connections_rate_limited_total`），汇总的那条停在 0。
+  实测：三次被 `deny_cidrs` 拒绝的连接之后，汇总计数仍是 0。现在两条路径都计入汇总，
+  两个计数器故意重叠：一个回答"握手前一共挡掉多少"，另一个回答"为什么"。
+  新增回归测试 `TestEveryPreHandshakeRefusalIsCounted`，去掉任一处计数即失败。
+- **`aethertunnel_bytes_from_clients_total` 与按隧道的字节计数不含 UDP。** 数据报会话只在
+  `Tunnel` 上记账、只写进账本，没有进指标，而 `aethertunnel_bytes_to_clients_total` 的说明是
+  "发往客户端的字节"。现在 UDP 会话的字节也计入全局与按隧道的字节计数（数据报会话不计为"流"，
+  所以 `streams_total` 不受影响）。
+- **`GET /api/status` 的 `traffic` 在客户端全部断开后归零**，而面板上写着"计数器自服务器启动起
+  累计"。它原本是"当前注册的这些隧道各自累计了多少"，最后一个发布该代理的客户端断开后就变成 0；
+  同一时刻 `/metrics` 的两个字节计数器仍在累计，两个视图互相矛盾。现在 `traffic` 是自启动起的
+  累计值，与 `/metrics` 一致；按隧道的数字仍随注册重置，留在 `/api/proxies` 里。
+
+### 新增
+
+- `GET /api/status` 增加 `audit` 段：`enabled`、`writable`、`path`、`max_bytes`、
+  `bytes_written`、`write_failures`、`records_lost`、`recovered`、`last_error`。
+  配置了审计但当前写不进去时报告为 `enabled: true` 且 `writable: false`，而不是
+  `enabled: false`——这两种情况对运维意味着完全不同的东西。
+- 指标 `aethertunnel_audit_write_failures_total`、`aethertunnel_audit_records_lost_total`、
+  `aethertunnel_audit_records_recovered_total`。只在 `[audit] enabled = true` 时输出：
+  恒为 0 的"丢失 0 条"会被读成"审计正常"，而实际上没有任何日志。
+- 面板的"服务器状态"栏新增"审计日志"一行，四种状态：正常写入、重开后补写 N 次、
+  无法写入 — 已丢 N 条（此时另有一条横幅，直到服务器报告路径可写才消失）、
+  已恢复写入 — 期间丢 N 条（恢复后保留警告，因为那几条确实没了）。中英双语。
+- 服务器日志在进入故障状态与恢复时各写一行，重复故障不会每个记录刷一行。
+
+### 测试
+
+- `pkg/server/audit_test.go` 新增四项：句柄被关掉之后继续记录（记录不丢，错误被报出并清除）、
+  路径无法打开时计入丢失并保持可运行、配置路径被外部轮转走之后重开并写到操作者看的文件里
+  （在 Linux 上跑；Windows 不允许改开着的文件的名字，该平台的等价轮转是原地截断，句柄仍然有效）、
+  `Close` 之后的记录不会把日志文件重建出来。把重开重试去掉，第一项立刻失败并报出
+  "3 条记录只写下 1 条"；把"路径是否被替换"的判断去掉，第三项失败并报出
+  "操作者查看的路径里是空的"。
+- `pkg/server/ops_test.go` 新增两项：`/api/status` 的 `audit` 段在健康与故障两种状态下的取值，
+  以及三条指标与 `/api/status` 报的是同一组数字；审计关闭时三条审计序列**不出现**。
+- `pkg/server/guard_test.go` 新增 `TestEveryPreHandshakeRefusalIsCounted`：`deny_cidrs`、
+  令牌桶与封禁三条拒绝路径各自移动自己的计数器，同时都移动汇总的
+  `control_rejected_total`，且都不计为已接受。把 ACL 与限流两处的汇总计数去掉，它立刻失败并
+  同时报出两条路径。
+
+### 运维测试
+
+`scripts/smoke-test.ps1` 从 75 项扩到 83 项：
+
+- **审计日志故障三项**：一台独立服务器，先确认健康状态报的是可写且零丢失；把日志文件移除并在
+  同一路径放一个目录，再产生记录，确认 `/metrics` 的丢失计数上涨、`/api/status` 报
+  `writable: false` 且带出错误、`/healthz` 仍是 200、日志里出现 `audit: cannot write`；
+  最后把路径恢复，确认不需要重启就开始重新记录、`last_error` 被清空、日志里出现
+  `is writable again`。
+- **`/api/health` 与 `/api/status` 两项**：`/api/health` 不带令牌可读、报出状态与协议版本；
+  `/api/status` 逐字段核对面板绘制时读的每一项（连接数、代理数、双向字节、是否需要令牌、
+  `audit` 段），并且版本号与 `--version` 一致。这两条接口此前没有任何测试或脚本请求过。
+- **`aethertunnel_control_rejected_total`**：服务端级拒绝的服务器上，三次拒绝之后该计数
+  至少为 3，且不低于更具体的 ACL 计数。
+- **`aethertunnel_visitors_denied_by_proxy_total`**：按代理 ACL 的拒绝被记录进审计之后，
+  计数至少为 1。
+- **`aethertunnel_udp_sessions_active`**：从一个新的来源端口发一个数据报，该 gauge 必须上涨
+  （此前没有任何测试读过它）。
+- **`aethertunnel_tunnel_http_requests_total`**：按 `tunnel="web"` 的标签读到至少 1，
+  按 `tunnel="tcp-echo",direction="from_client"` 的字节计数读到至少 1。
+
+### 文档
+
+`docs/CONFIGURATION.md`（`[metrics]` 一节的序列名逐条列出、`[audit]` 一节的失败行为）、
+`docs/SECURITY.md`（审计日志失败必须可见）、`README.md`（能力表、运维一节新增客户端
+`--identity`）、`web/dashboard/README.md`（审计一栏与横幅）、`docs/MIGRATION.md`
+（新增 v3.6.0 → v3.7.0）。
+
+---
+
 ## [3.6.0] — 2026-09-21
 
 本版本修好一个"文档里写了、实际用不了"的服务端设置，并把三个从未被任何测试或脚本

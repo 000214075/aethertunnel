@@ -214,6 +214,8 @@ a { color: var(--accent); }
 .kv > div { min-width: 0; }
 .kv dt { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
 .kv dd { margin: 2px 0 0; font-family: var(--mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.kv dd.is-warn { color: var(--warn); }
+.kv dd.is-err { color: var(--err); }
 
 .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
 .metric {
@@ -401,6 +403,10 @@ a { color: var(--accent); }
       <button type="button" class="banner-btn" id="errorBannerDismiss" data-i18n="banner.dismiss">Dismiss</button>
     </div>
 
+    <div id="auditBanner" class="banner is-error" hidden>
+      <span class="banner-text" id="auditBannerText"></span>
+    </div>
+
     <!-- ================= Overview ================= -->
     <section class="view" id="view-overview">
       <div class="panel">
@@ -417,6 +423,7 @@ a { color: var(--accent); }
           <div><dt data-i18n="status.commit">Git commit</dt><dd id="statusCommit">—</dd></div>
           <div><dt data-i18n="status.startedAt">Started at</dt><dd id="statusStartedAt">—</dd></div>
           <div><dt data-i18n="status.authRequired">Token required</dt><dd id="statusAuthRequired">—</dd></div>
+          <div><dt data-i18n="status.audit">Audit log</dt><dd id="statusAudit">—</dd></div>
         </dl>
       </div>
 
@@ -620,6 +627,13 @@ a { color: var(--accent); }
       'status.commit': 'Git commit',
       'status.startedAt': 'Started at',
       'status.authRequired': 'Token required',
+      'status.audit': 'Audit log',
+      'audit.recording': 'recording',
+      'audit.recovered': '{n} write(s) recovered after reopening',
+      'audit.notWritable': 'cannot write — {n} record(s) lost',
+      'audit.notWritableNoLoss': 'cannot write',
+      'audit.lostThenRecovered': 'recording again — {n} record(s) lost',
+      'audit.banner': 'The audit log {path} could not be written {n} time(s), so the record has a gap. Last error: {msg}',
       'metrics.title': 'Counters',
       'metrics.activeConn': 'Active connections',
       'metrics.totalConn': 'Total connections',
@@ -742,6 +756,13 @@ a { color: var(--accent); }
       'status.commit': 'Git 提交',
       'status.startedAt': '启动时间',
       'status.authRequired': '需要令牌',
+      'status.audit': '审计日志',
+      'audit.recording': '正常写入',
+      'audit.recovered': '重开后补写 {n} 次',
+      'audit.notWritable': '无法写入 — 已丢 {n} 条',
+      'audit.notWritableNoLoss': '无法写入',
+      'audit.lostThenRecovered': '已恢复写入 — 期间丢 {n} 条',
+      'audit.banner': '审计日志 {path} 有 {n} 条记录没能写入，记录已经不完整。最后一次错误：{msg}',
       'metrics.title': '计数',
       'metrics.activeConn': '活动连接',
       'metrics.totalConn': '累计连接',
@@ -1149,6 +1170,7 @@ a { color: var(--accent); }
     setText(el('statusCommit'), s.git_commit);
     setText(el('statusStartedAt'), s.started_at ? fmtAbsolute(s.started_at) : null);
     setText(el('statusAuthRequired'), s.auth_required === undefined ? null : (s.auth_required ? t('common.yes') : t('common.no')));
+    renderAudit(s.audit);
 
     setText(el('metricConnActive'), s.connections ? fmtInt(conns.active) : null);
     setText(el('metricConnTotal'), s.connections ? fmtInt(conns.total) : null);
@@ -1168,6 +1190,58 @@ a { color: var(--accent); }
       state.uptimeBaseSeconds = null;
     }
     renderUptime();
+  }
+
+  /* The audit log is the one part of the server whose failure leaves no trace of its
+     own: a log that stopped recording looks exactly like a quiet server. It therefore
+     gets a row of its own and, while it cannot be written, a banner that stays up until
+     the server reports the path writable again.
+     A lost record is a permanent fact — the trail has a hole — so the row keeps a
+     warning after the log recovers, and the counters reset only when the server
+     restarts. */
+  function renderAudit(audit) {
+    var node = el('statusAudit');
+    var banner = el('auditBanner');
+    if (!audit || audit.enabled !== true) {
+      if (node) { node.className = ''; setText(node, audit ? t('common.no') : null); node.title = ''; }
+      if (banner) banner.hidden = true;
+      return;
+    }
+
+    var lost = Number(audit.records_lost || 0);
+    var recovered = Number(audit.recovered || 0);
+    var writable = audit.writable === true;
+
+    if (node) {
+      if (!writable) {
+        node.className = 'is-err';
+        node.textContent = lost > 0
+          ? t('audit.notWritable', { n: fmtInt(lost) })
+          : t('audit.notWritableNoLoss');
+      } else if (lost > 0) {
+        node.className = 'is-warn';
+        node.textContent = t('audit.lostThenRecovered', { n: fmtInt(lost) });
+      } else if (recovered > 0) {
+        node.className = 'is-warn';
+        node.textContent = t('audit.recovered', { n: fmtInt(recovered) });
+      } else {
+        node.className = '';
+        node.textContent = t('audit.recording');
+      }
+      node.title = audit.path || '';
+    }
+
+    if (!banner) return;
+    if (!writable) {
+      setText(el('auditBannerText'), t('audit.banner', {
+        n: fmtInt(lost),
+        path: audit.path || '',
+        msg: audit.last_error || '',
+      }));
+      banner.hidden = false;
+    } else {
+      banner.hidden = true;
+    }
   }
 
   /* Uptime is the server value; between polls we add only the locally measured

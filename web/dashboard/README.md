@@ -24,6 +24,21 @@ registered"; before the first successful load, the tables show `—`. 请求失�
 的错误横幅；`/api/status` 失败还会显示「连接断开 — 正在重试」；列表为空时明确显示
 「当前没有已连接的客户端」「暂无已注册的代理」。
 
+## Audit log / 审计日志
+
+The `audit` section of `/api/status` is the only place a stopped audit log is visible, so
+the status panel carries an *Audit log* row with four states: `recording`; `N write(s)
+recovered after reopening` when a record only landed on the second attempt;
+`cannot write — N record(s) lost` while the path cannot be opened, with a banner that
+stays up until the server reports it writable again; and `recording again — N record(s)
+lost` after a recovery, which keeps the warning because those records are gone. The
+counters reset when the server restarts. The row is `no` when `[audit]` is off.
+`/api/status` 的 `audit` 段是"审计已经停了"唯一能被看到的地方，因此状态面板有一栏
+「审计日志」，四种状态：正常写入；重开后补写 N 次（该条记录第二次才写下）；
+无法写入 — 已丢 N 条（路径打不开，此时另有一条横幅，直到服务器报告可写才消失）；
+已恢复写入 — 期间丢 N 条（恢复后保留警告，因为那几条确实没了）。计数器在服务端重启时归零；
+`[audit]` 关闭时显示「否」。
+
 ## Proxy pools / 代理池
 
 `/api/proxies` returns one row per proxy, with the pool's aggregate counters and a

@@ -101,7 +101,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	auditor, err := NewAuditor(cfg.Audit.Enabled, cfg.Audit.Path, cfg.Audit.MaxBytes)
+	auditor, err := NewAuditor(cfg.Audit.Enabled, cfg.Audit.Path, cfg.Audit.MaxBytes, logger)
 	if err != nil {
 		return nil, fmt.Errorf("open audit log: %w", err)
 	}
@@ -141,7 +141,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		buildTime:  opts.BuildTime,
 		gitCommit:  opts.GitCommit,
 		startedAt:  time.Now(),
-		metrics:    newMetrics(),
+		metrics:    newMetrics().withAudit(auditor),
 		acl:        acl,
 		bans:       bans,
 		auditor:    auditor,
@@ -329,6 +329,9 @@ func (s *Server) admit(conn net.Conn) bool {
 	switch s.acl.Check(conn) {
 	case DenyCIDR:
 		s.metrics.aclDenied.Add(1)
+		// The refusal counters overlap on purpose: one answer is "how many were
+		// turned away before the handshake at all", the other is "why".
+		s.metrics.controlRejected.Add(1)
 		s.auditor.Record(AuditEvent{
 			Event: EventACLDenied, Remote: conn.RemoteAddr().String(),
 			Outcome: "denied", Detail: "source address rejected by allow/deny lists",
@@ -338,6 +341,7 @@ func (s *Server) admit(conn net.Conn) bool {
 		return false
 	case DenyRate:
 		s.metrics.rateLimited.Add(1)
+		s.metrics.controlRejected.Add(1)
 		s.auditor.Record(AuditEvent{
 			Event: EventRateLimited, Remote: conn.RemoteAddr().String(),
 			Outcome: "denied", Detail: "source address exceeded its connection rate",
@@ -920,11 +924,12 @@ func (s *Server) handleData(conn net.Conn, framer *protocol.Framer, msg *protoco
 	waiting <- streamResult{conn: dc}
 }
 
-// totalBytes reports aggregate tunnel traffic.
+// totalBytes reports the traffic the server has relayed since it started.
+//
+// It is deliberately not the sum of the registered tunnels: those counters belong to
+// a registration and drop to nothing when the last client publishing a proxy
+// disconnects, while the number the status panel shows is a running total. The
+// per-proxy figures, which do reset with the registration, are on GET /api/proxies.
 func (s *Server) totalBytes() (in, out int64) {
-	for _, tunnel := range s.tunnels.List() {
-		in += tunnel.BytesIn.Load()
-		out += tunnel.BytesOut.Load()
-	}
-	return in, out
+	return s.metrics.bytesFromClients.Load(), s.metrics.bytesToClients.Load()
 }

@@ -261,6 +261,9 @@ func (d *Dashboard) apiStatus(w http.ResponseWriter, r *http.Request) {
 			"bytes_out": out,
 		},
 		"auth_required": d.cfg.Dashboard.Token != "",
+		// The audit log's health belongs next to the tunnel's: a log that stopped
+		// recording leaves no other trace, and a quiet server looks the same.
+		"audit": d.server.auditor.Summary(),
 	})
 }
 

@@ -117,7 +117,7 @@ Schnorr 证明在 NIST P-256 上，用 Fiat-Shamir 去交互；上下文含服�
 | 连接限流 | `[server] rate_limit_per_second` / `rate_limit_burst` | 按来源地址的令牌桶，在握手前执行；空闲桶会被回收 |
 | 自动封禁 | `[server] ban_after_failures` / `ban_seconds` / `ban_max_seconds` / `ban_ignore_cidrs` | 同一来源认证失败达到次数后，在握手前拒绝该来源；每次封禁时长翻倍，直到上限 |
 | 按代理的访客 ACL | `[[proxies]] allow_cidrs` / `deny_cidrs` | 服务器整体接受之后、建立隧道之前，再按该代理自己的名单判断 |
-| 审计日志 | `[audit]` | JSON Lines，超过 `max_bytes` 轮转为 `<path>.1` |
+| 审计日志 | `[audit]` | JSON Lines，超过 `max_bytes` 轮转为 `<path>.1`；写不进去的记录会重开文件重试，仍然失败的计入 `aethertunnel_audit_records_lost_total` 并出现在 `GET /api/status` 的 `audit` 段与面板上 |
 
 规则在握手**之前**执行，被拒绝的连接不会消耗会话槽位，也不会读取任何帧。白名单或黑名单
 非空时，来源地址无法解析的连接按拒绝处理。
@@ -140,6 +140,13 @@ Schnorr 证明在 NIST P-256 上，用 Fiat-Shamir 去交互；上下文含服�
 `proxy_removed` 在代理成员被移除时记录，`dashboard_action` 记录从面板发起的操作；
 `p2p_abandoned` 表示那次打洞的结果无法判定（访客既没有要求中继、也没有回报直连路径），
 所以它不会被当成直连成功记进审计或指标。
+
+审计日志本身的失败也必须看得见：一条记录写不进去时会重新打开 `path` 并重试一次，
+所以外部的日志轮转或一次瞬时错误不会留下空洞；仍然写不下去的记录计入
+`aethertunnel_audit_records_lost_total`，`GET /api/status` 的 `audit` 段报出
+`writable`、`records_lost` 与 `last_error`，面板的"服务器状态"栏与横幅显示同一件事。
+这是在抄日志和删日志之外，唯一能让人发现"审计已经停了"的地方——审计停下来本身不留痕迹。
+写不进去**不会**让服务器停止服务，这是有意的：否则一个只读的日志目录就能让隧道下线。
 
 公开的 `remote_port` 仍然可以被上面这些规则之外的任何人连接：按来源的名单挡的是"谁能连"，
 挡不住"连上之后能做什么"。`socks5` 出口多一层 `allow_targets`，它限制的是客户端能拨到哪些

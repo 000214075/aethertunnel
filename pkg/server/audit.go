@@ -2,7 +2,9 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -60,18 +62,39 @@ const (
 
 // Auditor writes JSON Lines audit records. A disabled auditor discards
 // everything, so call sites do not need to check whether auditing is on.
+//
+// A record that cannot be written must never take the tunnel down, but silence is
+// not an option either: an audit log that stopped recording looks exactly like a
+// quiet server. Every failed write is therefore counted, the last error is kept,
+// and the configured path is reopened before the next record so a handler that was
+// closed or replaced underneath the server heals instead of losing the rest of the
+// run.
 type Auditor struct {
-	mu       sync.Mutex
-	file     *os.File
-	path     string
-	maxBytes int64
-	written  int64
-	encoder  *json.Encoder
+	mu         sync.Mutex
+	configured bool
+	closed     bool
+	file       *os.File
+	fileInfo   os.FileInfo
+	path       string
+	maxBytes   int64
+	written    int64
+	encoder    *json.Encoder
+	logger     *log.Logger
+
+	// failures counts writes that failed at least once, lost counts records that
+	// could not be written even after reopening the file, and recovered counts
+	// records that only landed on the second attempt. lastError is the most
+	// recent failure and is cleared by a write that succeeds.
+	failures  int64
+	lost      int64
+	recovered int64
+	lastError string
 }
 
 // NewAuditor opens the audit log. A disabled configuration returns an auditor
-// that writes nowhere.
-func NewAuditor(enabled bool, path string, maxBytes int64) (*Auditor, error) {
+// that writes nowhere. logger may be nil; the auditor then reports failures only
+// through its counters.
+func NewAuditor(enabled bool, path string, maxBytes int64, logger *log.Logger) (*Auditor, error) {
 	if !enabled {
 		return &Auditor{}, nil
 	}
@@ -93,20 +116,97 @@ func NewAuditor(enabled bool, path string, maxBytes int64) (*Auditor, error) {
 	}
 
 	return &Auditor{
-		file:     file,
-		path:     path,
-		maxBytes: maxBytes,
-		written:  info.Size(),
-		encoder:  json.NewEncoder(file),
+		configured: true,
+		file:       file,
+		fileInfo:   info,
+		path:       path,
+		maxBytes:   maxBytes,
+		written:    info.Size(),
+		encoder:    json.NewEncoder(file),
+		logger:     logger,
 	}, nil
 }
 
-// Enabled reports whether records are written anywhere.
+// Configured reports whether this auditor was asked to record anything. It stays
+// true while the file is closed, which is exactly the state the dashboard has to
+// be able to show: auditing is on, and right now nothing is being written.
+func (a *Auditor) Configured() bool { return a != nil && a.configured }
+
+// Enabled reports whether records are being written right now.
 func (a *Auditor) Enabled() bool { return a != nil && a.file != nil }
 
-// Record appends one event.
+// Failures reports how many writes failed at least once. A record that landed on
+// the second attempt counts here as well: the operator wants to know that the log
+// hiccuped, not only that it eventually caught up.
+func (a *Auditor) Failures() int64 {
+	if a == nil {
+		return 0
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.failures
+}
+
+// Lost reports how many records could not be written at all. This is the number
+// that says the audit trail has a hole in it.
+func (a *Auditor) Lost() int64 {
+	if a == nil {
+		return 0
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lost
+}
+
+// Recovered reports how many records landed on the second attempt, after the file
+// was reopened.
+func (a *Auditor) Recovered() int64 {
+	if a == nil {
+		return 0
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.recovered
+}
+
+// LastError reports the most recent write error, or an empty string when the last
+// write succeeded.
+func (a *Auditor) LastError() string {
+	if a == nil {
+		return ""
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lastError
+}
+
+// Summary is the audit log's state for the dashboard: whether records are being
+// written, how many were dropped, and the last error. A log that was configured
+// but cannot be written is reported as enabled with a non-empty last_error, not as
+// disabled: the two mean very different things to an operator.
+func (a *Auditor) Summary() map[string]any {
+	if a == nil || !a.configured {
+		return map[string]any{"enabled": false}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return map[string]any{
+		"enabled":        true,
+		"writable":       a.file != nil,
+		"path":           a.path,
+		"max_bytes":      a.maxBytes,
+		"bytes_written":  a.written,
+		"write_failures": a.failures,
+		"records_lost":   a.lost,
+		"recovered":      a.recovered,
+		"last_error":     a.lastError,
+	}
+}
+
+// Record appends one event. A closed auditor ignores it, which is what keeps a
+// late record from recreating a log after shutdown.
 func (a *Auditor) Record(event AuditEvent) {
-	if !a.Enabled() {
+	if a == nil || !a.configured {
 		return
 	}
 	if event.Time == "" {
@@ -116,22 +216,129 @@ func (a *Auditor) Record(event AuditEvent) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	if a.closed {
+		return
+	}
+	// A file that could not be reopened on an earlier record is retried here, so
+	// a log that comes back is picked up again without restarting the server.
+	if a.file == nil {
+		a.reopen()
+		if a.file == nil {
+			a.lost++
+			return
+		}
+	}
 	if a.maxBytes > 0 && a.written >= a.maxBytes {
 		a.rotate()
 	}
+	a.ensureCurrentFile()
+
 	if a.encoder == nil {
+		a.noteFailure(errors.New("the audit log has no open file"))
+		a.lost++
 		return
 	}
-	if err := a.encoder.Encode(event); err != nil {
-		// An unwritable audit log must not take the tunnel down; the error is
-		// surfaced through the dashboard's error banner on the next scrape of
-		// the file size instead of panicking here.
-		return
+	err := a.encoder.Encode(event)
+	if err != nil {
+		a.noteFailure(err)
+
+		// The write failed, which is what an external log rotator or a handler
+		// closed elsewhere looks like. Reopen the configured path and try this
+		// record once more, so a hiccup costs nothing.
+		a.reopen()
+		if a.encoder == nil {
+			a.lost++
+			return
+		}
+		if retryErr := a.encoder.Encode(event); retryErr != nil {
+			// Already counted as a failure by noteFailure above; this only
+			// records that the record never made it.
+			a.noteError(retryErr)
+			a.lost++
+			return
+		}
+		a.recovered++
 	}
+	a.clearFailure()
+
 	a.written += int64(len(event.Event) + len(event.Remote) + len(event.Proxy) + len(event.Detail) + 128)
 	if info, err := a.file.Stat(); err == nil {
 		a.written = info.Size()
+		a.fileInfo = info
 	}
+}
+
+// ensureCurrentFile reopens the log when the configured path no longer names the
+// file this auditor holds open. That is what a log rotator that renames the file
+// and creates a new one leaves behind: without this, records keep going to the
+// renamed file and the path an operator reads stays empty.
+func (a *Auditor) ensureCurrentFile() {
+	if a.file == nil || a.fileInfo == nil {
+		return
+	}
+	live, err := os.Stat(a.path)
+	if err != nil || os.SameFile(a.fileInfo, live) {
+		return
+	}
+	if a.logger != nil {
+		a.logger.Printf("audit: %s was replaced underneath the server; reopening it", a.path)
+	}
+	a.reopen()
+}
+
+// reopen closes the current file and opens the configured path again. It leaves
+// file and encoder nil when the path cannot be opened, which Record reports.
+func (a *Auditor) reopen() {
+	if a.file != nil {
+		_ = a.file.Close()
+		a.file = nil
+	}
+	a.encoder = nil
+	a.fileInfo = nil
+
+	file, err := os.OpenFile(a.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		a.noteError(err)
+		return
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		a.noteError(err)
+		return
+	}
+	a.file = file
+	a.fileInfo = info
+	a.encoder = json.NewEncoder(file)
+	a.written = info.Size()
+}
+
+// noteFailure counts one record whose first write attempt failed and reports the
+// error.
+func (a *Auditor) noteFailure(err error) {
+	a.failures++
+	a.noteError(err)
+}
+
+// noteError keeps the error and logs the transition into a failing state, so a
+// repeating problem does not fill the log with one line per record.
+func (a *Auditor) noteError(err error) {
+	announce := a.lastError == ""
+	a.lastError = err.Error()
+	if announce && a.logger != nil {
+		a.logger.Printf("audit: cannot write %s: %v", a.path, err)
+	}
+}
+
+// clearFailure logs the recovery of a log that had been failing.
+func (a *Auditor) clearFailure() {
+	if a.lastError == "" {
+		return
+	}
+	if a.logger != nil {
+		a.logger.Printf("audit: %s is writable again", a.path)
+	}
+	a.lastError = ""
 }
 
 // rotate moves the current file aside, keeping one previous generation.
@@ -147,25 +354,25 @@ func (a *Auditor) rotate() {
 			truncated.Close()
 		}
 	}
-	file, err := os.OpenFile(a.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		a.file = nil
-		a.encoder = nil
-		return
-	}
-	a.file = file
-	a.encoder = json.NewEncoder(file)
-	a.written = 0
+	a.reopen()
 }
 
 // Close flushes and closes the log.
 func (a *Auditor) Close() error {
-	if !a.Enabled() {
+	if a == nil || !a.Enabled() {
 		return nil
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.file.Close()
+	if a.file == nil {
+		return nil
+	}
+	err := a.file.Close()
+	a.closed = true
+	a.file = nil
+	a.fileInfo = nil
+	a.encoder = nil
+	return err
 }
 
 // Discard is the no-op writer used by tests that only need the interface.

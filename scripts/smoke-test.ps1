@@ -276,6 +276,30 @@ function Get-Metric {
     return [int]$match.Groups[1].Value
 }
 
+# Get-LabelledMetric reads one series that carries a label, for example
+# aethertunnel_tunnel_http_requests_total{tunnel="web"}.
+function Get-LabelledMetric {
+    param([string]$Name, [string]$Label, [int]$Port = 0)
+
+    if ($Port -eq 0) { $Port = $dashboardPort }
+    $body = Invoke-Curl @('-s', "http://127.0.0.1:$Port/metrics")
+    $match = [regex]::Match($body, '(?m)^' + [regex]::Escape($Name) + '\{' + [regex]::Escape($Label) + '\} (-?\d+)')
+    if (-not $match.Success) { throw "the metrics output has no $Name{$Label}" }
+    return [int]$match.Groups[1].Value
+}
+
+# Get-Status reads /api/status, which is what the panel polls every two seconds. The
+# token argument is the dashboard token of the server being asked, or an empty string
+# for a server that does not require one.
+function Get-Status([int]$Port = 0, [string]$Token = '') {
+    if ($Port -eq 0) { $Port = $dashboardPort }
+    $uri = "http://127.0.0.1:$Port/api/status"
+    if ($Token) {
+        return Invoke-RestMethod -Uri $uri -Headers @{ Authorization = "Bearer $Token" } -TimeoutSec 10
+    }
+    return Invoke-RestMethod -Uri $uri -TimeoutSec 10
+}
+
 # Attempt-ControlConnection opens one TCP connection to a control port from the given
 # source address and closes it at once. Nothing is sent: the decisions under test are
 # made before the handshake, so what the server does with the socket is the whole
@@ -954,6 +978,36 @@ Test-Check 'udp: datagrams through the published port' {
     return $true
 }
 
+Test-Check 'the udp session gauge counts a session while it is open' {
+    # The gauge has to be read while a datagram proxy is published: a datagram sent to a
+    # port nobody holds is answered with an ICMP unreachable, which is a different
+    # failure from the one being checked.
+    $before = Get-Metric 'aethertunnel_udp_sessions_active'
+    # A datagram from a source port this run has not used yet is a new session.
+    $socket = New-Object System.Net.Sockets.UdpClient
+    try {
+        $socket.Client.ReceiveTimeout = 4000
+        $socket.Connect('127.0.0.1', $udpProxyPort)
+        $bytes = [System.Text.Encoding]::ASCII.GetBytes('gauge-session')
+        $socket.Send($bytes, $bytes.Length) | Out-Null
+        $remote = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+        $reply = $socket.Receive([ref]$remote)
+        if ([System.Text.Encoding]::ASCII.GetString($reply) -ne 'gauge-session') {
+            throw "the udp proxy answered '$([System.Text.Encoding]::ASCII.GetString($reply))'"
+        }
+
+        $deadline = (Get-Date).AddSeconds(10)
+        while ($true) {
+            $now = Get-Metric 'aethertunnel_udp_sessions_active'
+            if ($now -gt $before) { return $true }
+            if ((Get-Date) -gt $deadline) { throw "the gauge stayed at $now although a new session was opened (was $before)" }
+            Start-Sleep -Milliseconds 200
+        }
+    } finally {
+        $socket.Dispose()
+    }
+}
+
 Test-Check 'http: virtual hosting selects the tunnel by Host header' {
     $body = Invoke-Curl @('-s', '-H', 'Host: web.smoke.test', "http://127.0.0.1:$httpPort/hello")
     if ($body -notmatch 'smoketest-http') { throw "unexpected body: $body" }
@@ -1176,6 +1230,9 @@ Test-Check 'per-proxy acl: the refusal is recorded with the proxy name' {
     $audit = Get-Content -Raw (Join-Path $Root 'audit.jsonl')
     if ($audit -notmatch 'proxy_visitor_denied') { throw "no proxy visitor refusal is recorded" }
     if ($audit -notmatch '"proxy":"acl-echo"') { throw "the refusal does not name the proxy" }
+    # The same refusal is counted, so an operator can graph it without reading the log.
+    $denied = Get-Metric 'aethertunnel_visitors_denied_by_proxy_total'
+    if ($denied -lt 1) { throw "the proxy visitor refusal counter is $denied after a refusal was recorded" }
     return $true
 }
 
@@ -1615,6 +1672,7 @@ Test-Check 'the metrics endpoint reports the data path' {
     $body = Invoke-Curl @('-s', "http://127.0.0.1:$dashboardPort/metrics")
     foreach ($series in @(
             'aethertunnel_control_connections_total',
+            'aethertunnel_control_rejected_total',
             'aethertunnel_data_connections_total',
             'aethertunnel_udp_datagrams_total',
             'aethertunnel_http_requests_total',
@@ -1623,9 +1681,69 @@ Test-Check 'the metrics endpoint reports the data path' {
             'aethertunnel_socks5_requests_total',
             'aethertunnel_streams_refused_while_draining_total',
             'aethertunnel_tunnel_streams_active{tunnel="tcp-echo"}',
-            'aethertunnel_tunnel_streams_total{tunnel="tcp-echo"}')) {
+            'aethertunnel_tunnel_streams_total{tunnel="tcp-echo"}',
+            'aethertunnel_tunnel_bytes_total{tunnel="tcp-echo",direction="from_client"}',
+            'aethertunnel_tunnel_http_requests_total{tunnel="web"}',
+            'aethertunnel_audit_write_failures_total',
+            'aethertunnel_audit_records_lost_total',
+            'aethertunnel_audit_records_recovered_total')) {
         if ($body -notmatch [regex]::Escape($series)) { throw "the metrics output has no $series" }
     }
+    return $true
+}
+
+Test-Check 'the health endpoint is public and reports the running server' {
+    # /api/health is deliberately readable without a token and is what a load balancer
+    # or a monitoring agent polls, so it has to keep its shape and stay cheap.
+    $health = Invoke-RestMethod -Uri "http://127.0.0.1:$dashboardPort/api/health" -TimeoutSec 10
+    if ($health.status -ne 'ok') { throw "the health endpoint reports status '$($health.status)'" }
+    if ($health.protocol -ne 4) { throw "the health endpoint reports protocol $($health.protocol)" }
+    if (-not $health.version) { throw "the health endpoint reports no version" }
+    if ($health.uptime_seconds -lt 1) { throw "the health endpoint reports uptime $($health.uptime_seconds)" }
+    return $true
+}
+
+Test-Check 'the status endpoint carries every field the panel draws' {
+    # The panel polls /api/status every two seconds and reads exactly these fields;
+    # a renamed one leaves a dash on screen instead of a number.
+    $status = Get-Status
+    if (-not $status.version) { throw "the status endpoint reports no version" }
+    # The binary is built here without ldflags, so the version is the source default;
+    # what matters is that the dashboard and --version agree.
+    $reported = (Invoke-Binary -FilePath $serverExe -Arguments @('-version')).Trim()
+    if ($reported -notmatch [regex]::Escape($status.version)) {
+        throw "the status endpoint reports '$($status.version)' while the binary reports '$reported'"
+    }
+    if ($status.protocol -ne 4) { throw "the status endpoint reports protocol $($status.protocol)" }
+    if ($status.uptime_seconds -lt 1) { throw "the status endpoint reports uptime $($status.uptime_seconds)" }
+    if (-not $status.started_at) { throw "the status endpoint reports no start time" }
+    if ($null -eq $status.connections.active -or $null -eq $status.connections.total -or $null -eq $status.connections.max) {
+        throw "the status endpoint reports connections $($status.connections | ConvertTo-Json -Compress)"
+    }
+    if ($status.connections.total -lt 1) { throw "the status endpoint counts $($status.connections.total) connections" }
+    if ($null -eq $status.proxies.registered -or $null -eq $status.proxies.active_streams) {
+        throw "the status endpoint reports proxies $($status.proxies | ConvertTo-Json -Compress)"
+    }
+    if ($null -eq $status.traffic.bytes_in -or $null -eq $status.traffic.bytes_out) {
+        throw "the status endpoint reports traffic $($status.traffic | ConvertTo-Json -Compress)"
+    }
+    if ($status.traffic.bytes_in -le 0 -or $status.traffic.bytes_out -le 0) {
+        throw "the status endpoint reports $($status.traffic.bytes_in)/$($status.traffic.bytes_out) bytes after the traffic above"
+    }
+    if ($null -eq $status.auth_required) { throw "the status endpoint does not say whether a token is required" }
+    if ($status.audit.enabled -ne $true) { throw "the status endpoint reports the audit log as $($status.audit.enabled)" }
+    if ($status.audit.writable -ne $true) { throw "the status endpoint reports the audit log as not writable" }
+    if ($status.audit.records_lost -ne 0) { throw "the status endpoint reports $($status.audit.records_lost) lost audit records" }
+    return $true
+}
+
+Test-Check 'the per-tunnel http counter names the tunnel that served the request' {
+    # A labelled series is the one that answers "which tunnel is busy", so the label
+    # has to match the proxy name rather than something else.
+    $served = Get-LabelledMetric 'aethertunnel_tunnel_http_requests_total' 'tunnel="web"'
+    if ($served -lt 1) { throw "the per-tunnel http counter for web is $served after the requests above" }
+    $bytes = Get-LabelledMetric 'aethertunnel_tunnel_bytes_total' 'tunnel="tcp-echo",direction="from_client"'
+    if ($bytes -lt 1) { throw "the per-tunnel byte counter for tcp-echo is $bytes after the streams above" }
     return $true
 }
 
@@ -1894,6 +2012,11 @@ Test-Check 'a denied source is refused before the handshake' {
     if ((Get-Metric 'aethertunnel_control_connections_total' -Port $guardDashboardPort) -ne 0) {
         throw "a denied source was counted as an accepted control connection"
     }
+    # Refusals are also counted together, which is the series an alert watches when it
+    # does not care why a connection was turned away.
+    $rejected = Get-Metric 'aethertunnel_control_rejected_total' -Port $guardDashboardPort
+    if ($rejected -lt 3) { throw "three refusals left the rejection counter at $rejected" }
+    if ($rejected -lt $denied) { throw "the rejection counter ($rejected) is below the acl counter ($denied)" }
     $audit = Get-Content -Raw $guardAudit
     if ($audit -notmatch '"event":"acl_denied"') { throw "the refusal was not audited" }
     return $true
@@ -2012,6 +2135,188 @@ Test-Check 'the rotated generation holds the records written before it' {
 }
 
 if ($rotate -and -not $rotate.HasExited) { Stop-Process -Id $rotate.Id -Force -ErrorAction SilentlyContinue }
+
+Write-Step "checking that an audit log which cannot be written is reported"
+
+# A server of its own. Denying the loopback address produces one audit record per
+# attempt without needing a client, so the log is easy to drive.
+#
+# The failure is made the way it happens in practice: write access to the log and to its
+# directory is taken away while the server runs. The server keeps working through the
+# handle it already holds, so nothing fails until it has to open the path again, which it
+# does before every record and on every rotation. Without that check it would keep
+# "writing" into a file nobody can read while everything else looked healthy.
+#
+# On Windows the denial has to cover AppendData as well as WriteData: an open for append
+# asks for the append right, so denying only WriteData leaves it working.
+$auditHealthDir = Join-Path $Root 'audit-health'
+New-Item -ItemType Directory -Force -Path $auditHealthDir | Out-Null
+$auditHealthPath = Join-Path $auditHealthDir 'audit.jsonl'
+$auditHealthOwner = "$env:USERDOMAIN\$env:USERNAME"
+$auditHealthControlPort = Get-FreePort
+$auditHealthDashboardPort = Get-FreePort
+$auditHealthToml = Join-Path $Root 'audit-health.toml'
+@"
+[server]
+bind_addr = "127.0.0.1"
+bind_port = $auditHealthControlPort
+auth_token = "$token"
+deny_cidrs = ["127.0.0.1/32"]
+
+[dashboard]
+enabled = true
+bind_addr = "127.0.0.1"
+port = $auditHealthDashboardPort
+
+[metrics]
+enabled = true
+
+[audit]
+enabled = true
+path = "$RootFwd/audit-health/audit.jsonl"
+# Small enough that a handful of records crosses it, which is what makes the server
+# reopen the path and therefore notice that it can no longer write.
+max_bytes = 1024
+"@ | Set-Content -Path $auditHealthToml -Encoding UTF8
+
+$auditHealthLog = Join-Path $Root 'audit-health.log'
+$auditHealth = Start-Background -FilePath $serverExe -Arguments @('-config', $auditHealthToml) -LogPath $auditHealthLog -WorkingDirectory $Root
+Wait-ForPort -Port $auditHealthControlPort | Out-Null
+Start-Sleep -Seconds 1
+
+Test-Check 'a healthy audit log is reported as writable and complete' {
+    for ($attempt = 0; $attempt -lt 3; $attempt++) {
+        Attempt-ControlConnection -Port $auditHealthControlPort | Out-Null
+    }
+    $deadline = (Get-Date).AddSeconds(10)
+    while (-not (Test-Path $auditHealthPath) -or (Get-Item $auditHealthPath).Length -eq 0) {
+        if ((Get-Date) -gt $deadline) { throw "the audit log was never written" }
+        Start-Sleep -Milliseconds 200
+    }
+
+    $status = Get-Status -Port $auditHealthDashboardPort
+    if ($status.audit.enabled -ne $true) { throw "the status endpoint reports the audit log as $($status.audit.enabled)" }
+    if ($status.audit.writable -ne $true) { throw "a writable audit log is reported as not writable" }
+    if ($status.audit.records_lost -ne 0) { throw "a healthy audit log reports $($status.audit.records_lost) lost records" }
+    if ($status.audit.last_error) { throw "a healthy audit log reports the error '$($status.audit.last_error)'" }
+    # The configured path is reported as it was written, with forward slashes, so the
+    # comparison normalises the separator it is compared against.
+    if (($status.audit.path -replace '\\', '/') -ne ($auditHealthPath -replace '\\', '/')) {
+        throw "the summary names '$($status.audit.path)'"
+    }
+    if ((Get-Metric 'aethertunnel_audit_records_lost_total' -Port $auditHealthDashboardPort) -ne 0) {
+        throw "the lost-records counter is not zero on a healthy server"
+    }
+    return $true
+}
+
+Test-Check 'a server whose audit log cannot be written says so and keeps serving' {
+    # Take write and append access away from the log and from its directory. The handle
+    # the server already holds keeps working, so the failure appears when it next has to
+    # open the path.
+    try {
+        icacls $auditHealthPath /deny "${auditHealthOwner}:(WD,AD)" | Out-Null
+        icacls $auditHealthDir /deny "${auditHealthOwner}:(WD,AD)" | Out-Null
+
+        # Enough records to cross max_bytes, which is what forces the rotation that
+        # reopens the path.
+        for ($attempt = 0; $attempt -lt 20; $attempt++) {
+            Attempt-ControlConnection -Port $auditHealthControlPort | Out-Null
+        }
+
+        $deadline = (Get-Date).AddSeconds(20)
+        $lost = 0
+        while ($true) {
+            $lost = (Get-Metric 'aethertunnel_audit_records_lost_total' -Port $auditHealthDashboardPort)
+            if ($lost -ge 1) { break }
+            if ((Get-Date) -gt $deadline) {
+                throw "20 attempts after the log became unwritable left the lost-records counter at $lost"
+            }
+            Start-Sleep -Milliseconds 200
+        }
+
+        $status = Get-Status -Port $auditHealthDashboardPort
+        if ($status.audit.enabled -ne $true) {
+            throw "a broken audit log reports itself disabled instead of enabled-but-broken"
+        }
+        if ($status.audit.writable -ne $false) { throw "a broken audit log still reports itself as writable" }
+        if ($status.audit.records_lost -lt 1) { throw "the summary reports $($status.audit.records_lost) lost records" }
+        if (-not $status.audit.last_error) { throw "the summary names no error although every write fails" }
+        if ((Get-Metric 'aethertunnel_audit_write_failures_total' -Port $auditHealthDashboardPort) -lt 1) {
+            throw "the write-failure counter never moved"
+        }
+
+        # The server itself is unaffected: this is not a fatal condition and must not be.
+        $health = Invoke-Curl @('-s', '-o', 'NUL', '-w', '%{http_code}', "http://127.0.0.1:$auditHealthDashboardPort/healthz")
+        if ($health -ne '200') { throw "/healthz answered $health while the audit log was broken" }
+        $status = Get-Status -Port $auditHealthDashboardPort
+        if ($status.connections.total -lt 1) { throw "the server stopped counting connections" }
+        if ((Read-Log $auditHealthLog) -notmatch 'audit: cannot write') {
+            throw "the server did not log that it cannot write its audit log"
+        }
+    } finally {
+        # Always put the permissions back, or the working directory cannot be removed.
+        icacls $auditHealthDir /remove:d $auditHealthOwner 2>&1 | Out-Null
+        icacls $auditHealthPath /remove:d $auditHealthOwner 2>&1 | Out-Null
+    }
+    return $true
+}
+
+Test-Check 'the audit log starts recording again once its path is writable' {
+    # The permissions were restored by the check above. The auditor opens the path again
+    # on the next record, so nothing has to be restarted and no further record is lost.
+    for ($attempt = 0; $attempt -lt 3; $attempt++) {
+        Attempt-ControlConnection -Port $auditHealthControlPort | Out-Null
+    }
+
+    $deadline = (Get-Date).AddSeconds(20)
+    while ($true) {
+        $status = Get-Status -Port $auditHealthDashboardPort
+        if ($status.audit.writable -eq $true -and -not $status.audit.last_error) { break }
+        if ((Get-Date) -gt $deadline) {
+            throw "the audit log is still reported as not writable ('$($status.audit.last_error)') 20s after its path was writable"
+        }
+        Start-Sleep -Milliseconds 200
+    }
+
+    if (-not (Test-Path $auditHealthPath)) { throw "the audit log was not recreated at its configured path" }
+    $records = @(Get-Content $auditHealthPath | Where-Object { $_ -match '"event":"acl_denied"' })
+    if ($records.Count -lt 1) { throw "the recreated audit log holds no record" }
+    if ((Read-Log $auditHealthLog) -notmatch 'is writable again') {
+        throw "the server did not log that its audit log recovered"
+    }
+    return $true
+}
+
+if ($auditHealth -and -not $auditHealth.HasExited) { Stop-Process -Id $auditHealth.Id -Force -ErrorAction SilentlyContinue }
+
+Test-Check 'a server whose audit log cannot be opened refuses to start' {
+    # The other half of the audit story: when the very first open fails there is nothing
+    # to report at runtime, so the server has to refuse to start and say why rather than
+    # come up with no audit trail at all.
+    $blockedDir = Join-Path $Root 'audit-blocked'
+    New-Item -ItemType Directory -Force -Path (Join-Path $blockedDir 'audit.jsonl') | Out-Null
+    $blockedToml = Join-Path $Root 'audit-blocked.toml'
+    @"
+[server]
+bind_addr = "127.0.0.1"
+bind_port = $(Get-FreePort)
+auth_token = "$token"
+
+[audit]
+enabled = true
+path = "$RootFwd/audit-blocked/audit.jsonl"
+"@ | Set-Content -Path $blockedToml -Encoding UTF8
+
+    $output = Invoke-Binary -FilePath $serverExe -Arguments @('-config', $blockedToml) -AllowFailure
+    if ($output -notmatch 'open audit log') {
+        throw "the server did not report that it cannot open its audit log: $output"
+    }
+    if ($output -notmatch 'aethertunnel-audit' -and $output -notmatch 'audit\.jsonl') {
+        throw "the message does not name the path it could not open: $output"
+    }
+    return $true
+}
 
 Write-Step "summary"
 Write-Host ""

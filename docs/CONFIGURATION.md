@@ -142,9 +142,47 @@ SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` �
 指标序列：控制连接、被拒绝的控制连接、认证失败、ACL 拒绝、限流拒绝、被封禁的来源、
 因封禁被拒的连接、按代理拒绝的访客、socks5 请求数、因服务器关闭而拒绝的流、
 数据连接、活动与累计流数、双向字节、UDP 数据报与活动会话、共享监听上的 HTTP 请求数、
-打洞尝试数与结果（直连/中继），以及按 `tunnel` 标签的活动流、累计流、双向字节与 HTTP 请求数。
+打洞尝试数与结果（直连/中继），审计日志的写入失败数，以及按 `tunnel` 标签的活动流、
+累计流、双向字节与 HTTP 请求数。
 每一行都直接读自运行中的计数器，没有估算值；`aethertunnel_p2p_direct_total` 只在访客
 用 `ATP3` 数据报回报了直连路径时才增加，访客没回报的尝试不会计入直连。
+
+序列名逐条列出（值都是自进程启动以来的累计数，除标为 gauge 的）：
+
+| 序列 | 类型 | 含义 |
+|---|---|---|
+| `aethertunnel_uptime_seconds` | gauge | 进程运行秒数 |
+| `aethertunnel_control_connections_total` | counter | 被接受的（已通过握手的）控制连接 |
+| `aethertunnel_control_rejected_total` | counter | 在握手前被拒绝的控制连接，原因是容量、ACL、限流或封禁中的任意一种 |
+| `aethertunnel_auth_failures_total` | counter | 凭据错误的认证尝试 |
+| `aethertunnel_connections_denied_by_acl_total` | counter | 被允许/拒绝名单挡下的连接 |
+| `aethertunnel_connections_rate_limited_total` | counter | 被按来源令牌桶挡下的连接 |
+| `aethertunnel_sources_banned_total` | counter | 因反复认证失败被封禁的来源 |
+| `aethertunnel_banned_connections_refused_total` | counter | 因来源处于封禁期而被拒绝的连接 |
+| `aethertunnel_visitors_denied_by_proxy_total` | counter | 被单个代理自己的名单拒绝的访客 |
+| `aethertunnel_streams_refused_while_draining_total` | counter | 因服务器正在关闭而被拒绝的流 |
+| `aethertunnel_socks5_requests_total` | counter | 通过 socks5 出口发出的 CONNECT 请求 |
+| `aethertunnel_data_connections_total` | counter | 客户端打开的数据连接 |
+| `aethertunnel_streams_active` | gauge | 当前打开的隧道流 |
+| `aethertunnel_streams_total` | counter | 已结束的隧道流 |
+| `aethertunnel_bytes_from_clients_total` | counter | 从客户端收到的字节 |
+| `aethertunnel_bytes_to_clients_total` | counter | 发往客户端的字节 |
+| `aethertunnel_udp_datagrams_total` | counter | 转发的 UDP 数据报 |
+| `aethertunnel_udp_sessions_active` | gauge | 当前跟踪的 UDP 访客会话（按来源地址计） |
+| `aethertunnel_http_requests_total` | counter | 共享虚拟主机监听上服务的请求 |
+| `aethertunnel_p2p_punches_total` | counter | 为 xtcp 代理发起的打洞尝试 |
+| `aethertunnel_p2p_direct_total` | counter | 得到直连路径的打洞尝试 |
+| `aethertunnel_p2p_relayed_total` | counter | 回退到中继的打洞尝试 |
+| `aethertunnel_audit_write_failures_total` | counter | 首次写入即失败的审计记录数 |
+| `aethertunnel_audit_records_lost_total` | counter | 重开文件后仍然没能写下的审计记录数 |
+| `aethertunnel_audit_records_recovered_total` | counter | 重开文件后补写成功的审计记录数 |
+| `aethertunnel_tunnel_streams_active{tunnel}` | gauge | 按隧道的当前活动流 |
+| `aethertunnel_tunnel_streams_total{tunnel}` | counter | 按隧道的累计流 |
+| `aethertunnel_tunnel_bytes_total{tunnel,direction}` | counter | 按隧道与方向的字节 |
+| `aethertunnel_tunnel_http_requests_total{tunnel}` | counter | 按隧道服务的 HTTP 请求 |
+
+三条审计序列只在 `[audit] enabled = true` 时出现。审计关闭时不输出它们，因为恒为 0 的
+"丢失 0 条"会被读成"审计正常"，而实际上根本没有任何日志。
 
 ## `[audit]`（服务端）
 
@@ -153,6 +191,13 @@ SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` �
 | `enabled` | bool | false | 是否写审计日志 |
 | `path` | string | `aethertunnel-audit.jsonl` | 日志路径 |
 | `max_bytes` | int | 33554432 | 超过该大小后轮转，旧文件保留为 `<path>.1` |
+
+写不进去的记录不会被丢掉不管：写入失败时会重新打开 `path` 并重试该条记录一次，
+因此外部的日志轮转或一次瞬时错误不会造成空洞。仍然写不下去的记录计入
+`aethertunnel_audit_records_lost_total`，同时 `GET /api/status` 的 `audit` 段报告
+`enabled`、`writable`、`path`、`max_bytes`、`bytes_written`、`write_failures`、
+`records_lost`、`recovered` 与 `last_error`，面板的"服务器状态"栏会显示这一行，
+有记录丢失时还会顶出一条横幅。服务器本身不受影响：审计写不进去不会让隧道停下来。
 
 每行一个 JSON 对象，字段为 `time`、`event`、`client_id`、`remote`、`proxy`、`detail`、`outcome`；
 `event` 取值为 `control_accepted`、`control_rejected`、`auth_failed`、`client_disconnected`、

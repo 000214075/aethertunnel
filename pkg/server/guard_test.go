@@ -83,6 +83,134 @@ func dialFrom(t *testing.T, from, target string) (net.Conn, error) {
 	return dialer.Dial("tcp", remote.String())
 }
 
+// --- refusal counters ----------------------------------------------------------
+
+// TestEveryPreHandshakeRefusalIsCounted covers the aggregate aethertunnel_control_rejected_total
+// and the four series that explain it. The aggregate is the one an alert watches when
+// it does not care why a connection was turned away, so every path that refuses a
+// connection before the handshake has to move it: a source in deny_cidrs, a source
+// over its connection rate, and a source whose ban window is still open. The ACL and
+// rate-limit paths used to leave it at zero while moving only their own counter.
+func TestEveryPreHandshakeRefusalIsCounted(t *testing.T) {
+	dir := t.TempDir()
+	auditPath := dir + "/audit.jsonl"
+
+	// A second loopback address is the cleanest way to get an ACL refusal that cannot
+	// also be a rate limit or a ban: the other rules are keyed on the address it is
+	// denied for.
+	other := secondLoopback(t)
+
+	cfg := testConfig(t, false)
+	cfg.Audit.Enabled = true
+	cfg.Audit.Path = auditPath
+	cfg.Server.RateLimitPerSecond = 1
+	cfg.Server.RateLimitBurst = 1
+	cfg.Server.BanAfterFailures = 1
+	cfg.Server.BanSeconds = 60
+	cfg.Server.BanMaxSeconds = 300
+	if other != "" {
+		cfg.Server.DenyCIDRs = []string{other + "/32"}
+	}
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	rs := startServer(t, cfg)
+
+	metrics := rs.server.metrics
+	refusedBefore := metrics.controlRejected.Load()
+	acceptedBefore := metrics.controlAccepted.Load()
+
+	// A source in deny_cidrs is refused before the handshake.
+	if other != "" {
+		conn, err := dialFrom(t, other, rs.addr)
+		if err != nil {
+			t.Fatalf("dial from %s: %v", other, err)
+		}
+		conn.Close()
+		waitForAuditEvents(t, auditPath, 1)
+		if got := metrics.aclDenied.Load(); got != 1 {
+			t.Errorf("the acl counter is %d after one refusal from a denied source", got)
+		}
+		if got := metrics.controlRejected.Load(); got != refusedBefore+1 {
+			t.Errorf("the rejection counter is %d after one deny_cidrs refusal, want %d", got, refusedBefore+1)
+		}
+	} else {
+		t.Log("this platform has no second loopback address, so the deny_cidrs refusal is not covered here")
+	}
+
+	// The first connection is inside the burst; the ones after it are over the rate and
+	// are refused before the handshake.
+	deadline := time.Now().Add(10 * time.Second)
+	for metrics.rateLimited.Load() < 1 && time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", rs.addr, 5*time.Second)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		conn.Close()
+		time.Sleep(30 * time.Millisecond)
+	}
+	if got := metrics.rateLimited.Load(); got < 1 {
+		t.Fatalf("no connection was rate limited although the burst is one")
+	}
+	refusedAtRate := metrics.controlRejected.Load()
+	if refusedAtRate <= refusedBefore {
+		t.Errorf("the rejection counter did not move for a rate-limited source: %d then %d", refusedBefore, refusedAtRate)
+	}
+
+	// A wrong token bans the source. The token bucket has to have refilled for the
+	// attempt to reach authentication at all, so it is retried until it does.
+	deadline = time.Now().Add(15 * time.Second)
+	var banRate = metrics.rateLimited.Load()
+	for metrics.authFailures.Load() < 1 && time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", rs.addr, 5*time.Second)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		framer := protocol.NewFramer(conn, nil, 0)
+		if err := framer.WriteJSON(protocol.TypeAuthRequest, protocol.AuthRequest{
+			Token: "not-the-token", ClientVersion: "counter-test", Protocol: protocol.ProtocolVersion,
+		}); err != nil {
+			t.Fatalf("send the bad token: %v", err)
+		}
+		var response protocol.AuthResponse
+		_ = framer.ReadJSON(protocol.TypeAuthResponse, &response)
+		conn.Close()
+		if metrics.authFailures.Load() < 1 {
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+	if got := metrics.authFailures.Load(); got < 1 {
+		t.Fatalf("no attempt with a wrong token reached authentication: the rate limit kept refusing it")
+	}
+	if metrics.rateLimited.Load() > banRate {
+		t.Log("the bad-token attempt was rate limited first, which is why it is retried")
+	}
+
+	// The banned source is now refused for the ban, which is a different counter again.
+	deadline = time.Now().Add(15 * time.Second)
+	for metrics.banRefused.Load() < 1 && time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", rs.addr, 5*time.Second)
+		if err != nil {
+			t.Fatalf("dial while banned: %v", err)
+		}
+		conn.Close()
+		time.Sleep(200 * time.Millisecond)
+	}
+	if got := metrics.banRefused.Load(); got < 1 {
+		t.Fatalf("no attempt from a banned source was refused")
+	}
+	refusedAtBan := metrics.controlRejected.Load()
+	if refusedAtBan <= refusedAtRate {
+		t.Errorf("the rejection counter did not move for a banned source: %d then %d", refusedAtRate, refusedAtBan)
+	}
+
+	// Nothing that was refused counts as accepted.
+	if got := metrics.controlAccepted.Load(); got != acceptedBefore {
+		t.Errorf("the accepted counter is %d, want it to stay at %d: a refused connection is not an accepted one",
+			got, acceptedBefore)
+	}
+}
+
 // --- automatic bans ------------------------------------------------------------
 
 func TestRepeatedAuthFailuresBanTheSource(t *testing.T) {

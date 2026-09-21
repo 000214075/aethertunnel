@@ -90,7 +90,7 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 | 访问控制 | ✅ 可用 | `allow_cidrs` / `deny_cidrs` 在握手前执行；无法解析的来源在存在规则时按拒绝处理。单个代理还能再限定自己的访客来源（`[[proxies]]` 的 `allow_cidrs` / `deny_cidrs`）。运维脚本用一台独立服务器把服务端级规则单独验了一遍：被拒来源在握手前断开、且不计入接入连接数 |
 | 连接限流 | ✅ 可用 | 按来源地址的令牌桶，在握手前执行；空闲桶会被回收。运维脚本分别验了桶内请求被放行、超出后被拒并写进审计与日志 |
 | 自动封禁 | ✅ 可用 | 同一来源认证失败 `ban_after_failures` 次后，在握手前拒绝该来源 `ban_seconds` 秒，期间任何凭据都被拒；再次违规时长翻倍，上限 `ban_max_seconds`；`ban_ignore_cidrs` 排除负载均衡与监控地址 |
-| 审计日志 | ✅ 可用 | JSON Lines，记录接入/拒绝、认证失败、上下线、代理注册/移除与拒绝、面板断连、封禁与被封拒绝、按代理拒绝的访客、访客接受与拒绝、打洞结果（直连/中继/未知）、隧道地址分配；`max_bytes` 到量后按大小轮转，保留上一代 |
+| 审计日志 | ✅ 可用 | JSON Lines，记录接入/拒绝、认证失败、上下线、代理注册/移除与拒绝、面板断连、封禁与被封拒绝、按代理拒绝的访客、访客接受与拒绝、打洞结果（直连/中继/未知）、隧道地址分配；`max_bytes` 到量后按大小轮转，保留上一代。写不进去时重开文件并重试该条记录，仍然失败的计入 `aethertunnel_audit_records_lost_total`，`GET /api/status` 的 `audit` 段与面板会把它显示出来——审计日志停下来是没有别的痕迹的 |
 | Prometheus 指标 | ✅ 可用 | `GET /metrics`（文本格式 0.0.4），含连接、认证失败、拒绝、封禁、按代理拒绝的访客、socks5 请求数、因关闭被拒的流、流、双向字节、打洞结果与按隧道的序列；每个数字都读自运行中的计数器 |
 | 优雅关闭 | ✅ 可用 | 收到停止信号后停止接受新连接，给正在传输的流最多 `server.graceful_shutdown_seconds`（默认 5）秒完成再断开客户端；期间到达的访客被立即拒绝并计入指标；没有流在传时立刻退出，不会空等 |
 | 健康探针 | ✅ 可用 | `GET /healthz` 恒 200；`GET /readyz` 在监听器未就绪或正在关闭时返回 503 |
@@ -98,7 +98,7 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 | 容器与编排 | ✅ 可用 | `Dockerfile`（多阶段 → distroless）与 `deploy/kubernetes/` 清单；凭据可用环境变量提供，不必写进 ConfigMap |
 | 多平台 | ✅ 可用 | linux/darwin/windows × amd64/arm64，`scripts/build-release.*` 一键出 12 个产物 + SHA256 |
 | 配置校验 | ✅ 可用 | 未知配置项会**报出来**而不是静默忽略；`--check` 只校验不启动 |
-| 单元 + 端到端测试 | ✅ 可用 | 含"访问者→隧道→本地服务"的真实回环测试，明文与加密两种模式；另有 75 项检查的运维脚本 `scripts/smoke-test.ps1` 与真实 tun 设备上的 `scripts/vpn-linux-test.sh` |
+| 单元 + 端到端测试 | ✅ 可用 | 含"访问者→隧道→本地服务"的真实回环测试，明文与加密两种模式；另有 83 项检查的运维脚本 `scripts/smoke-test.ps1` 与真实 tun 设备上的 `scripts/vpn-linux-test.sh` |
 
 ### 这一版没有什么
 
@@ -172,6 +172,9 @@ post_quantum = true                 # 再用 X25519 + ML-KEM-768 协商每条连
 # 从客户端角色解析同一个名字
 ./aethertunnel-client --config client.toml --discover ssh
 
+# 读出本客户端的身份公钥，填进服务端的 identity.allowed_keys
+./aethertunnel-client --config client.toml --identity
+
 # 通过一个 socks5 出口访问内网地址
 curl --socks5-hostname 服务器IP:6100 http://10.0.0.5:8080/
 
@@ -243,7 +246,7 @@ make check          # 校验示例配置
 Windows 无 make 时：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 -Version v3.6.0
+powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 -Version v3.7.0
 powershell -ExecutionPolicy Bypass -File scripts\smoke-test.ps1
 ```
 
@@ -350,7 +353,7 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 | Access control | ✅ works | `allow_cidrs` / `deny_cidrs` before the handshake; an unparseable source is refused when any rule exists. A single proxy can restrict its own visitors further with `allow_cidrs` / `deny_cidrs` in its `[[proxies]]` block |
 | Rate limiting | ✅ works | a per-source token bucket before the handshake, with idle buckets reclaimed |
 | Automatic ban | ✅ works | after `ban_after_failures` failed authentications one source is refused before the handshake for `ban_seconds`, and every attempt from it is refused in the meantime whatever credential it carries; the window doubles for a repeat offender up to `ban_max_seconds`, and `ban_ignore_cidrs` exempts load balancers and monitors |
-| Audit log | ✅ works | JSON Lines for accepted and refused connections, authentication failures, disconnects, proxy registrations and refusals, bans and ban refusals, per-proxy visitor refusals, proxy removals, dashboard disconnects, visitor outcomes, punch results (direct, relayed or unknown) and tunnel address assignments; rotates by size |
+| Audit log | ✅ works | JSON Lines for accepted and refused connections, authentication failures, disconnects, proxy registrations and refusals, bans and ban refusals, per-proxy visitor refusals, proxy removals, dashboard disconnects, visitor outcomes, punch results (direct, relayed or unknown) and tunnel address assignments; rotates by size. A record that cannot be written reopens the file and is retried; one that still cannot be written moves `aethertunnel_audit_records_lost_total` and shows up in the `audit` section of `GET /api/status` and on the panel, because a log that stopped recording leaves no other trace |
 | Prometheus metrics | ✅ works | `GET /metrics` in the text format 0.0.4: connections, authentication failures, refusals, bans, per-proxy visitor refusals, socks5 requests, streams refused while shutting down, streams, bytes both ways and per-tunnel series; every number is read from a live counter |
 | Graceful shutdown | ✅ works | on a stop signal the server stops accepting, gives the streams already running up to `server.graceful_shutdown_seconds` (5 by default) to finish, and only then disconnects the clients; a visitor that arrives meanwhile is refused and counted, and an idle server exits at once instead of sitting out the grace period |
 | Health probes | ✅ works | `GET /healthz` is always 200; `GET /readyz` is 503 before the listener is up and while shutting down |
@@ -439,6 +442,9 @@ say they are empty.
 
 # the same from a client-role configuration
 ./aethertunnel-client --config client.toml --discover ssh
+
+# print this client's public identity key, to put into the server's identity.allowed_keys
+./aethertunnel-client --config client.toml --identity
 
 # check a bandwidth ledger offline; only the public key is needed
 ./aethertunnel-server --verify-ledger ledger.jsonl --ledger-key <64 hex characters>

@@ -40,6 +40,11 @@ type Metrics struct {
 	p2pDirect        atomic.Int64
 	p2pRelayed       atomic.Int64
 
+	// audit is the log whose health is reported; nil when the server was built
+	// without one, in which case the series are omitted rather than reported as
+	// zero, which would claim an audit log exists and is healthy.
+	audit *Auditor
+
 	mu        sync.RWMutex
 	perTunnel map[string]*tunnelMetrics
 }
@@ -57,6 +62,12 @@ func newMetrics() *Metrics {
 		startedAt: time.Now(),
 		perTunnel: make(map[string]*tunnelMetrics),
 	}
+}
+
+// withAudit attaches the audit log whose health the exposition reports.
+func (m *Metrics) withAudit(auditor *Auditor) *Metrics {
+	m.audit = auditor
+	return m
 }
 
 func (m *Metrics) tunnel(name string) *tunnelMetrics {
@@ -85,6 +96,19 @@ func (m *Metrics) recordStream(tunnel string, toClient, fromClient int64) {
 
 	entry := m.tunnel(tunnel)
 	entry.streamsTotal.Add(1)
+	entry.bytesToClients.Add(toClient)
+	entry.bytesFromClients.Add(fromClient)
+}
+
+// recordDatagramSession counts the bytes a relayed datagram session carried. It is
+// separate from recordStream because a datagram session is not a stream, but the byte
+// counters have to include it: a udp or sudp proxy moves real traffic, and a
+// "bytes from clients" total that ignores it under-reports the data path.
+func (m *Metrics) recordDatagramSession(tunnel string, toClient, fromClient int64) {
+	m.bytesToClients.Add(toClient)
+	m.bytesFromClients.Add(fromClient)
+
+	entry := m.tunnel(tunnel)
 	entry.bytesToClients.Add(toClient)
 	entry.bytesFromClients.Add(fromClient)
 }
@@ -138,6 +162,13 @@ func (m *Metrics) Render() string {
 	counter("aethertunnel_p2p_punches_total", "Hole punching attempts started for xtcp proxies.", m.p2pPunches.Load())
 	counter("aethertunnel_p2p_direct_total", "Hole punching attempts that produced a direct path.", m.p2pDirect.Load())
 	counter("aethertunnel_p2p_relayed_total", "Hole punching attempts that fell back to the relayed path.", m.p2pRelayed.Load())
+	// A server with no audit log publishes none of these: a permanent zero would
+	// say the log is healthy when there is no log at all.
+	if m.audit.Configured() {
+		counter("aethertunnel_audit_write_failures_total", "Audit records whose first write attempt failed.", m.audit.Failures())
+		counter("aethertunnel_audit_records_lost_total", "Audit records that could not be written at all.", m.audit.Lost())
+		counter("aethertunnel_audit_records_recovered_total", "Audit records that landed after the file was reopened.", m.audit.Recovered())
+	}
 
 	names := make([]string, 0, len(m.perTunnel))
 	m.mu.RLock()

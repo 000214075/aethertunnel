@@ -133,6 +133,7 @@ func (t *Tunnel) pipeDatagrams(visitor *protocol.Framer, dc *dataConn, label str
 	t.BytesIn.Add(fromClient)
 	t.Total.Add(1)
 	t.Session.RecordTraffic(toClient, fromClient)
+	t.metrics.recordDatagramSession(t.Name, toClient, fromClient)
 
 	t.logger.Printf("proxy %q: datagram session for %s finished (%d bytes out, %d bytes in)",
 		t.Name, label, toClient, fromClient)

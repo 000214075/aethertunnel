@@ -213,6 +213,34 @@ v3.5.0 的配置可以直接用。变的是两件事：
   `dht.announce_ttl_seconds`，否则配置校验直接报错；`audit.max_bytes` 的大小是在写入
   下一条记录之前检查的，因此上一代文件最多比该值多一条记录。
 
+## 4.4 从 v3.6.0 到 v3.7.0
+
+**配置与线协议都没有破坏性变化**：`ProtocolVersion` 仍是 4，没有删除任何键，
+v3.6.0 的配置可以直接用。变的是审计日志写不进去时的行为，以及几处此前没有任何验证
+覆盖的接口、指标与命令行参数：
+
+- **审计日志写不进去时会重新打开路径并重试，仍然失败才计入丢失。** 在此之前
+  `Auditor.Record` 丢弃写入错误，而注释声称这个错误会在面板上浮现——没有任何代码
+  读过它。两种情况都会命中：文件被外部轮转改名后，服务器手上的句柄指向旧文件，
+  操作者查看的路径从此不再有新记录；重开失败则把句柄置空，此后每条记录都被丢掉，
+  而 `GET /healthz` 仍是 200。现在每条记录写入前会核对配置路径是否仍指向手上这个
+  文件，写入失败会重开并重试一次，仍然失败才计入 `aethertunnel_audit_records_lost_total`。
+  写不进去**不会**让服务器停止服务，这是有意的：否则一个只读的日志目录就能让隧道下线。
+  升级后请确认 `GET /api/status` 的 `audit.writable` 为 `true`。
+- **`aethertunnel_control_rejected_total` 现在把 ACL 拒绝与限流也算进去。** 它此前只
+  统计容量与封禁，说明文字却写着"容量、ACL、限流或封禁"。两个计数器故意重叠：
+  汇总的回答"握手前一共挡掉多少"，更具体的回答"为什么"。
+- **`GET /api/status` 的 `traffic` 改为自服务器启动起累计**，与 `/metrics` 的两个字节
+  计数器一致。它此前等于"当前注册的这些隧道各自累计了多少"，最后一个发布该代理的
+  客户端断开后归零。按隧道的数字仍随注册重置，留在 `/api/proxies` 里。
+- **UDP 数据报会话的字节计入全局与按隧道的字节计数**，此前它只写在账本里。
+  数据报不计为"流"，`streams_total` 不受影响。
+- **`GET /api/status` 新增 `audit` 段**（`enabled`、`writable`、`path`、`max_bytes`、
+  `bytes_written`、`write_failures`、`records_lost`、`recovered`、`last_error`），
+  面板的"服务器状态"栏新增"审计日志"一行与丢失横幅，中英双语。配置了审计但当前写不进去
+  时报告为 `enabled: true` 且 `writable: false`，而不是 `enabled: false`——这两种情况对
+  运维意味着完全不同的东西。
+
 ## 5. 升级检查清单
 
 1. 两端一起换成 v3.2.0 的二进制。
@@ -224,8 +252,8 @@ v3.5.0 的配置可以直接用。变的是两件事：
    `server confirms N tunnel(s)`；面板 `/api/status` 的连接数与隧道数符合预期。
 6. 用真实客户端做一次访问（例如 `ssh -p <remote_port> ...`），确认数据真的通。
 7. 用到的新功能各自验证一次：`--dht-lookup`、`--verify-ledger`、`--discover`、`--dht-key`，
-   或直接跑 `scripts/smoke-test.ps1`（75 项检查，覆盖全部代理类型、签名通告、按代理 ACL、
-   服务端级拒绝与限流、审计轮转、空闲超时、自动封禁、优雅关闭、代理池、多路径与打洞结果）。
-   Linux 上再用
+   或直接跑 `scripts/smoke-test.ps1`（83 项检查，覆盖全部代理类型、签名通告、按代理 ACL、
+   服务端级拒绝与限流、审计轮转、审计写不进去与恢复、空闲超时、自动封禁、优雅关闭、
+   代理池、多路径与打洞结果）。Linux 上再用
    `sudo scripts/vpn-linux-test.sh bin/aethertunnel-server bin/aethertunnel-client`
    验一次三层隧道。

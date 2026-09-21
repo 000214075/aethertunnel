@@ -182,7 +182,7 @@ func TestRateLimiterDropsIdleBuckets(t *testing.T) {
 
 func TestAuditorWritesJSONLines(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
-	auditor, err := NewAuditor(true, path, 0)
+	auditor, err := NewAuditor(true, path, 0, discardLogger())
 	if err != nil {
 		t.Fatalf("NewAuditor: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestAuditorWritesJSONLines(t *testing.T) {
 
 func TestAuditorDisabledWritesNothing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
-	auditor, err := NewAuditor(false, path, 0)
+	auditor, err := NewAuditor(false, path, 0, discardLogger())
 	if err != nil {
 		t.Fatalf("NewAuditor: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestAuditorDisabledWritesNothing(t *testing.T) {
 func TestAuditorRotatesWhenTheFileGrows(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "audit.jsonl")
-	auditor, err := NewAuditor(true, path, 256)
+	auditor, err := NewAuditor(true, path, 256, discardLogger())
 	if err != nil {
 		t.Fatalf("NewAuditor: %v", err)
 	}
@@ -387,4 +387,119 @@ func TestMetricsEndpointIsAbsentWhenDisabled(t *testing.T) {
 	if strings.Contains(string(body), "aethertunnel_uptime_seconds") {
 		t.Fatal("/metrics served metrics even though [metrics].enabled is false")
 	}
+}
+
+// TestStatusReportsTheAuditLog covers the surface an operator watches for the one
+// failure that leaves no other trace. A log that cannot be written has to be visible
+// as enabled-but-not-writable, not as disabled: those two mean very different things.
+func TestStatusReportsTheAuditLog(t *testing.T) {
+	dir := t.TempDir()
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	dashboard, base := newTestDashboard(t, func(cfg *config.Config) {
+		cfg.Audit.Enabled = true
+		cfg.Audit.Path = auditPath
+	})
+
+	status := getStatus(t, base)
+	audit, ok := status["audit"].(map[string]any)
+	if !ok {
+		t.Fatalf("/api/status carries no audit section: %v", status)
+	}
+	if audit["enabled"] != true || audit["writable"] != true {
+		t.Fatalf("a writable audit log reports %v", audit)
+	}
+	if audit["records_lost"] != float64(0) {
+		t.Errorf("a fresh audit log reports %v lost records", audit["records_lost"])
+	}
+	if audit["last_error"] != "" {
+		t.Errorf("a fresh audit log reports the error %v", audit["last_error"])
+	}
+	if audit["path"] != auditPath {
+		t.Errorf("the summary reports the path %v, want %s", audit["path"], auditPath)
+	}
+
+	// Break the log the way a half-finished shutdown does, then record once.
+	if err := dashboard.server.auditor.file.Close(); err != nil {
+		t.Fatalf("close the handle: %v", err)
+	}
+	if err := os.Remove(auditPath); err != nil {
+		t.Fatalf("remove the log: %v", err)
+	}
+	if err := os.Mkdir(auditPath, 0o755); err != nil {
+		t.Fatalf("put a directory where the log was: %v", err)
+	}
+	dashboard.server.auditor.Record(AuditEvent{Event: EventControlAccepted, Outcome: "ok"})
+
+	status = getStatus(t, base)
+	audit, _ = status["audit"].(map[string]any)
+	if audit["writable"] != false {
+		t.Errorf("an unwritable audit log reports writable=%v", audit["writable"])
+	}
+	if audit["records_lost"] != float64(1) {
+		t.Errorf("the summary reports %v lost records, want 1", audit["records_lost"])
+	}
+	if audit["last_error"] == "" {
+		t.Errorf("the summary names no error although every write fails")
+	}
+
+	// The exposition carries the same numbers, so an alert can be built on them.
+	body := getMetrics(t, base)
+	for _, want := range []string{
+		"aethertunnel_audit_write_failures_total 1",
+		"aethertunnel_audit_records_lost_total 1",
+		"aethertunnel_audit_records_recovered_total 0",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the metrics body has no %q:\n%s", want, body)
+		}
+	}
+}
+
+// TestTheAuditSeriesAreAbsentWhenAuditingIsOff keeps the exposition honest: a server
+// with no audit log must not publish a healthy-looking zero for it.
+func TestTheAuditSeriesAreAbsentWhenAuditingIsOff(t *testing.T) {
+	_, base := newTestDashboard(t, nil)
+
+	body := getMetrics(t, base)
+	if strings.Contains(body, "aethertunnel_audit_") {
+		t.Errorf("a server without an audit log publishes the audit series:\n%s", body)
+	}
+
+	status := getStatus(t, base)
+	audit, _ := status["audit"].(map[string]any)
+	if audit["enabled"] != false {
+		t.Errorf("/api/status reports the audit log as %v although [audit].enabled is false", audit)
+	}
+}
+
+func getStatus(t *testing.T, base string) map[string]any {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodGet, base+"/api/status", nil)
+	req.Header.Set("Authorization", "Bearer dashboard-secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/status: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/api/status = %d, want 200", resp.StatusCode)
+	}
+	var status map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		t.Fatalf("decode /api/status: %v", err)
+	}
+	return status
+}
+
+func getMetrics(t *testing.T, base string) string {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodGet, base+"/metrics", nil)
+	req.Header.Set("Authorization", "Bearer metrics-secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return string(body)
 }
