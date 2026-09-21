@@ -291,6 +291,21 @@ function Read-AuditLines {
     throw "could not read $Path"
 }
 
+# Get-FileSize is the same idea for a size: a rotation renames the live file away and
+# creates the next one a moment later, so the configured path is briefly not there, on
+# every platform. A size that is still unreadable after the retries is a fault.
+function Get-FileSize {
+    param([string]$Path, [int]$Attempts = 8)
+
+    for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
+        if (Test-Path $Path) {
+            try { return (Get-Item $Path -ErrorAction Stop).Length } catch { }
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    throw "$Path could not be read; the server may be rotating it"
+}
+
 # Get-Metric reads one series out of /metrics. The whole body is one string, so the
 # line is matched with the multiline flag; a plain match would only ever look at the
 # first line. Port defaults to the main server's dashboard.
@@ -2147,7 +2162,7 @@ Test-Check 'a source inside the burst is served and then rate limited' {
 }
 
 Test-Check 'the audit log names the source that was refused' {
-    $events = @(Get-Content $guardAudit | Where-Object { $_ -match '"event":"acl_denied"' })
+    $events = @(Read-AuditLines $guardAudit | Where-Object { $_ -match '"event":"acl_denied"' })
     if ($events.Count -lt 1) { throw "no acl_denied record" }
     if ($events[0] -notmatch '127\.0\.0\.2') { throw "the record does not name the source: $($events[0])" }
     return $true
@@ -2195,11 +2210,11 @@ Test-Check 'the audit log rotates once it reaches audit.max_bytes' {
     while (-not (Test-Path $rotated) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
     if (-not (Test-Path $rotated)) {
         $size = 0
-        if (Test-Path $rotateAudit) { $size = (Get-Item $rotateAudit).Length }
+        try { $size = Get-FileSize $rotateAudit } catch { $size = -1 }
         throw "thirty refused connections left the audit log at $size bytes with no previous generation beside it, although max_bytes is 1024"
     }
 
-    $rotatedSize = (Get-Item $rotated).Length
+    $rotatedSize = Get-FileSize $rotated
     if ($rotatedSize -le 0) { throw "the rotated generation is empty" }
     # The size is checked as a record is about to be written, so a generation reaches
     # the limit and then holds at most one record more than it.
@@ -2215,8 +2230,7 @@ Test-Check 'the audit log rotates once it reaches audit.max_bytes' {
     if ($malformed -ne 0) { throw "$malformed of the $($parsed + $malformed) lines in the rotated generation do not parse" }
     if ($parsed -lt 1) { throw "the rotated generation holds no record" }
 
-    $live = 0
-    if (Test-Path $rotateAudit) { $live = (Get-Item $rotateAudit).Length }
+    $live = Get-FileSize $rotateAudit
     if ($live -ge $rotatedSize) {
         throw "the live log is $live bytes and the rotated one ${rotatedSize}: the log did not restart from a smaller size"
     }
@@ -2246,8 +2260,8 @@ Test-Check 'audit.keep decides how many generations survive a rotation' {
         Start-Sleep -Milliseconds 200
     }
     if (-not (Test-Path $second)) {
-        $live = 0
-        if (Test-Path $rotateAudit) { $live = (Get-Item $rotateAudit).Length }
+        $live = -1
+        try { $live = Get-FileSize $rotateAudit } catch { }
         throw "thirty more refused connections left the live log at $live bytes with no second generation, although audit.keep is 2"
     }
     if (Test-Path "$rotateAudit.3") {
@@ -2329,7 +2343,7 @@ Test-Check 'a healthy audit log is reported as writable and complete' {
         Attempt-ControlConnection -Port $auditHealthControlPort | Out-Null
     }
     $deadline = (Get-Date).AddSeconds(10)
-    while (-not (Test-Path $auditHealthPath) -or (Get-Item $auditHealthPath).Length -eq 0) {
+    while (-not (Test-Path $auditHealthPath) -or (Get-FileSize $auditHealthPath) -eq 0) {
         if ((Get-Date) -gt $deadline) { throw "the audit log was never written" }
         Start-Sleep -Milliseconds 200
     }
@@ -2420,7 +2434,7 @@ Test-Check 'the audit log starts recording again once its path is writable' {
     }
 
     if (-not (Test-Path $auditHealthPath)) { throw "the audit log was not recreated at its configured path" }
-    $records = @(Get-Content $auditHealthPath | Where-Object { $_ -match '"event":"acl_denied"' })
+    $records = @(Read-AuditLines $auditHealthPath | Where-Object { $_ -match '"event":"acl_denied"' })
     if ($records.Count -lt 1) { throw "the recreated audit log holds no record" }
     if ((Read-Log $auditHealthLog) -notmatch 'is writable again') {
         throw "the server did not log that its audit log recovered"
