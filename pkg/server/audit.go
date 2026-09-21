@@ -272,16 +272,25 @@ func (a *Auditor) Record(event AuditEvent) {
 // file this auditor holds open. That is what a log rotator that renames the file
 // and creates a new one leaves behind: without this, records keep going to the
 // renamed file and the path an operator reads stays empty.
+//
+// A path that is gone counts as replaced. os.Rename with no replacement, or a
+// plain rm to free space, leaves the handle writing into an inode that is no
+// longer reachable by name, and the log at the configured path never comes back
+// until the server restarts.
 func (a *Auditor) ensureCurrentFile() {
 	if a.file == nil || a.fileInfo == nil {
 		return
 	}
 	live, err := os.Stat(a.path)
-	if err != nil || os.SameFile(a.fileInfo, live) {
+	if err == nil && os.SameFile(a.fileInfo, live) {
 		return
 	}
 	if a.logger != nil {
-		a.logger.Printf("audit: %s was replaced underneath the server; reopening it", a.path)
+		if err != nil {
+			a.logger.Printf("audit: %s is gone; recreating it", a.path)
+		} else {
+			a.logger.Printf("audit: %s was replaced underneath the server; reopening it", a.path)
+		}
 	}
 	a.reopen()
 }

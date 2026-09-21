@@ -197,7 +197,10 @@ UDP 数据报会话的字节在**会话释放时**计入两个字节计数器与
 | `max_bytes` | int | 33554432 | 超过该大小后轮转，旧文件保留为 `<path>.1` |
 
 写不进去的记录不会被丢掉不管：写入失败时会重新打开 `path` 并重试该条记录一次，
-因此外部的日志轮转或一次瞬时错误不会造成空洞。仍然写不下去的记录计入
+因此外部的日志轮转或一次瞬时错误不会造成空洞。每条记录写入前还会核对配置路径是否仍指向
+手上这个文件：路径被换成新文件（logrotate 的默认模式）会重开，**路径整个消失也会重建**——
+`mv` 到别处而不补新文件、或者为了腾空间 `rm` 掉日志，都会让句柄写进一个再也没有名字指向它的
+inode，不重建的话路径到重启为止都是空的。仍然写不下去的记录计入
 `aethertunnel_audit_records_lost_total`，同时 `GET /api/status` 的 `audit` 段报告
 `enabled`、`writable`、`path`、`max_bytes`、`bytes_written`、`write_failures`、
 `records_lost`、`recovered` 与 `last_error`，面板的"服务器状态"栏会显示这一行，

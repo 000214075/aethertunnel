@@ -295,6 +295,56 @@ func TestAuditLogReopensAFileThatWasRotatedAway(t *testing.T) {
 	}
 }
 
+// TestAuditLogRecreatesAFileThatWasRemoved covers the other half of the same
+// failure: the path is renamed away or deleted with nothing put in its place, so
+// the handle writes into an inode no name reaches any more. The path has to come
+// back without a restart.
+//
+// Removing a file that is still open is allowed on Unix and refused on Windows,
+// so this runs where the situation arises.
+func TestAuditLogRecreatesAFileThatWasRemoved(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("removing a file that is still open is refused on Windows")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.jsonl")
+	auditor, err := NewAuditor(true, path, 0, log.New(os.Stderr, "", 0))
+	if err != nil {
+		t.Fatalf("NewAuditor: %v", err)
+	}
+	defer func() { _ = auditor.Close() }()
+
+	auditor.Record(AuditEvent{Event: EventControlAccepted, Remote: "127.0.0.1:1", Outcome: "ok"})
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the log before removing it: %v", err)
+	}
+
+	// An operator archiving the log, or freeing space, with no replacement.
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove the log: %v", err)
+	}
+
+	auditor.Record(AuditEvent{Event: EventProxyRegistered, Proxy: "ssh", Outcome: "ok"})
+
+	records, err := readAuditEvents(t, path)
+	if err != nil {
+		t.Fatalf("the configured path was not recreated: %v", err)
+	}
+	if len(records) != 1 || records[0].Event != EventProxyRegistered {
+		t.Fatalf("the recreated log holds %v, want only the record written after the removal", records)
+	}
+	if len(before) == 0 {
+		t.Fatal("the first record was never written, so the removal proves nothing")
+	}
+	if got := auditor.Lost(); got != 0 {
+		t.Errorf("%d records reported lost although the record was written to the recreated file", got)
+	}
+	if got := auditor.Failures(); got != 0 {
+		t.Errorf("%d write failures reported although nothing failed", got)
+	}
+}
+
 // TestAuditLogIgnoresRecordsAfterClose keeps a late record from recreating a log file
 // during shutdown.
 func TestAuditLogIgnoresRecordsAfterClose(t *testing.T) {
