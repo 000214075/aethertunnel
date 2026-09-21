@@ -164,6 +164,59 @@ func TestAuditLogKeepsSeveralGenerations(t *testing.T) {
 	}
 }
 
+// TestAuditLogNeverDropsRecordsWhenItCannotRotate holds the live file open from
+// outside, which is what a scanner, a shipper or an operator reading it does. On
+// Windows that stops the rename, so the rotation has to be postponed rather than
+// cutting the file short: every record written has to be readable afterwards,
+// in the live file or in a generation, whichever way the rotation went.
+func TestAuditLogNeverDropsRecordsWhenItCannotRotate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.jsonl")
+
+	const limit = 512
+	auditor, err := NewAuditorWithRetention(true, path, limit, 2, discardLogger())
+	if err != nil {
+		t.Fatalf("NewAuditorWithRetention: %v", err)
+	}
+	defer func() { _ = auditor.Close() }()
+
+	for i := 0; i < 3; i++ {
+		auditor.Record(AuditEvent{Event: EventControlAccepted, Remote: "127.0.0.1:1", Detail: "before", Outcome: "ok"})
+	}
+
+	holder, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("hold the live file open: %v", err)
+	}
+	for i := 0; i < 12; i++ {
+		auditor.Record(AuditEvent{Event: EventACLDenied, Remote: "127.0.0.2:40000", Detail: "while held", Outcome: "denied"})
+	}
+	holder.Close()
+
+	for i := 0; i < 3; i++ {
+		auditor.Record(AuditEvent{Event: EventClientGone, Remote: "127.0.0.1:1", Detail: "after", Outcome: "ok"})
+	}
+
+	// Every record written is somewhere, and nothing half-written is anywhere.
+	total := 0
+	for _, candidate := range []string{path, path + ".1", path + ".2"} {
+		if _, err := os.Stat(candidate); err != nil {
+			continue
+		}
+		records, err := readAuditEvents(t, candidate)
+		if err != nil {
+			t.Fatalf("read %s: %v", filepath.Base(candidate), err)
+		}
+		total += len(records)
+	}
+	if total != 18 {
+		t.Errorf("%d of the 18 records written are readable afterwards", total)
+	}
+	if got := auditor.Lost(); got != 0 {
+		t.Errorf("%d records were reported lost although nothing was dropped", got)
+	}
+}
+
 // TestAuditLogKeepsOneGenerationByDefault pins the behaviour a configuration that
 // does not mention audit.keep gets: exactly one generation beside the live file.
 func TestAuditLogKeepsOneGenerationByDefault(t *testing.T) {

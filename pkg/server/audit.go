@@ -366,6 +366,13 @@ func (a *Auditor) clearFailure() {
 // rotate moves the current file aside and lets the generations shift by one, so
 // path.1 is the generation that was just rotated away, path.2 the one before it,
 // and the one older than the last kept generation is dropped.
+//
+// The handle is closed first because Windows refuses to rename a file that is
+// open, including by this process. If the live file cannot be renamed anyway
+// (something else holds it: a scanner, a shipper, an operator reading it) the
+// rotation is postponed instead of dropping the generation: the file keeps
+// growing past max_bytes, the next record tries again, and one line says so.
+// Cutting the file short at that point would discard records nobody has read.
 func (a *Auditor) rotate() {
 	if a.file == nil {
 		return
@@ -381,12 +388,8 @@ func (a *Auditor) rotate() {
 	for generation := keep - 1; generation >= 1; generation-- {
 		_ = os.Rename(fmt.Sprintf("%s.%d", a.path, generation), fmt.Sprintf("%s.%d", a.path, generation+1))
 	}
-	if err := os.Rename(a.path, a.path+".1"); err != nil {
-		// If the rename fails (for example the file is open elsewhere on
-		// Windows), truncate instead so the log keeps growing from zero.
-		if truncated, openErr := os.OpenFile(a.path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600); openErr == nil {
-			truncated.Close()
-		}
+	if err := os.Rename(a.path, a.path+".1"); err != nil && a.logger != nil {
+		a.logger.Printf("audit: cannot rotate %s (%v); it keeps growing until it can be rotated", a.path, err)
 	}
 	a.reopen()
 }
