@@ -679,6 +679,9 @@ func (g *ProxyGroup) serveVisit(public net.Conn) {
 		}
 		g.metrics.socksRequests.Add(1)
 		_ = member.pipeStream(public, stream.dc, request.Target)
+		// The stream is over, so its bookkeeping has to be released here: this is
+		// the end of the only path that serves it.
+		stream.release()
 		return
 	}
 
@@ -724,6 +727,9 @@ func (g *ProxyGroup) serveStream(public net.Conn) {
 				g.Name, public.RemoteAddr(), member.Session.ID, len(tried))
 		}
 		_ = member.pipeStream(public, stream.dc, public.RemoteAddr().String())
+		// The stream is over, so its bookkeeping has to be released here: this is
+		// the end of the only path that serves it.
+		stream.release()
 		return
 	}
 
@@ -752,6 +758,12 @@ func (g *ProxyGroup) openStreamFor(member *Tunnel, visitor bool, target string) 
 	started := time.Now()
 	dc, release, err := member.openStreamFor(visitor, target)
 	if err != nil {
+		if errors.Is(err, errServerDraining) {
+			// The refusal is the server's decision, not a fault of this member, so
+			// it must not count towards the strategy's failure penalty.
+			g.metrics.drainRefused.Add(1)
+			return nil, err
+		}
 		member.failures.Add(1)
 		return nil, err
 	}

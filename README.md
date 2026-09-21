@@ -91,13 +91,14 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 | 连接限流 | ✅ 可用 | 按来源地址的令牌桶，在握手前执行；空闲桶会被回收 |
 | 自动封禁 | ✅ 可用 | 同一来源认证失败 `ban_after_failures` 次后，在握手前拒绝该来源 `ban_seconds` 秒，期间任何凭据都被拒；再次违规时长翻倍，上限 `ban_max_seconds`；`ban_ignore_cidrs` 排除负载均衡与监控地址 |
 | 审计日志 | ✅ 可用 | JSON Lines，记录接入/拒绝、认证失败、上下线、代理注册与拒绝、封禁与被封拒绝、按代理拒绝的访客、访客接受与拒绝、打洞结果、隧道地址分配；按大小轮转 |
-| Prometheus 指标 | ✅ 可用 | `GET /metrics`（文本格式 0.0.4），含连接、认证失败、拒绝、封禁、按代理拒绝的访客、socks5 请求数、流、双向字节与按隧道的序列 |
+| Prometheus 指标 | ✅ 可用 | `GET /metrics`（文本格式 0.0.4），含连接、认证失败、拒绝、封禁、按代理拒绝的访客、socks5 请求数、因关闭被拒的流、流、双向字节与按隧道的序列；每个数字都读自运行中的计数器 |
+| 优雅关闭 | ✅ 可用 | 收到停止信号后停止接受新连接，给正在传输的流最多 `server.graceful_shutdown_seconds`（默认 5）秒完成再断开客户端；期间到达的访客被立即拒绝并计入指标；没有流在传时立刻退出，不会空等 |
 | 健康探针 | ✅ 可用 | `GET /healthz` 恒 200；`GET /readyz` 在监听器未就绪或正在关闭时返回 503 |
 | Web 面板 | ✅ 可用 | 单页、自带资源（编译进二进制）、中英双语、手机可用；含 `/api/ledger` 与 `/api/dht`，代理池的成员数与可用数在代理表格中显示 |
 | 容器与编排 | ✅ 可用 | `Dockerfile`（多阶段 → distroless）与 `deploy/kubernetes/` 清单；凭据可用环境变量提供，不必写进 ConfigMap |
 | 多平台 | ✅ 可用 | linux/darwin/windows × amd64/arm64，`scripts/build-release.*` 一键出 12 个产物 + SHA256 |
 | 配置校验 | ✅ 可用 | 未知配置项会**报出来**而不是静默忽略；`--check` 只校验不启动 |
-| 单元 + 端到端测试 | ✅ 可用 | 含"访问者→隧道→本地服务"的真实回环测试，明文与加密两种模式；另有 54 项检查的运维脚本 `scripts/smoke-test.ps1` |
+| 单元 + 端到端测试 | ✅ 可用 | 含"访问者→隧道→本地服务"的真实回环测试，明文与加密两种模式；另有 59 项检查的运维脚本 `scripts/smoke-test.ps1` |
 
 ### 这一版没有什么
 
@@ -190,6 +191,18 @@ grep -E 'source_banned|ban_refused|proxy_visitor_denied' aethertunnel-audit.json
 拉起服务端与两个客户端、逐项验证上表里的能力，最后打印通过数与失败项。它会绑定回环端口，
 运行结束后清理临时目录；加 `-Keep` 保留现场，加 `-ProgressLog <path>` 实时记录进度。
 
+其中三项用真实的停止信号驱动一台独立服务器，验证优雅关闭：信号之后仍在传输的流继续可用、
+最后一个流结束后服务器立即退出并在日志里写明 drained、超过宽限期的流被断开。
+Windows 上发信号用不带 `/F` 的 `taskkill`，Linux 与 macOS 上等价于 `kill -TERM`；
+`Stop-Process` 是硬杀，会跳过整个排空过程，因此脚本不用它来测这一项。
+
+```bash
+# 手工做一次同样的验证：起服务、保持一条流、发信号、看日志
+taskkill /PID <服务器PID>            # Windows，不带 /F
+kill -TERM <服务器PID>               # Linux 与 macOS
+# 日志里应出现 shutting down: 以及 graceful shutdown: ...（一行）
+```
+
 ### 构建与测试
 
 ```bash
@@ -204,7 +217,7 @@ make check          # 校验示例配置
 Windows 无 make 时：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 -Version v3.3.0
+powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 -Version v3.4.0
 powershell -ExecutionPolicy Bypass -File scripts\smoke-test.ps1
 ```
 
@@ -312,13 +325,14 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 | Rate limiting | ✅ works | a per-source token bucket before the handshake, with idle buckets reclaimed |
 | Automatic ban | ✅ works | after `ban_after_failures` failed authentications one source is refused before the handshake for `ban_seconds`, and every attempt from it is refused in the meantime whatever credential it carries; the window doubles for a repeat offender up to `ban_max_seconds`, and `ban_ignore_cidrs` exempts load balancers and monitors |
 | Audit log | ✅ works | JSON Lines for accepted and refused connections, authentication failures, disconnects, proxy registrations and refusals, bans and ban refusals, per-proxy visitor refusals, visitor outcomes, punch results and tunnel address assignments; rotates by size |
-| Prometheus metrics | ✅ works | `GET /metrics` in the text format 0.0.4: connections, authentication failures, refusals, streams, bytes both ways and per-tunnel series |
+| Prometheus metrics | ✅ works | `GET /metrics` in the text format 0.0.4: connections, authentication failures, refusals, bans, per-proxy visitor refusals, socks5 requests, streams refused while shutting down, streams, bytes both ways and per-tunnel series; every number is read from a live counter |
+| Graceful shutdown | ✅ works | on a stop signal the server stops accepting, gives the streams already running up to `server.graceful_shutdown_seconds` (5 by default) to finish, and only then disconnects the clients; a visitor that arrives meanwhile is refused and counted, and an idle server exits at once instead of sitting out the grace period |
 | Health probes | ✅ works | `GET /healthz` is always 200; `GET /readyz` is 503 before the listener is up and while shutting down |
 | Web dashboard | ✅ works | one self-contained embedded page, English + 简体中文, usable on a phone, including `/api/ledger` and `/api/dht`; the proxies table shows how many members a pool has and how many are healthy |
 | Containers and orchestration | ✅ works | a multi-stage `Dockerfile` ending in distroless, and manifests under `deploy/kubernetes/`; credentials can come from environment variables instead of the ConfigMap |
 | Platforms | ✅ works | linux/darwin/windows × amd64/arm64; `scripts/build-release.*` produces 12 binaries + SHA256 |
 | Config validation | ✅ works | unknown keys are **reported**, not ignored; `--check` validates without starting |
-| Tests | ✅ works | unit tests, a real end-to-end tunnel test in cleartext and encrypted modes, and a 54-check operations script, `scripts/smoke-test.ps1` |
+| Tests | ✅ works | unit tests, a real end-to-end tunnel test in cleartext and encrypted modes, and a 59-check operations script, `scripts/smoke-test.ps1` |
 
 ### What this release does not do
 

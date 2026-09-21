@@ -36,6 +36,12 @@ heartbeat_seconds = 30
 # How long the server waits for a client to open the data stream for a visiting
 # connection.
 dial_timeout_seconds = 10
+
+# A stop signal (SIGINT, SIGTERM, or a console close on Windows) stops accepting
+# connections, gives the streams that are already running up to this many seconds to
+# finish, and only then disconnects the clients; a visitor that arrives meanwhile is
+# refused and counted. 0 selects the default of 5. Without it a restart cut every
+# transfer in flight.
 graceful_shutdown_seconds = 5
 
 # Shared listener for http and https proxies. A proxy of those types is reached

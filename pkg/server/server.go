@@ -396,12 +396,20 @@ func (s *Server) recordAuthSuccess(conn net.Conn) {
 	s.bans.succeed(remoteIP(conn))
 }
 
-// Shutdown stops the listener and disconnects every client.
+// Shutdown stops the listener, lets the streams that are already running finish,
+// and then disconnects every client.
+//
+// The wait is bounded by [server] graceful_shutdown_seconds. Without it a restart
+// or a deployment cut every transfer in flight the moment the signal arrived, which
+// for a long upload means starting over.
 func (s *Server) Shutdown(reason string) {
 	if s.closing.Swap(true) {
 		return
 	}
 	s.logger.Printf("shutting down: %s", reason)
+
+	// Stop accepting: no new control connection and no new visitor reaches a proxy
+	// from here on, so the streams that are counted below are all that is left.
 	if listener := s.Listener(); listener != nil {
 		_ = listener.Close()
 	}
@@ -409,6 +417,17 @@ func (s *Server) Shutdown(reason string) {
 	if s.p2p != nil {
 		_ = s.p2p.Close()
 	}
+
+	grace := time.Duration(s.cfg.Server.GracefulShutdownSecs) * time.Second
+	if grace > 0 {
+		if remaining := s.sessions.Drain(grace); remaining > 0 {
+			s.logger.Printf("graceful shutdown: %d stream(s) were still running after %s; disconnecting",
+				remaining, grace)
+		} else {
+			s.logger.Printf("graceful shutdown: every stream finished within %s", grace)
+		}
+	}
+
 	s.sessions.CloseAll(reason)
 	if err := s.auditor.Close(); err != nil {
 		s.logger.Printf("closing the audit log: %v", err)

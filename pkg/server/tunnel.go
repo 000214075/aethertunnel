@@ -26,6 +26,10 @@ func matchesSecret(expected, presented string) bool {
 	return subtle.ConstantTimeCompare([]byte(presented), []byte(expected)) == 1
 }
 
+// errServerDraining is returned instead of opening a stream while the server is
+// winding down. It is the one stream failure that is not the client's fault.
+var errServerDraining = errors.New("the server is shutting down and is not opening new streams")
+
 // openStream asks the member's client for a fresh data connection and waits for
 // it to dial back.
 //
@@ -39,6 +43,13 @@ func (t *Tunnel) openStream(visitor bool) (*dataConn, func(), error) {
 // address the stream should reach. A target is only used by a socks5 proxy, whose
 // client dials what the visitor asked for instead of its own local_addr.
 func (t *Tunnel) openStreamFor(visitor bool, target string) (*dataConn, func(), error) {
+	// A session that is draining still carries the streams it opened, but no new
+	// one starts: the visitor is refused now instead of waiting for a dial that
+	// would only be cut off when the grace period ends.
+	if t.Session.isDraining() {
+		return nil, nil, errServerDraining
+	}
+
 	streamID := newID(8)
 
 	waiting, err := t.Session.AddPending(streamID)
@@ -53,11 +64,16 @@ func (t *Tunnel) openStreamFor(visitor bool, target string) (*dataConn, func(), 
 	}
 
 	t.Active.Add(1)
+	t.Session.streamOpened()
 	t.metrics.streamOpened(t.Name)
-	release := func() {
+	// release is called both by the failure paths below and by whoever served the
+	// stream, so it has to run its bookkeeping once: a double call used to be
+	// invisible, and its absence left the active counters climbing for good.
+	release := sync.OnceFunc(func() {
 		t.Active.Add(-1)
+		t.Session.streamClosed()
 		t.metrics.streamClosed(t.Name)
-	}
+	})
 
 	timer := time.NewTimer(t.dialTimeout)
 	defer timer.Stop()

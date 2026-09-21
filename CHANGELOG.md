@@ -10,6 +10,55 @@
 
 ---
 
+## [3.4.0] — 2026-09-21
+
+本版本处理了两个"写了没用"的配置键——一个补上真实行为、一个删除，并修好了面板上两个
+长期不动的数字。
+
+### 修复
+
+- **活动连接数只增不减。** 访问者流的两条服务路径（通用代理与 socks5 出口）在流结束时
+  没有释放记账，于是 `aethertunnel_streams_active`、按隧道的活动流与面板的
+  `active_connections` 会随流量一直往上加。实测：三条**已完成**的请求之后指标读到 3、
+  `/api/proxies` 显示 `active_connections: 3`，而不是 0。现在两条路径都释放，
+  且 `release` 只生效一次（`sync.OnceFunc`），失败路径与成功路径重复调用也不会重复扣减。
+  新增回归测试 `TestStreamCountersReturnToZeroWhenAStreamIsServed`、
+  `TestStreamCountersReturnToZeroForASocks5Stream`、`TestStreamCountersReturnToZeroForAnHTTPRequest`，
+  以及确认"流在跑的时候能被看见"的 `TestAnOpenStreamIsCountedWhileItRuns`。
+- **每个客户端的 `active_streams` 与 `total_streams` 恒为 0。** 这两个字段在会话上存在、
+  面板也在读，但没有任何地方写入过。现在在流打开与结束处记账；
+  smoke test 的 `the clients view counts the streams the session carried` 会核对实际次数。
+
+### 变更
+
+- `[server] graceful_shutdown_seconds` **之前完全无效**：服务器收到停止信号就把所有客户端
+  断开。现在按它的字面含义工作：先关闭监听、停止接受新访客，给正在传输的流最多这么多秒完成，
+  然后才断开；期间到达的访客被立即拒绝并计入
+  `aethertunnel_streams_refused_while_draining_total`；没有流在传时立刻退出，不会空等。
+  日志会写明是 `every stream finished within` 还是 `stream(s) were still running after`。
+  负数现在会被 `--check` 拒绝。
+- **删除 `[obfuscation] default_type`。** 它从未被任何代码读取，文档也只写着"保留键"。
+  配置里再写它会被当作未知键报出来。
+
+### 运维测试
+
+`scripts/smoke-test.ps1` 从 54 项扩到 59 项：
+
+- 优雅关闭三项：信号之后仍在传输的流继续可用；最后一个流结束后服务器立即退出并在日志里
+  写明 drained；超过宽限期的流被断开且日志写明放弃。这三项在一台独立服务器上由真实的停止
+  信号驱动（Windows 用不带 `/F` 的 `taskkill`，Linux/macOS 用 `kill -TERM`），
+  并校验流在宽限期内确实还能交互、宽限期耗尽后确实被断开。
+- 活动流计数归零与客户端流计数两项：读 `/metrics` 与 `/api/clients`。
+
+### 文档
+
+`docs/CONFIGURATION.md` 改写 `graceful_shutdown_seconds` 的含义并删除 `default_type`，
+指标一节补上新增序列；`docs/MIGRATION.md` 新增 v3.3.0 → v3.4.0 一节；
+`server.toml.example`、`README.md` 同步。
+
+---
+
+
 ## [3.3.0] — 2026-09-21
 
 本版本新增一个代理类型（`socks5`）、三项策略能力（按代理的访客 ACL、认证失败自动封禁、
@@ -78,6 +127,8 @@ DHT 通告签名），并把它们接进 `scripts/smoke-test.ps1` 的真实运�
 
 ---
 
+
+## [3.2.1] — 2026-09-20
 
 ### 修复
 

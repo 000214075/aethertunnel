@@ -382,8 +382,7 @@ type DHTConfig struct {
 // lengths and the disguise hides the framing itself; neither encrypts anything, so
 // they complement [encryption] rather than replacing it.
 type ObfuscationConfig struct {
-	Enabled     bool   `toml:"enabled"`
-	DefaultType string `toml:"default_type"`
+	Enabled bool `toml:"enabled"`
 	// PadTo rounds every frame payload up to a multiple of this many bytes, so
 	// observing the frame length reveals less about the payload. Zero disables
 	// padding even when Enabled is true.
@@ -483,6 +482,8 @@ func (c *Config) applyDefaults() {
 	if c.Server.DialTimeoutSecs == 0 {
 		c.Server.DialTimeoutSecs = 10
 	}
+	// The default applies when the key is absent or zero, like the other
+	// durations here; a negative value is rejected by Validate.
 	if c.Server.GracefulShutdownSecs == 0 {
 		c.Server.GracefulShutdownSecs = 5
 	}
@@ -927,6 +928,9 @@ func (c *Config) Validate(role string) error {
 	}
 	if c.Server.RateLimitPerSecond < 0 {
 		problems = append(problems, "server.rate_limit_per_second cannot be negative")
+	}
+	if c.Server.GracefulShutdownSecs < 0 {
+		problems = append(problems, "server.graceful_shutdown_seconds cannot be negative")
 	}
 	switch c.Server.LoadBalance {
 	case LoadBalanceRoundRobin, LoadBalanceRandom, LoadBalanceLatency, LoadBalanceFailover, LoadBalanceAdaptive:

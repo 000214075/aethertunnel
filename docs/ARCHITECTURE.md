@@ -148,8 +148,24 @@ DHT 的值没有写入权限控制：任何节点都能写同一个键。因此�
 代理判断访客来源，拒绝会写 `proxy_visitor_denied` 审计记录。`socks5` 的 `allow_targets`
 是唯一按**目标地址**判断的名单，在客户端拨号前生效。
 
-## 8. 三层隧道
+## 7.2 关闭顺序
 
+`Server.Shutdown` 的顺序是固定的，每一步都为下一步创造条件：
+
+1. 关闭控制监听，并停掉 http/https 共享监听与打洞会合端口——不再有新的控制连接与访客；
+2. 把每个会话标记为 draining：已经在传的流继续，新的流请求以
+   `errServerDraining` 立刻失败（计入 `aethertunnel_streams_refused_while_draining_total`），
+   而不是让访客等到拨号超时；
+3. 等待所有会话的活动流计数归零，最多 `graceful_shutdown_seconds` 秒（25 毫秒轮询一次）；
+   空闲的连接不参与等待，因为控制连接只由客户端自己决定何时结束；
+4. 到点或提前完成后 `CloseAll`：断开客户端，连接处理器随之收尾（写账本、从 DHT 撤回通告），
+   `Run` 等所有处理器退出后才关闭存储。
+
+`Session` 上的活动流与累计流计数就是第 3 步的依据，也是 `/api/clients` 里
+`active_streams` 与 `total_streams` 的来源；两者在流的打开与结束处由 `Tunnel.openStreamFor`
+的释放函数维护，且只会生效一次。
+
+## 8. 三层隧道
 ```
 客户端                                 服务器
 tun 设备 ──► vpn.Tunnel ──► 控制连接 ──► Router ──► tun 设备

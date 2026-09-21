@@ -28,6 +28,7 @@ type Metrics struct {
 	banRefused       atomic.Int64
 	visitorDenied    atomic.Int64
 	socksRequests    atomic.Int64
+	drainRefused     atomic.Int64
 	streamsActive    atomic.Int64
 	streamsTotal     atomic.Int64
 	bytesFromClients atomic.Int64
@@ -124,6 +125,7 @@ func (m *Metrics) Render() string {
 	counter("aethertunnel_sources_banned_total", "Sources banned after repeated authentication failures.", m.bans.Load())
 	counter("aethertunnel_banned_connections_refused_total", "Connections refused because the source is banned.", m.banRefused.Load())
 	counter("aethertunnel_visitors_denied_by_proxy_total", "Visitors refused by a proxy's own allow/deny lists.", m.visitorDenied.Load())
+	counter("aethertunnel_streams_refused_while_draining_total", "Streams refused because the server was shutting down.", m.drainRefused.Load())
 	counter("aethertunnel_socks5_requests_total", "SOCKS5 CONNECT requests served.", m.socksRequests.Load())
 	counter("aethertunnel_data_connections_total", "Data connections opened by clients.", m.dataConnections.Load())
 	gauge("aethertunnel_streams_active", "Tunnelled streams currently open.", m.streamsActive.Load())

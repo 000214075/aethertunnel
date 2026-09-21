@@ -76,7 +76,7 @@ remote_port = 6022
 | `[vpn] bind_addr` / `port` / `auth_token` / `protocol` | **未知键**：启动时列出、`--check` 失败。`[vpn]` 的键改为 `enabled`、`device`、`address`、`mtu`、`require`。三层隧道走的仍是已经认证过的控制连接，没有单独的监听端口与凭据 |
 | `[vpn]` 段本身 | v3.1.0 会解析但忽略并警告；现在真的会打开 tun 设备，非 Linux 平台启动即报错 |
 | `[obfuscation]` 段 | v3.1.0 会解析但忽略并警告；现在按 `pad_to`、`jitter_millis`、`disguise` 生效 |
-| `[obfuscation] default_type` | 保留键，当前未被使用 |
+| `[obfuscation] default_type` | 已删除。它从未被任何代码读取，`--check` 现在会把它当未知键报出来 |
 | `[server] enable_tls` / `cert_file` / `key_file` | 仍是**未知键**。TLS 在 `[transport]` 段里配置：`enable_tls`、`cert_file`、`key_file` |
 | `[dht]`、`[transport]`、`[identity]`、`[metrics]`、`[audit]`、`[ledger]`、`[[visitors]]` | v3.1.0 会把它们当未知键列出来；现在它们都是有效段 |
 | `[webrtc]`、`[pqc]`、`[gaming_mode]`、`[load_balancer]`、`[monitoring]`、`[failover]` 等 | 仍然是**未知键**：启动时列出。这些功能从未实现 |
@@ -163,6 +163,16 @@ aethertunnel-server v3.2.0 (protocol 4, built 2026-09-20T07:12:44Z, commit 12345
 封禁按**来源地址**记账，因此部署在负载均衡或反向代理后面、或由监控系统探测的地址，必须写进
 `ban_ignore_cidrs`，否则它们会与攻击者共用同一个来源地址。
 
+## 4.1 从 v3.3.0 到 v3.4.0
+
+- **删除 `[obfuscation] default_type`**：它从未被读取，配置里写了它不会报错也不会有任何效果。
+  现在会被当作未知键，`--check` 会失败并指出该行；删掉这一行即可。
+- `[server] graceful_shutdown_seconds` 从"写了没用"变成真实行为：收到停止信号后先停止接受新连接，
+  给正在传输的流最多这么多秒完成，然后才断开客户端。默认 5 秒；这个值现在也参与校验，负数会被拒绝。
+- 面板与 `/api/clients` 里每个客户端的 `active_streams` 与 `total_streams` 之前恒为 0，
+  现在是真的计数；同一张表里的 `active conns` 之前只增不减，现在流结束就归零。
+  升级后如果看到这两个数字发生变化，那是在读真实状态，不是在读旧版本的常量。
+
 ## 5. 升级检查清单
 
 1. 两端一起换成 v3.2.0 的二进制。
@@ -174,5 +184,5 @@ aethertunnel-server v3.2.0 (protocol 4, built 2026-09-20T07:12:44Z, commit 12345
    `server confirms N tunnel(s)`；面板 `/api/status` 的连接数与隧道数符合预期。
 6. 用真实客户端做一次访问（例如 `ssh -p <remote_port> ...`），确认数据真的通。
 7. 用到的新功能各自验证一次：`--dht-lookup`、`--verify-ledger`、`--discover`、`--dht-key`，
-   或直接跑 `scripts/smoke-test.ps1`（54 项检查，覆盖全部代理类型、签名通告、按代理 ACL 与
-   自动封禁）。
+   或直接跑 `scripts/smoke-test.ps1`（59 项检查，覆盖全部代理类型、签名通告、按代理 ACL、
+   自动封禁与优雅关闭）。

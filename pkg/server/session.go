@@ -55,6 +55,10 @@ type Session struct {
 	bytesFromClient atomic.Int64
 	bytesToClient   atomic.Int64
 
+	// draining is set while the server winds down. A draining session still
+	// carries the streams it already opened, but refuses to open another one.
+	draining atomic.Bool
+
 	// vpnPeer and vpnTransport are set when the session was given a tunnel
 	// address. The transport is what the control loop hands received packets to.
 	vpnMu        sync.Mutex
@@ -293,6 +297,27 @@ func (s *Session) IsClosed() bool {
 	}
 }
 
+// beginDrain stops this session from opening further streams. The streams that are
+// already running keep working until they finish or the server's grace period ends.
+func (s *Session) beginDrain() { s.draining.Store(true) }
+
+// isDraining reports whether the server is winding down and this session may no
+// longer open a stream.
+func (s *Session) isDraining() bool { return s.draining.Load() }
+
+// ActiveStreams is the number of streams this session is carrying right now.
+func (s *Session) ActiveStreams() int64 { return s.activeStreams.Load() }
+
+// streamOpened books a stream this session is about to carry. It is paired with
+// streamClosed, which the stream's release function calls.
+func (s *Session) streamOpened() {
+	s.activeStreams.Add(1)
+	s.totalStreams.Add(1)
+}
+
+// streamClosed books the end of a stream.
+func (s *Session) streamClosed() { s.activeStreams.Add(-1) }
+
 // --- session registry ---------------------------------------------------------
 
 var (
@@ -360,6 +385,48 @@ func (m *SessionManager) Count() int {
 func (m *SessionManager) CloseAll(reason string) {
 	for _, s := range m.List() {
 		s.Close(reason)
+	}
+}
+
+// drainPollInterval is how often Drain looks at the active stream count. It trades
+// a little latency at shutdown for not waking up per stream.
+const drainPollInterval = 25 * time.Millisecond
+
+// Drain stops every session from opening another stream and waits for the streams
+// that are already running to finish, up to grace.
+//
+// It returns the number of streams that were still running when it stopped waiting,
+// which is zero when everything finished inside the grace period. Sessions that are
+// idle do not delay it: what it waits for is traffic in flight, not connections,
+// because a control connection only ends when its client decides to leave.
+func (m *SessionManager) Drain(grace time.Duration) int64 {
+	sessions := m.List()
+	for _, s := range sessions {
+		s.beginDrain()
+	}
+	if len(sessions) == 0 {
+		return 0
+	}
+
+	active := func() int64 {
+		var n int64
+		for _, s := range sessions {
+			n += s.ActiveStreams()
+		}
+		return n
+	}
+
+	if grace <= 0 {
+		return active()
+	}
+
+	deadline := time.Now().Add(grace)
+	for {
+		remaining := active()
+		if remaining == 0 || !time.Now().Before(deadline) {
+			return remaining
+		}
+		time.Sleep(drainPollInterval)
 	}
 }
 

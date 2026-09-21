@@ -25,7 +25,7 @@ aethertunnel-client --config client.toml --check
 | `read_timeout_seconds` | int | 120 | 隧道流的空闲上限，同时也是控制连接的空闲判据 |
 | `heartbeat_seconds` | int | 30 | 期望客户端的心跳间隔；连续 3 次未收到即断开 |
 | `dial_timeout_seconds` | int | 10 | 访问者到来后，等待客户端回拨数据连接的时限 |
-| `graceful_shutdown_seconds` | int | 5 | 收到信号后用于收尾的时间 |
+| `graceful_shutdown_seconds` | int | 5 | 收到停止信号后，先停止接受新连接，并给正在传输的流最多这么多秒完成，之后才断开客户端。0 视为默认值，负数被拒绝 |
 | `allow_cidrs` | []string | 空 | CIDR 白名单。非空时只有匹配的来源可以连接 |
 | `deny_cidrs` | []string | 空 | CIDR 黑名单，优先级高于白名单 |
 | `rate_limit_per_second` | float | 0 | 按来源地址的连接速率（每秒），0 表示关闭 |
@@ -139,9 +139,10 @@ SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` �
 | `enabled` | bool | false | 是否提供 `GET /metrics`（Prometheus 文本格式 0.0.4），由面板监听器提供 |
 | `token` | string | 空 | 该 token 与面板 token 任一可用；两者都未设置时 `/metrics` 不需要鉴权 |
 
-指标序列：控制连接、被拒绝的控制连接、认证失败、ACL 拒绝、限流拒绝、数据连接、
-活动与累计流数、双向字节、UDP 数据报与活动会话，以及按 `tunnel` 标签的活动流、
-累计流与双向字节。
+指标序列：控制连接、被拒绝的控制连接、认证失败、ACL 拒绝、限流拒绝、被封禁的来源、
+因封禁被拒的连接、按代理拒绝的访客、socks5 请求数、因服务器关闭而拒绝的流、
+数据连接、活动与累计流数、双向字节、UDP 数据报与活动会话，以及按 `tunnel` 标签的活动流、
+累计流与双向字节。每一行都直接读自运行中的计数器，没有估算值。
 
 ## `[audit]`（服务端）
 
@@ -220,7 +221,6 @@ SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` �
 | `pad_to` | int | 256 | 帧负载补齐到该值的整数倍；0 表示不补齐 |
 | `jitter_millis` | int | 0 | 每次写入前插入 `[0, 该值)` 毫秒的随机延迟 |
 | `disguise` | string | `none` | `none` 原样写出；`tls-record` 把每个写入包进 TLS 1.2 应用数据记录，两端必须一致 |
-| `default_type` | string | 空 | 保留键，当前未被使用 |
 
 补齐在加密之后进行，帧内保留真实长度前缀；接收端仅凭帧标志位去补齐，两端不需要配置一致。
 伪装是最外层，不做握手：它能骗过只看首字节的识别器，骗不过会建模 TLS 会话的识别器。

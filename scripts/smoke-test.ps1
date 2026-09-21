@@ -226,6 +226,36 @@ function Test-SecondLoopback {
     }
 }
 
+# Send-StopSignal asks a process to stop the way an operator would. On Windows there
+# is no SIGTERM: taskkill without /F posts a close event to the process's console,
+# which the server's signal handler catches. On Linux and macOS it is kill -TERM.
+# Stop-Process would be a hard kill on both and would skip the drain entirely.
+function Send-StopSignal([System.Diagnostics.Process]$Process) {
+    if ($env:OS -eq 'Windows_NT') {
+        & taskkill /PID $Process.Id 2>&1 | Out-Null
+        return
+    }
+    & kill -TERM $Process.Id 2>&1 | Out-Null
+}
+
+# Hold-Stream opens a visitor connection through the published port and proves the
+# stream works, leaving it open for the caller to use.
+function Hold-Stream([int]$Port, [string]$Payload) {
+    $client = New-Object System.Net.Sockets.TcpClient('127.0.0.1', $Port)
+    $client.ReceiveTimeout = 8000
+    $stream = $client.GetStream()
+    $bytes = [System.Text.Encoding]::ASCII.GetBytes($Payload)
+    $stream.Write($bytes, 0, $bytes.Length)
+    $buffer = New-Object byte[] 256
+    $read = $stream.Read($buffer, 0, $buffer.Length)
+    $answer = [System.Text.Encoding]::ASCII.GetString($buffer, 0, $read)
+    if ($answer -ne $Payload) {
+        $client.Dispose()
+        throw "the stream answered '$answer' before the shutdown, want '$Payload'"
+    }
+    return @{ Client = $client; Stream = $stream }
+}
+
 function Invoke-Curl {
     param([string[]]$Arguments)
 
@@ -357,6 +387,8 @@ $aclProxyPort = Get-FreePort
 $banControlPort = Get-FreePort
 $banDashboardPort = Get-FreePort
 $banProxyPort = Get-FreePort
+$graceControlPort = Get-FreePort
+$graceProxyPort = Get-FreePort
 
 $token = 'smoke-test-token-0123456789abcdef'
 $passphrase = 'smoke-test-passphrase'
@@ -714,6 +746,38 @@ enabled = true
 key_file = "$banBadIdentity"
 "@ | Set-Content -Path $banBadClientToml -Encoding UTF8
 
+# A separately started pair for the graceful shutdown checks. These need to signal a
+# running server, so they get their own process rather than disturbing the deployment
+# the other checks use.
+$graceServerToml = Join-Path $Root 'grace-server.toml'
+@"
+[server]
+bind_addr = "127.0.0.1"
+bind_port = $graceControlPort
+auth_token = "$token"
+graceful_shutdown_seconds = 4
+
+[audit]
+enabled = true
+path = "$RootFwd/grace-audit.jsonl"
+"@ | Set-Content -Path $graceServerToml -Encoding UTF8
+
+$graceClientToml = Join-Path $Root 'grace-client.toml'
+@"
+[client]
+server_addr = "127.0.0.1:$graceControlPort"
+auth_token = "$token"
+reconnect_seconds = 1
+max_reconnect_seconds = 2
+
+[[proxies]]
+name = "grace-echo"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = $tcpEchoPort
+remote_port = $graceProxyPort
+"@ | Set-Content -Path $graceClientToml -Encoding UTF8
+
 # The same server, reached by a client it does accept: this is what proves a ban
 # covers a source and not only the client that earned it.
 $banOkClientToml = Join-Path $Root 'ban-ok-client.toml'
@@ -989,6 +1053,28 @@ Test-Check 'per-proxy acl: a visitor inside allow_cidrs is served' {
     return $true
 }
 
+Test-Check 'the clients view counts the streams the owner session carried' {
+    # Every check above put a stream through the owner client, so its session has to
+    # report them; the totals used to be constants that were never written. Some
+    # streams are still open on purpose at this point: a udp or sudp session lives
+    # per visitor address, and the reverse proxy keeps its tunneled connection for the
+    # next request, so only the completed count and its relation to the active one are
+    # asserted here.
+    $clients = @((Invoke-Curl @('-s', '-H', "Authorization: Bearer $token", "http://127.0.0.1:$dashboardPort/api/clients") | ConvertFrom-Json).clients)
+    if ($clients.Count -lt 1) { throw "the clients view is empty while two clients are connected" }
+
+    $total = 0
+    $active = 0
+    foreach ($client in $clients) {
+        $total += [int]$client.total_streams
+        $active += [int]$client.active_streams
+    }
+    if ($total -lt 1) { throw "every client reports 0 completed streams although the checks above ran dozens" }
+    if ($active -gt $total) { throw "$active stream(s) are active out of $total completed" }
+    Write-Host "   the sessions report $total completed stream(s), $active still open"
+    return $true
+}
+
 Write-Step "checking the refusal paths"
 
 $badVisitorLog = Join-Path $Root 'bad-visitor.log'
@@ -1204,10 +1290,34 @@ Test-Check 'the metrics endpoint reports the data path' {
             'aethertunnel_http_requests_total',
             'aethertunnel_p2p_punches_total',
             'aethertunnel_bytes_to_clients_total',
+            'aethertunnel_socks5_requests_total',
+            'aethertunnel_streams_refused_while_draining_total',
+            'aethertunnel_tunnel_streams_active{tunnel="tcp-echo"}',
             'aethertunnel_tunnel_streams_total{tunnel="tcp-echo"}')) {
         if ($body -notmatch [regex]::Escape($series)) { throw "the metrics output has no $series" }
     }
     return $true
+}
+
+Test-Check 'the active stream count returns to zero when the streams end' {
+    # Every check above opened and closed streams, and the client that carried them
+    # has since disconnected. A gauge that only ever climbs is what the dashboard
+    # would then show as "active conns", so it has to come back to zero.
+    $deadline = (Get-Date).AddSeconds(6)
+    while ($true) {
+        # Invoke-Curl returns one string, so the metric lines are split out of it:
+        # Select-String on a multi-line string would only ever match the first line.
+        $metrics = Invoke-Curl @('-s', "http://127.0.0.1:$dashboardPort/metrics")
+        $line = ($metrics -split "`n" | Where-Object { $_ -match '^aethertunnel_streams_active ' } | Select-Object -First 1)
+        $active = if ($line) { [int](($line -split '\s+')[1]) } else { -1 }
+        $proxies = @((Invoke-Curl @('-s', '-H', "Authorization: Bearer $token", "http://127.0.0.1:$dashboardPort/api/proxies") | ConvertFrom-Json).proxies)
+        $busy = @($proxies | Where-Object { [int]$_.active_connections -ne 0 })
+        if ($active -eq 0 -and $busy.Count -eq 0) { return $true }
+        if ((Get-Date) -gt $deadline) {
+            throw "after every stream finished: gauge=$active, still busy: $(($busy | ForEach-Object { $_.name }) -join ',')"
+        }
+        Start-Sleep -Milliseconds 250
+    }
 }
 
 Test-Check 'the metrics counters moved' {
@@ -1217,6 +1327,99 @@ Test-Check 'the metrics counters moved' {
     if ([int]$match.Groups[1].Value -le 0) { throw "the udp datagram counter is still zero" }
     return $true
 }
+
+Write-Step "checking graceful shutdown under load"
+
+# First scenario: a stream that finishes inside the grace period. The server has to
+# keep carrying it while it winds down, and stop as soon as it ends.
+$graceServerLog = Join-Path $Root 'grace-server.log'
+$graceServer = Start-Background -FilePath $serverExe -Arguments @('-config', $graceServerToml) -LogPath $graceServerLog -WorkingDirectory $Root
+Wait-ForPort -Port $graceControlPort | Out-Null
+$graceClientLog = Join-Path $Root 'grace-client.log'
+$graceClient = Start-Background -FilePath $clientExe -Arguments @('-config', $graceClientToml) -LogPath $graceClientLog -WorkingDirectory $Root
+Wait-ForPort -Port $graceProxyPort | Out-Null
+
+$held = Hold-Stream -Port $graceProxyPort -Payload 'before-the-signal'
+
+Test-Check 'graceful shutdown: the server keeps a stream alive while it winds down' {
+    Send-StopSignal $graceServer
+    Start-Sleep -Milliseconds 800
+    if ($graceServer.HasExited) {
+        throw "the server exited at once although a stream was in flight and the grace period is 4s"
+    }
+    # The stream that was already running still carries its bytes.
+    $bytes = [System.Text.Encoding]::ASCII.GetBytes('during-the-shutdown')
+    $held.Stream.Write($bytes, 0, $bytes.Length)
+    $buffer = New-Object byte[] 256
+    $read = $held.Stream.Read($buffer, 0, $buffer.Length)
+    $answer = [System.Text.Encoding]::ASCII.GetString($buffer, 0, $read)
+    if ($answer -ne 'during-the-shutdown') { throw "the stream answered '$answer' during the shutdown" }
+    return $true
+}
+
+Test-Check 'graceful shutdown: the server stops as soon as the last stream ends' {
+    $held.Client.Dispose()
+    $deadline = (Get-Date).AddSeconds(4)
+    while (-not $graceServer.HasExited -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
+    if (-not $graceServer.HasExited) {
+        throw "the server was still running 4s after the last stream ended"
+    }
+    $log = Read-Log $graceServerLog
+    if ($log -notmatch 'shutting down:') { throw "the server did not report a shutdown: $log" }
+    if ($log -notmatch 'every stream finished within') {
+        throw "the log does not report a drained shutdown: $log"
+    }
+    return $true
+}
+
+if ($graceClient -and -not $graceClient.HasExited) { Stop-Process -Id $graceClient.Id -Force -ErrorAction SilentlyContinue }
+Start-Sleep -Seconds 1
+
+# Second scenario: a stream that outlives the grace period. The wait has to be
+# bounded, and the stream is disconnected once it runs out.
+$graceServer2Log = Join-Path $Root 'grace-server2.log'
+$graceServer2 = Start-Background -FilePath $serverExe -Arguments @('-config', $graceServerToml) -LogPath $graceServer2Log -WorkingDirectory $Root
+Wait-ForPort -Port $graceControlPort | Out-Null
+$graceClient2 = Start-Background -FilePath $clientExe -Arguments @('-config', $graceClientToml) -LogPath (Join-Path $Root 'grace-client2.log') -WorkingDirectory $Root
+Wait-ForPort -Port $graceProxyPort | Out-Null
+
+$stuck = Hold-Stream -Port $graceProxyPort -Payload 'stuck-stream'
+$signalAt = Get-Date
+Send-StopSignal $graceServer2
+
+Test-Check 'graceful shutdown: a stream that outlives the grace period is disconnected' {
+    Start-Sleep -Seconds 2
+    if ($graceServer2.HasExited) {
+        throw "the server exited 2s after the signal although its grace period is 4s"
+    }
+    $deadline = (Get-Date).AddSeconds(6)
+    while (-not $graceServer2.HasExited -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
+    if (-not $graceServer2.HasExited) { throw "the server was still running 6s after a 4s grace period" }
+
+    $took = ((Get-Date) - $signalAt).TotalSeconds
+    if ($took -lt 3.5 -or $took -gt 8) {
+        throw "the server stopped $([math]::Round($took, 1))s after the signal, want about 4s"
+    }
+
+    $log = Read-Log $graceServer2Log
+    if ($log -notmatch 'stream\(s\) were still running after') {
+        throw "the log does not report a stream that outlived the grace period: $log"
+    }
+
+    # Giving up means disconnecting, so the stream the visitor was holding ends.
+    try {
+        $stuck.Stream.ReadTimeout = 3000
+        $read = $stuck.Stream.Read((New-Object byte[] 32), 0, 32)
+        if ($read -gt 0) { throw "the stream still carried $read byte(s) after the grace period" }
+    } catch {
+        if ($_.Exception.Message -like '*still carried*') { throw }
+    }
+    $stuck.Client.Dispose()
+    return $true
+}
+
+if ($graceClient2 -and -not $graceClient2.HasExited) { Stop-Process -Id $graceClient2.Id -Force -ErrorAction SilentlyContinue }
+if ($graceServer2 -and -not $graceServer2.HasExited) { Stop-Process -Id $graceServer2.Id -Force -ErrorAction SilentlyContinue }
 
 Write-Step "checking the automatic ban of failing sources"
 

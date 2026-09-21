@@ -41,6 +41,16 @@ before it. An `http`/`https` proxy counts each served request; when several clie
 pool, a request or a datagram session is credited to every member in proportion, because the
 server does not attribute it to one of them. A member that disconnects takes its counters out
 of the pool aggregate, because the aggregate is the sum of the members that are present.
+
+The two stream columns a client row shows — active and total — come from the session's own
+counters: the total advances when a stream opens, and the active count comes back down when it
+ends. Both used to stay at zero, which is why a row could show traffic and no streams. Some
+streams stay open by design: a `udp`/`sudp` session lives per visitor address, and the reverse
+proxy keeps its tunneled connection for the next request, so "active" is not expected to reach
+zero while such a proxy is in use. 客户端一行的「活动流 / 累计流」两列取自会话自己的计数：
+打开流时累计加一，流结束时活动减一；这两个数字此前一直是 0。`udp`/`sudp` 的会话按访客地址
+常驻，反向代理也会保留它的隧道连接给下一个请求，因此这类代理在使用期间「活动流」不为 0
+是正常的。
 字节与连接计数在一条流或一个请求结束时累加，页面每 2 秒轮询一次，所以仍在进行中的流只显示
 此前已结束流的合计；`http`/`https` 代理按每个完成的请求计数；池中有多个客户端时，一个请求
 或一个数据报会话按比例计入每个成员，因为服务端并不把它归给某一个成员；成员断开后，它的计数
