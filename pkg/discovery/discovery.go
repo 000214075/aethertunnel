@@ -7,10 +7,20 @@
 // own expiry because the DHT has no remote delete: a server that stops announcing
 // a name leaves a copy behind on its peers until the TTL runs out, and readers
 // treat a record whose expiry has passed as absent rather than as a live address.
+//
+// A record may be signed. The DHT stores values at keys that anyone on the network
+// can write, so an unsigned record says only that some node claimed an address. A
+// publisher that holds an Ed25519 key signs each record with it and names the
+// public key in the record; a reader that is given the key it trusts, or that
+// simply wants any record to be signed, checks the signature before using the
+// address. Signing does not hide the metadata: the record, the name and the
+// address stay visible.
 package discovery
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +49,28 @@ const (
 // refreshing it.
 var ErrStale = errors.New("discovery: the announcement is stale")
 
+// ErrUnsigned reports an unsigned record read by a node that requires signatures.
+var ErrUnsigned = errors.New("discovery: the announcement carries no signature")
+
+// ErrUntrustedPublisher reports a record signed by a key the reader was not given.
+var ErrUntrustedPublisher = errors.New("discovery: the announcement is signed by a key that is not trusted")
+
+// ErrBadSignature reports a record whose signature does not check out, which means
+// the stored value was written or altered by a node other than the publisher.
+var ErrBadSignature = errors.New("discovery: the announcement's signature does not verify")
+
+// signatureDomain is the first line of the signed bytes. It keeps a signature
+// produced for an announcement from being replayed as a signature over anything
+// else that happens to be signed with the same key.
+const signatureDomain = "aethertunnel announcement v1"
+
+// Signer is the Ed25519 key a publisher signs its announcements with.
+// *crypto.Identity satisfies it.
+type Signer interface {
+	PublicKey() ed25519.PublicKey
+	Sign(message []byte) []byte
+}
+
 // Record is the value stored under a proxy key.
 //
 // The two timestamps are exact rather than second-resolution, because a short
@@ -50,10 +82,102 @@ type Record struct {
 	Domains []string  `json:"domains,omitempty"`
 	Updated time.Time `json:"updated"`
 	Expires time.Time `json:"expires"`
+
+	// PublicKey is the hex Ed25519 key the record was signed with, in the same
+	// form as identity.allowed_keys. Empty on an unsigned record.
+	PublicKey string `json:"public_key,omitempty"`
+	// Signature is the hex signature over SigningPayload. Empty on an unsigned
+	// record.
+	Signature string `json:"signature,omitempty"`
+
+	// Verified is set by Lookup when the record carried a signature that checked
+	// out against the key in the record. It is not part of the stored value.
+	Verified bool `json:"-"`
 }
 
 // Fresh reports whether the record was still current at now.
 func (r Record) Fresh(now time.Time) bool { return now.Before(r.Expires) }
+
+// SigningPayload is the byte string a record's signature covers: every field a
+// reader acts on, in the order they are encoded. Changing the name, the type, the
+// address, the domains or either timestamp therefore invalidates the signature,
+// so an altered copy of a valid record is rejected.
+func (r Record) SigningPayload() []byte {
+	r.Signature = ""
+	body, err := json.Marshal(r)
+	if err != nil {
+		// The type holds no value json cannot encode.
+		return nil
+	}
+	out := make([]byte, 0, len(signatureDomain)+len(body)+1)
+	out = append(out, signatureDomain...)
+	out = append(out, '\n')
+	return append(out, body...)
+}
+
+// sign fills in the key and the signature. A record published without a signer
+// keeps both fields empty.
+func (r *Record) sign(signer Signer) {
+	if signer == nil {
+		r.PublicKey = ""
+		r.Signature = ""
+		return
+	}
+	r.PublicKey = hex.EncodeToString(signer.PublicKey())
+	r.Signature = hex.EncodeToString(signer.Sign(r.SigningPayload()))
+}
+
+// verify checks the record against the reader's policy: an unsigned record when
+// signatures are required, a malformed key or signature, a signature that does not
+// verify, and a valid signature from a key the reader was not given are all
+// refused. It reports whether the record was signed and verified, so a reader can
+// tell a trusted record from an unsigned one that its policy allows.
+func (r *Record) verify(requireSigned bool, trusted []ed25519.PublicKey) (bool, error) {
+	if r.PublicKey == "" && r.Signature == "" {
+		if requireSigned {
+			return false, ErrUnsigned
+		}
+		if len(trusted) > 0 {
+			// A named key is what the reader trusts; an unsigned record cannot
+			// show that it came from one.
+			return false, ErrUnsigned
+		}
+		return false, nil
+	}
+	if r.PublicKey == "" || r.Signature == "" {
+		return false, fmt.Errorf("%w: the record names a key but no signature, or the other way round", ErrBadSignature)
+	}
+
+	raw, err := hex.DecodeString(r.PublicKey)
+	if err != nil || len(raw) != ed25519.PublicKeySize {
+		return false, fmt.Errorf("%w: the record's public key is not a %d-byte Ed25519 key in hex",
+			ErrBadSignature, ed25519.PublicKeySize)
+	}
+	key := ed25519.PublicKey(raw)
+
+	signature, err := hex.DecodeString(r.Signature)
+	if err != nil {
+		return false, fmt.Errorf("%w: the signature is not hex: %v", ErrBadSignature, err)
+	}
+	if !ed25519.Verify(key, r.SigningPayload(), signature) {
+		return false, ErrBadSignature
+	}
+
+	if len(trusted) > 0 && !trusts(trusted, key) {
+		return false, fmt.Errorf("%w: %s", ErrUntrustedPublisher, r.PublicKey)
+	}
+	r.Verified = true
+	return true, nil
+}
+
+func trusts(trusted []ed25519.PublicKey, key ed25519.PublicKey) bool {
+	for _, candidate := range trusted {
+		if candidate.Equal(key) {
+			return true
+		}
+	}
+	return false
+}
 
 // Config configures a node. The zero value is usable and joins no DHT: with an
 // empty Bootstrap list the node is a one-node table that still stores and
@@ -75,6 +199,15 @@ type Config struct {
 	RepublishInterval time.Duration
 	// LookupTimeout bounds one resolution.
 	LookupTimeout time.Duration
+	// Signer signs every record this node publishes, and names its public key in
+	// the record. nil publishes unsigned records.
+	Signer Signer
+	// RequireSigned makes Lookup refuse a record that carries no signature.
+	RequireSigned bool
+	// TrustedKeys restricts Lookup to records signed by one of these keys, which
+	// is what turns "some node claimed this address" into "the server I trust
+	// claimed this address". A non-empty list also refuses unsigned records.
+	TrustedKeys []ed25519.PublicKey
 	// Logger receives diagnostic lines. nil disables logging.
 	Logger *log.Logger
 }
@@ -161,7 +294,9 @@ func (n *Node) Key(name string) string {
 // Publish stores an announcement for a proxy name, replacing any earlier one.
 //
 // The timestamp and expiry are set here, so a caller cannot publish a record that
-// claims a validity it does not have.
+// claims a validity it does not have. When the node has a signer, the record is
+// signed here for the same reason: the stored bytes are the ones that were signed,
+// and no caller can publish a record under a key it does not hold.
 func (n *Node) Publish(ctx context.Context, rec Record) error {
 	if rec.Name == "" {
 		return errors.New("discovery: an announcement needs a name")
@@ -173,6 +308,7 @@ func (n *Node) Publish(ctx context.Context, rec Record) error {
 	now := time.Now()
 	rec.Updated = now
 	rec.Expires = now.Add(n.cfg.AnnounceTTL)
+	rec.sign(n.cfg.Signer)
 
 	value, err := json.Marshal(rec)
 	if err != nil {
@@ -207,7 +343,12 @@ func (n *Node) Withdraw(name string) error {
 }
 
 // Lookup resolves a proxy name. It returns ErrStale when the record is there but
-// its announcer stopped refreshing it, and dht.ErrNotFound when nothing is known.
+// its announcer stopped refreshing it, dht.ErrNotFound when nothing is known, and
+// ErrUnsigned, ErrBadSignature or ErrUntrustedPublisher when the stored value does
+// not satisfy this node's signature policy.
+//
+// The signature is checked before the expiry, so a forged record is reported as
+// forged rather than as stale.
 func (n *Node) Lookup(ctx context.Context, name string) (Record, error) {
 	if ctx == nil {
 		var cancel context.CancelFunc
@@ -226,6 +367,9 @@ func (n *Node) Lookup(ctx context.Context, name string) (Record, error) {
 	}
 	if rec.Server == "" {
 		return Record{}, fmt.Errorf("discovery: %q holds an announcement without a server address", name)
+	}
+	if _, err := rec.verify(n.cfg.RequireSigned, n.cfg.TrustedKeys); err != nil {
+		return Record{}, fmt.Errorf("%q: %w", name, err)
 	}
 	if !rec.Fresh(time.Now()) {
 		return Record{}, fmt.Errorf("%q was last announced at %s: %w",

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aethertunnel/aethertunnel/pkg/config"
+	"github.com/aethertunnel/aethertunnel/pkg/crypto"
 	"github.com/aethertunnel/aethertunnel/pkg/discovery"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
 )
@@ -27,6 +28,11 @@ type directory struct {
 	advertise string // host part of the addresses this server publishes
 	logger    *log.Logger
 
+	// signingKey is the hex public key announcements are signed with, empty when
+	// records are published unsigned. It is what an operator copies into a
+	// client's [dht] trusted_keys.
+	signingKey string
+
 	// ports are the listener ports the record's Server field is built from.
 	controlPort int
 	httpPort    int
@@ -35,12 +41,29 @@ type directory struct {
 
 // openDirectory starts the DHT node described by the [dht] section, or returns nil
 // when the section is disabled.
+//
+// When the section names a signing key file the node signs every record it
+// publishes with that key, which is what lets a reader tell this server's
+// announcements from records any other node could write to the same keys.
 func openDirectory(cfg *config.Config, logger *log.Logger) (*directory, error) {
 	if !cfg.DHT.Enabled {
 		return nil, nil
 	}
 
-	node, err := discovery.Start(cfg.DHTSettings(logger))
+	settings := cfg.DHTSettings(logger)
+	signingKey := ""
+	if cfg.DHT.SigningKeyFile != "" {
+		identity, err := crypto.LoadIdentity(cfg.DHT.SigningKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("dht.signing_key_file: %w", err)
+		}
+		settings.Signer = identity
+		signingKey = identity.PublicKeyHex()
+		logger.Printf("dht: signing announcements with %s (key file %s)",
+			signingKey, cfg.DHT.SigningKeyFile)
+	}
+
+	node, err := discovery.Start(settings)
 	if err != nil {
 		return nil, err
 	}
@@ -54,6 +77,7 @@ func openDirectory(cfg *config.Config, logger *log.Logger) (*directory, error) {
 		node:        node,
 		advertise:   host,
 		logger:      logger,
+		signingKey:  signingKey,
 		controlPort: cfg.Server.BindPort,
 		httpPort:    cfg.Server.HTTPPort,
 		httpsPort:   cfg.Server.HTTPSPort,
@@ -61,6 +85,22 @@ func openDirectory(cfg *config.Config, logger *log.Logger) (*directory, error) {
 	logger.Printf("dht: node %s on %s, namespace %q, %d bootstrap peer(s)",
 		node.Self(), node.Addr(), node.Namespace(), len(cfg.DHT.Bootstrap))
 	return d, nil
+}
+
+// AnnouncementKey returns the hex public key announcements are signed with, which
+// is what an operator copies into a client's [dht] trusted_keys.
+//
+// The key file is created when it does not exist yet, so the key can be read before
+// the first announcement is ever published.
+func AnnouncementKey(cfg *config.Config) (string, error) {
+	if cfg.DHT.SigningKeyFile == "" {
+		return "", fmt.Errorf("dht.signing_key_file is empty, so announcements are published unsigned and there is no key to read")
+	}
+	identity, err := crypto.LoadIdentity(cfg.DHT.SigningKeyFile)
+	if err != nil {
+		return "", fmt.Errorf("dht.signing_key_file: %w", err)
+	}
+	return identity.PublicKeyHex(), nil
 }
 
 // Close stops the DHT node.
@@ -121,7 +161,12 @@ func (d *directory) publish(spec protocol.ProxySpec) error {
 		d.logger.Printf("dht: cannot publish %q: %v", spec.Name, err)
 		return err
 	}
-	d.logger.Printf("dht: published %q as %s at %s", spec.Name, spec.Type, record.Server)
+	if d.signingKey != "" {
+		d.logger.Printf("dht: published %q as %s at %s, signed with %s",
+			spec.Name, spec.Type, record.Server, d.signingKey)
+		return nil
+	}
+	d.logger.Printf("dht: published %q as %s at %s, unsigned", spec.Name, spec.Type, record.Server)
 	return nil
 }
 
@@ -211,5 +256,7 @@ func (d *directory) summary() map[string]any {
 		"contacts":     d.node.Contacts(),
 		"advertise_as": d.advertise,
 		"announced":    d.node.Announced(),
+		// Empty when announcements are published unsigned.
+		"signing_key": d.signingKey,
 	}
 }

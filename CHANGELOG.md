@@ -10,7 +10,66 @@
 
 ---
 
-## [3.2.1] — 2026-09-20
+## [3.3.0] — 2026-09-21
+
+本版本新增一个代理类型（`socks5`）、三项策略能力（按代理的访客 ACL、认证失败自动封禁、
+DHT 通告签名），并把它们接进 `scripts/smoke-test.ps1` 的真实运维检查。
+
+### 新增
+
+**代理类型：`socks5` 出口**
+
+- `[[proxies]] type = "socks5"`：访客用标准 SOCKS5（RFC 1928 CONNECT，无认证）指定目标，
+  客户端拨号，字节流经隧道转发。没有本地服务，因此 `local_ip` / `local_port` 会被忽略并
+  给出警告，`remote_port` 必填。
+- `allow_targets` 是**必填**项，列出客户端允许拨号的 CIDR；缺失时注册被拒绝
+  （`a socks5 tunnel needs allow_targets`），不会退化成"什么都能连"。不在名单里的目标用
+  SOCKS5 回复码 `0x02`（not allowed）拒绝。
+- 服务器在收到 CONNECT 之前先完成协商，因此目标不可达时访客看到的是 SOCKS5 错误码而不是
+  连接被直接关闭。新增 `aethertunnel_socks5_requests_total` 指标。
+
+**按代理的访客 ACL**
+
+- `[[proxies]] allow_cidrs` / `deny_cidrs`：服务器整体接受连接之后、建立隧道之前，再按该
+  代理自己的名单判断来源地址；deny 优先，名单非空而来源无法解析时按拒绝处理。
+- 拒绝会写审计记录 `proxy_visitor_denied`（带代理名）并计入
+  `aethertunnel_visitors_denied_by_proxy_total`。http/https 代理对被拒访客返回 403。
+
+**认证失败自动封禁**
+
+- `[server] ban_after_failures` / `ban_seconds` / `ban_max_seconds` / `ban_ignore_cidrs`。
+  同一来源在 10 分钟窗口内认证失败达到次数后封禁该来源，封禁期间**任何凭据**都先被拒绝、
+  不进入握手；认证成功清零计数；重复被封时长翻倍直到上限。
+- 新增指标 `aethertunnel_sources_banned_total`、`aethertunnel_banned_connections_refused_total`，
+  审计事件 `source_banned` 与 `ban_refused`。
+
+**DHT 通告签名**
+
+- `[dht] signing_key_file`（服务端）：每条通告用 Ed25519 签名，密钥首次使用时生成到该文件
+  （0600），公钥可从启动日志、`GET /api/dht` 的 `signing_key` 或新增的 `--dht-key` 读出。
+- `[dht] require_signed` / `trusted_keys`（客户端与查询端）：拒绝无签名记录，或只接受指定
+  公钥签发的记录。校验在有效期判断之前进行，伪造的记录报 `signature does not verify`
+  而不是被当成过期。
+- `--dht-lookup` 与 `--discover` 的输出现在会写明记录是否经过签名校验及其公钥。
+
+### 运维测试
+
+`scripts/smoke-test.ps1` 从 38 项扩到 54 项：新增 socks5 出口（到达指定目标、拒绝名单外目标、
+面板记账）、按代理 ACL（名单外拒绝、名单内放行、审计记录）、DHT 签名（公钥发布、查询报告
+签名者、可信读取端成功、异钥读取端拒绝），以及一处独立的封禁服务器（失败达次数即封禁、
+审计与指标、被封来源上有效凭据同样被拒、到期自动解除）。全部用真实二进制与 curl 跑通。
+
+### 修复（由新测试发现）
+
+- 钉住 socks5 与 ACL 的端到端测试根本不覆盖被测路径：`pkg/server` 的测试代理在没有
+  `handlers` 表项时直接丢弃数据请求，socks5 测试因此既不拨号也不回应，最终以访客侧超时
+  失败（`reply: read tcp ...: i/o timeout`）。现在带目标的请求不再查表。
+- `scripts/smoke-test.ps1` 的 `Read-Log` 在文件为空时返回 `$null`，而
+  `if ($null -notmatch '模式')` 恒为假，导致**所有读日志的断言都在不校验任何内容的情况下通过**。
+  现在它同时读取标准输出与标准错误两个文件，并始终返回字符串。
+
+---
+
 
 ### 修复
 

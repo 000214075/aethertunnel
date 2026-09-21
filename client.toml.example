@@ -1,4 +1,4 @@
-# AetherTunnel client configuration — v3.2.0
+# AetherTunnel client configuration — v3.3.0
 #
 # Start with:  aethertunnel-client --config client.toml
 # Validate:    aethertunnel-client --config client.toml --check
@@ -79,6 +79,13 @@ republish_seconds = 30
 lookup_timeout_seconds = 5
 # The proxy name to resolve when client.server_addr is empty.
 discover = ""
+# Any node on the DHT can write to a proxy's key, so a record is only an address
+# until its signature is checked. require_signed refuses a record that carries no
+# signature; trusted_keys names the announcement keys that are believed and also
+# refuses unsigned records. Read the server's key with --dht-key, from the server's
+# startup log, or from GET /api/dht as signing_key.
+require_signed = false
+trusted_keys = []
 
 # Layer-3 tunnel: ask the server for an address on its subnet and carry this
 # machine's IP traffic to it.
@@ -104,8 +111,15 @@ mtu = 0
 #   sudp   private and datagram based
 #   xtcp   private, tries a direct path between the visitor and this client first
 #          and falls back to the server's relay
+#   socks5 an exit: the visitor names the address, this client dials it. There is no
+#          local service, so local_ip and local_port do not apply; remote_port and
+#          allow_targets are both required, and allow_targets bounds what may be
+#          reached. A request for anything else is refused with SOCKS5 0x02.
 #
 # local_ip and remote_port default to 127.0.0.1 and 0.
+#
+# allow_cidrs and deny_cidrs restrict which visitor addresses this proxy serves, on
+# top of the server-wide lists; deny wins, and an empty allow_cidrs admits everyone.
 #
 # group pools several clients that publish the same name under one endpoint;
 # server.load_balance decides which one serves a visitor. multipath spreads a
@@ -142,6 +156,26 @@ remote_port = 8080
 # local_port = 5432
 # secret_key = "CHANGE-ME-a-second-random-secret"
 # auth_method = "secret"   # or "nizk", which proves knowledge without sending it
+
+# A socks5 exit: a visitor points at this client's port and names the address it
+# wants, so this machine's network position is what the visitor gets. Keep the
+# allow list as narrow as the service needs.
+# [[proxies]]
+# name = "socks-exit"
+# type = "socks5"
+# remote_port = 6100
+# allow_targets = ["192.168.1.0/24", "10.0.0.0/8"]
+# allow_cidrs = ["203.0.113.0/24"]   # optional: who may use the exit
+
+# A proxy only one office subnet may reach, whichever client serves it.
+# [[proxies]]
+# name = "internal-web"
+# type = "tcp"
+# local_ip = "127.0.0.1"
+# local_port = 8000
+# remote_port = 8080
+# allow_cidrs = ["198.51.100.0/24"]
+# deny_cidrs = ["198.51.100.7/32"]
 
 # One [[visitors]] block per private tunnel you want to reach on this machine.
 # [[visitors]]

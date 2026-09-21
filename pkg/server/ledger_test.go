@@ -337,7 +337,7 @@ func TestRenderLedgerReportsRecentEntriesAndTotals(t *testing.T) {
 	}
 
 	srv := &Server{cfg: cfg, logger: discardLogger(), ledger: store}
-	srv.tunnels = newTunnelManager(cfg, srv.logger, nil, newSessionManager(0), newMetrics())
+	srv.tunnels = newTunnelManager(cfg, srv.logger, nil, newSessionManager(0), newMetrics(), nil)
 	srv.metrics = newMetrics()
 
 	body, err := json.Marshal(srv.renderLedger(2))

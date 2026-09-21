@@ -1,12 +1,17 @@
 package server
 
 import (
+	"crypto/ed25519"
+	"errors"
 	"net"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/aethertunnel/aethertunnel/pkg/config"
+	"github.com/aethertunnel/aethertunnel/pkg/crypto"
+	"github.com/aethertunnel/aethertunnel/pkg/dht"
 	"github.com/aethertunnel/aethertunnel/pkg/discovery"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
 )
@@ -357,5 +362,193 @@ func TestLookupProxyReportsAnUnknownName(t *testing.T) {
 
 	if _, err := LookupProxy(lookupCfg, discardLogger(), "nothing-here"); err == nil {
 		t.Fatal("resolving a name that was never published succeeded")
+	}
+}
+
+// --- signed announcements ------------------------------------------------------
+
+// signingConfig is dhtConfig with announcements signed by a key file, which is the
+// [dht] signing_key_file a server is given.
+func signingConfig(t *testing.T, encryption bool) *config.Config {
+	t.Helper()
+	cfg := dhtConfig(t, encryption)
+	cfg.DHT.SigningKeyFile = filepath.Join(t.TempDir(), "dht.key")
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("dht signing config invalid: %v", err)
+	}
+	return cfg
+}
+
+// publishSSH registers one tcp proxy and waits for it to appear in the directory.
+func publishSSH(t *testing.T, rs *runningServer) {
+	t.Helper()
+	client, err := newTestClient(t, rs.addr, false)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.close)
+	if _, err := client.authenticate("test-client", testToken); err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	echoAddr := startEcho(t)
+	if err := client.register(protocol.ProxySpec{
+		Name: "ssh", Type: "tcp", LocalAddr: echoAddr, RemotePort: freePort(t),
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := client.framer.ReadFrame(); err != nil {
+		t.Fatalf("read proxy list: %v", err)
+	}
+	waitForListener(t, rs.server, "ssh")
+}
+
+func TestAServerSignsItsAnnouncements(t *testing.T) {
+	cfg := signingConfig(t, false)
+	rs := startServer(t, cfg)
+	publishSSH(t, rs)
+
+	// The key the record was signed with is the key file's key, and the operator
+	// can read it from GET /api/dht to hand it to clients.
+	signer, err := crypto.LoadIdentity(cfg.DHT.SigningKeyFile)
+	if err != nil {
+		t.Fatalf("load the signing key: %v", err)
+	}
+	summary := rs.server.directory.summary()
+	if summary["signing_key"] != signer.PublicKeyHex() {
+		t.Errorf("the summary reports signing_key %v, want %s", summary["signing_key"], signer.PublicKeyHex())
+	}
+
+	reader, err := discovery.Start(discovery.Config{
+		ListenAddr:  "127.0.0.1:" + itoa(freeUDPPort(t)),
+		Bootstrap:   []string{rs.server.directory.node.Addr()},
+		TrustedKeys: []ed25519.PublicKey{signer.PublicKey()},
+		Logger:      discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("start the reading node: %v", err)
+	}
+	defer reader.Close()
+
+	record, err := resolveEventually(t, reader, "ssh")
+	if err != nil {
+		t.Fatalf("resolve ssh: %v", err)
+	}
+	if !record.Verified {
+		t.Error("the record the server published is not reported as verified")
+	}
+	if record.PublicKey != signer.PublicKeyHex() {
+		t.Errorf("the record names key %q, want %q", record.PublicKey, signer.PublicKeyHex())
+	}
+}
+
+func TestAReaderThatNamesAnotherKeyRefusesTheServer(t *testing.T) {
+	cfg := signingConfig(t, false)
+	rs := startServer(t, cfg)
+	publishSSH(t, rs)
+
+	stranger, err := crypto.NewIdentity()
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	reader, err := discovery.Start(discovery.Config{
+		ListenAddr:  "127.0.0.1:" + itoa(freeUDPPort(t)),
+		Bootstrap:   []string{rs.server.directory.node.Addr()},
+		TrustedKeys: []ed25519.PublicKey{stranger.PublicKey()},
+		Logger:      discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("start the reading node: %v", err)
+	}
+	defer reader.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err := reader.Resolve("ssh")
+		switch {
+		case errors.Is(err, discovery.ErrUntrustedPublisher):
+			return
+		case err != nil && !errors.Is(err, dht.ErrNotFound):
+			t.Fatalf("resolve ssh: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the reader accepted a record signed by a key it was not given")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestAReaderThatRequiresSignaturesRefusesAnUnsignedServer(t *testing.T) {
+	cfg := dhtConfig(t, false)
+	rs := startServer(t, cfg)
+	publishSSH(t, rs)
+
+	reader, err := discovery.Start(discovery.Config{
+		ListenAddr:    "127.0.0.1:" + itoa(freeUDPPort(t)),
+		Bootstrap:     []string{rs.server.directory.node.Addr()},
+		RequireSigned: true,
+		Logger:        discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("start the reading node: %v", err)
+	}
+	defer reader.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err := reader.Resolve("ssh")
+		switch {
+		case errors.Is(err, discovery.ErrUnsigned):
+			return
+		case err != nil && !errors.Is(err, dht.ErrNotFound):
+			t.Fatalf("resolve ssh: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("an unsigned record satisfied a reader that requires signatures")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestTheSigningKeySurvivesARestart(t *testing.T) {
+	cfg := signingConfig(t, false)
+
+	first, err := openDirectory(cfg, discardLogger())
+	if err != nil {
+		t.Fatalf("open the directory: %v", err)
+	}
+	key := first.signingKey
+	if key == "" {
+		t.Fatal("a directory with a signing key file reports no signing key")
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close the directory: %v", err)
+	}
+
+	// A second node started from the same file reads the key back rather than
+	// generating another one, so clients that trust it keep working.
+	second, err := openDirectory(cfg, discardLogger())
+	if err != nil {
+		t.Fatalf("reopen the directory: %v", err)
+	}
+	defer second.Close()
+	if second.signingKey != key {
+		t.Fatalf("the restarted node signs with %s, want the key it started with, %s", second.signingKey, key)
+	}
+}
+
+func TestAServerWithNoSigningKeyPublishesUnsignedRecords(t *testing.T) {
+	cfg := dhtConfig(t, false)
+	rs := startServer(t, cfg)
+	publishSSH(t, rs)
+
+	if key := rs.server.directory.signingKey; key != "" {
+		t.Errorf("a server with no signing key file reports the key %s", key)
+	}
+	record, err := rs.server.directory.Lookup("ssh")
+	if err != nil {
+		t.Fatalf("resolve ssh: %v", err)
+	}
+	if record.PublicKey != "" || record.Signature != "" {
+		t.Errorf("an unsigned deployment signed its record with %q", record.PublicKey)
 	}
 }

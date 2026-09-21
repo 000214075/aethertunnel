@@ -47,7 +47,7 @@ type Session struct {
 
 	mu      sync.Mutex
 	tunnels map[string]*Tunnel
-	pending map[string]chan *dataConn
+	pending map[string]chan streamResult
 	closed  bool
 
 	activeStreams   atomic.Int64
@@ -103,7 +103,7 @@ func newSession(conn net.Conn, framer *protocol.Framer, req *protocol.AuthReques
 		framer:           framer,
 		done:             make(chan struct{}),
 		tunnels:          make(map[string]*Tunnel),
-		pending:          make(map[string]chan *dataConn),
+		pending:          make(map[string]chan streamResult),
 	}
 	s.touchHeartbeat()
 	return s
@@ -195,21 +195,30 @@ type dataConn struct {
 // Close releases the underlying connection.
 func (d *dataConn) Close() error { return d.conn.Close() }
 
+// streamResult is what a pending stream resolves to: the client's data
+// connection, or the reason the client could not provide one.
+type streamResult struct {
+	conn *dataConn
+	err  error
+}
+
 // AddPending registers a stream that a public connection or a visitor is waiting
-// to be paired with. The client answers with a DataOpen carrying the same id.
-func (s *Session) AddPending(streamID string) (<-chan *dataConn, error) {
+// to be paired with. The client answers with a DataOpen carrying the same id, and
+// that answer either delivers the data connection or reports why it could not be
+// made.
+func (s *Session) AddPending(streamID string) (<-chan streamResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return nil, errSessionClosed
 	}
-	ch := make(chan *dataConn, 1)
+	ch := make(chan streamResult, 1)
 	s.pending[streamID] = ch
 	return ch, nil
 }
 
 // TakePending hands a waiting stream to the data connection that claimed it.
-func (s *Session) TakePending(streamID string) (chan *dataConn, bool) {
+func (s *Session) TakePending(streamID string) (chan streamResult, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ch, ok := s.pending[streamID]
@@ -239,7 +248,7 @@ func (s *Session) Close(reason string) {
 		s.mu.Lock()
 		s.closed = true
 		pending := s.pending
-		s.pending = make(map[string]chan *dataConn)
+		s.pending = make(map[string]chan streamResult)
 		tunnels := make([]*Tunnel, 0, len(s.tunnels))
 		for _, t := range s.tunnels {
 			tunnels = append(tunnels, t)
@@ -249,7 +258,9 @@ func (s *Session) Close(reason string) {
 		close(s.done)
 
 		for _, ch := range pending {
-			close(ch)
+			// The channel is buffered, so this never blocks: a waiting visitor
+			// sees the session end instead of its dial timeout.
+			ch <- streamResult{err: errSessionClosed}
 		}
 		for _, t := range tunnels {
 			// Removing the member closes the endpoint only when it was the last

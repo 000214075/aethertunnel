@@ -1,4 +1,4 @@
-# AetherTunnel server configuration — v3.2.0
+# AetherTunnel server configuration — v3.3.0
 #
 # Every key in this file is understood by this version. Unknown keys are reported
 # on startup instead of being silently ignored, so a typo or a setting carried over
@@ -75,6 +75,18 @@ deny_cidrs = []
 rate_limit_per_second = 20
 rate_limit_burst = 40
 
+# Automatic ban: after this many failed authentications from one address, every
+# attempt from it is refused before the handshake for ban_seconds, whatever
+# credential it carries. 0 disables it. A repeat offender's window doubles, up to
+# ban_max_seconds.
+ban_after_failures = 0
+ban_seconds = 300
+ban_max_seconds = 3600
+# Addresses that are never banned. A caller behind a load balancer, a health checker
+# or a monitoring host needs an entry here, because the ban follows the source
+# address and not the client that failed.
+ban_ignore_cidrs = []
+
 [dashboard]
 enabled = true
 # Keep this on loopback unless you also set a token: the dashboard exposes client
@@ -126,6 +138,17 @@ lookup_timeout_seconds = 5
 # the one that serves each proxy. Required when bind_addr is a wildcard address,
 # which it is by default, or the published address is not reachable from outside.
 advertise_host = ""
+# Ed25519 seed every announcement is signed with, generated on first use. Any node on
+# the DHT can write to a proxy's key, so without a signature a record only says that
+# some node claimed an address. Clients that set require_signed or trusted_keys
+# refuse unsigned records, so leave this set whenever a client will insist on
+# signatures. Read the public key with --dht-key or from GET /api/dht as signing_key.
+signing_key_file = "aethertunnel-dht.key"
+# Refuse an unsigned record when this server resolves a name itself, and optionally
+# believe only the keys listed in trusted_keys (hex). Both apply to the resolving
+# side, which for a server is --dht-lookup.
+require_signed = false
+trusted_keys = []
 
 # Layer-3 tunnel. Each client that asks is given an address from this subnet and its
 # IP packets are routed through the server.

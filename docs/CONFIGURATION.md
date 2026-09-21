@@ -30,6 +30,10 @@ aethertunnel-client --config client.toml --check
 | `deny_cidrs` | []string | 空 | CIDR 黑名单，优先级高于白名单 |
 | `rate_limit_per_second` | float | 0 | 按来源地址的连接速率（每秒），0 表示关闭 |
 | `rate_limit_burst` | int | 20 | 令牌桶容量 |
+| `ban_after_failures` | int | 0 | 同一来源认证失败多少次后封禁该来源，0 表示关闭 |
+| `ban_seconds` | int | 300 | 首次封禁的时长；再次封禁时按倍数增长 |
+| `ban_max_seconds` | int | 3600 | 封禁时长的上限 |
+| `ban_ignore_cidrs` | []string | 空 | 永不封禁的来源，负载均衡后面或监控主机需要填 |
 | `http_port` | int | 0 | `http` 代理的共享监听端口，0 表示不启用 |
 | `https_port` | int | 0 | `https` 代理的共享监听端口；非 0 时下面两项必须同时设置 |
 | `https_cert_file` | string | 空 | 共享 HTTPS 监听的证书 |
@@ -55,7 +59,7 @@ aethertunnel-client --config client.toml --check
 | 键 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `name` | string | 必填 | 代理名，同一客户端内不可重复；同一 `group` 内多个客户端可以同名 |
-| `type` | string | `tcp` | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` |
+| `type` | string | `tcp` | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5` |
 | `local_ip` | string | `127.0.0.1` | 本地服务地址 |
 | `local_port` | int | 必填 | 本地服务端口（1–65535） |
 | `remote_port` | int | 0 | 服务器上对外开放的端口。`tcp`/`udp` 用它；`http`/`https` 与私有类型必须为 0 |
@@ -64,6 +68,14 @@ aethertunnel-client --config client.toml --check
 | `auth_method` | string | `secret` | `secret` 直接比对；`nizk` 用 Schnorr 证明，secret 不出现在线上 |
 | `group` | string | 空 | 填入同一名字的多个客户端组成代理池 |
 | `multipath` | int | 0 | 数据报代理最多使用的数据连接数（0–8）。字节流代理上会给出警告 |
+| `allow_targets` | []string | 空 | 仅 `socks5`：本客户端允许拨号的地址范围（CIDR）。**必填**，缺失即拒绝注册 |
+| `allow_cidrs` | []string | 空 | 只有匹配的来源地址可以访问该代理；留空表示不限 |
+| `deny_cidrs` | []string | 空 | 拒绝的来源地址，优先级高于 `allow_cidrs` |
+
+`socks5` 没有本地服务，因此 `local_ip` 与 `local_port` 会被忽略并给出警告，必须设置
+`remote_port`。`allow_targets` 按 IP 范围匹配，域名先解析再匹配；不在范围里的目标会以
+SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` 在服务器接受连接之后、
+建立隧道之前执行，被拒绝的访客会留下 `proxy_visitor_denied` 审计记录。
 
 ## `[[visitors]]`（客户端，可重复）
 
@@ -142,6 +154,7 @@ aethertunnel-client --config client.toml --check
 每行一个 JSON 对象，字段为 `time`、`event`、`client_id`、`remote`、`proxy`、`detail`、`outcome`；
 `event` 取值为 `control_accepted`、`control_rejected`、`auth_failed`、`client_disconnected`、
 `proxy_registered`、`proxy_rejected`、`proxy_removed`、`acl_denied`、`rate_limited`、
+`source_banned`、`ban_refused`、`proxy_visitor_denied`、
 `dashboard_action`、`visitor_accepted`、`visitor_rejected`、`p2p_direct`、`p2p_relayed`、
 `vpn_address_assigned`、`vpn_address_rejected`。
 
@@ -173,6 +186,17 @@ aethertunnel-client --config client.toml --check
 | `lookup_timeout_seconds` | int | 5 | 两端 | 单次解析的时限 |
 | `advertise_host` | string | 空 | 服务端 | 通告里写给客户端的主机名，**不含端口**（端口按代理类型取）。留空取 `server.bind_addr`，广播地址会**警告** |
 | `discover` | string | 空 | 客户端 | `client.server_addr` 为空时要解析的代理名 |
+| `signing_key_file` | string | 空 | 服务端 | 通告签名用的 Ed25519 种子，首次使用时生成。留空则发布未签名通告并**警告** |
+| `require_signed` | bool | false | 客户端 / 查询端 | 拒绝任何没有签名的通告 |
+| `trusted_keys` | []string | 空 | 客户端 / 查询端 | 只接受这些公钥（十六进制）签发的通告；非空时未签名的通告同样被拒绝 |
+
+签名覆盖记录里读取端会使用的每个字段（名字、类型、地址、域名、发布时间、失效时间）
+以及签名公钥本身，因此改掉其中任何一个都会导致校验失败。校验在有效期判断之前进行，
+所以伪造的记录会以 `signature does not verify` 报告，而不是被当成过期。
+不满足策略时 `--dht-lookup` 与 `--discover` 会失败，错误分别是
+`the announcement carries no signature`、`the announcement's signature does not verify`
+与 `the announcement is signed by a key that is not trusted`。
+服务端的签名公钥可以从 `--dht-key`、`GET /api/dht` 的 `signing_key` 字段或启动日志里读到。
 
 ## `[vpn]`（三层隧道）
 

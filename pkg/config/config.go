@@ -24,6 +24,7 @@ import (
 	"github.com/aethertunnel/aethertunnel/pkg/dht"
 	"github.com/aethertunnel/aethertunnel/pkg/discovery"
 	"github.com/aethertunnel/aethertunnel/pkg/obfs"
+	"github.com/aethertunnel/aethertunnel/pkg/socks"
 	"github.com/aethertunnel/aethertunnel/pkg/vpn"
 )
 
@@ -49,6 +50,14 @@ type ServerConfig struct {
 	// disables the limiter.
 	RateLimitPerSecond float64 `toml:"rate_limit_per_second"`
 	RateLimitBurst     int     `toml:"rate_limit_burst"`
+
+	// Automatic ban of sources that keep failing authentication. Zero disables
+	// it. BanIgnoreCIDRs names sources that are never banned, which is what a
+	// deployment behind a load balancer or on a loopback address needs.
+	BanAfterFailures int      `toml:"ban_after_failures"`
+	BanSeconds       int      `toml:"ban_seconds"`
+	BanMaxSeconds    int      `toml:"ban_max_seconds"`
+	BanIgnoreCIDRs   []string `toml:"ban_ignore_cidrs"`
 
 	// LoadBalance selects how visitors are distributed when several clients
 	// publish the same proxy name: "round-robin", "random", "latency" or
@@ -111,6 +120,18 @@ type ProxyConfig struct {
 	// session and spreads the datagrams across them. It applies to udp and sudp
 	// proxies; a byte stream stays on one path.
 	Multipath int `toml:"multipath"`
+
+	// AllowCIDRs and DenyCIDRs restrict which visitor source addresses may use
+	// this proxy's public endpoint, or may pair with it when it is private. Deny
+	// wins; an empty allow list accepts every source that reached the endpoint.
+	AllowCIDRs []string `toml:"allow_cidrs"`
+	DenyCIDRs  []string `toml:"deny_cidrs"`
+
+	// AllowTargets lists the address ranges a socks5 proxy may be asked to dial.
+	// The proxy is only published when a client declares a non-empty list: the
+	// list is what keeps a socks5 tunnel from becoming an exit for everything the
+	// client can reach.
+	AllowTargets []string `toml:"allow_targets"`
 }
 
 // Proxy auth methods accepted in [[proxies]].auth_method.
@@ -128,12 +149,13 @@ const (
 	ProxyTypeSTCP  = "stcp"
 	ProxyTypeSUDP  = "sudp"
 	ProxyTypeXTCP  = "xtcp"
+	ProxyTypeSOCKS = "socks5"
 )
 
 // ProxyTypes lists every type this build implements.
 var ProxyTypes = []string{
 	ProxyTypeTCP, ProxyTypeUDP, ProxyTypeHTTP, ProxyTypeHTTPS,
-	ProxyTypeSTCP, ProxyTypeSUDP, ProxyTypeXTCP,
+	ProxyTypeSTCP, ProxyTypeSUDP, ProxyTypeXTCP, ProxyTypeSOCKS,
 }
 
 // IsProxyType reports whether name is an implemented proxy type.
@@ -159,7 +181,14 @@ func IsDatagramProxyType(name string) bool {
 }
 
 // LocalAddr returns the address the client forwards to.
+//
+// A socks5 tunnel has none: the visitor names the address, so an empty string is
+// what the client reports for it, and what the dashboard shows in place of a local
+// address that would mean nothing.
 func (p ProxyConfig) LocalAddr() string {
+	if p.Type == ProxyTypeSOCKS {
+		return ""
+	}
 	host := p.LocalIP
 	if host == "" {
 		host = "127.0.0.1"
@@ -334,6 +363,19 @@ type DHTConfig struct {
 	// Discover is the proxy name a client resolves when client.server_addr is
 	// empty. It applies to the client role.
 	Discover string `toml:"discover"`
+	// SigningKeyFile holds the Ed25519 seed a server signs its announcements
+	// with, so a reader can tell which server published an address. It is
+	// generated on first use, like the ledger key. Empty publishes unsigned
+	// records, which any node on the DHT can forge. It applies to the server role.
+	SigningKeyFile string `toml:"signing_key_file"`
+	// RequireSigned refuses an announcement that carries no signature. A reader
+	// sets it to reject records written by an unknown node. It applies to the
+	// client and query roles.
+	RequireSigned bool `toml:"require_signed"`
+	// TrustedKeys lists the announcement signing keys a reader accepts, in hex.
+	// A non-empty list also refuses unsigned records. It applies to the client and
+	// query roles.
+	TrustedKeys []string `toml:"trusted_keys"`
 }
 
 // ObfuscationConfig is the [obfuscation] section. Padding hides exact frame
@@ -474,6 +516,14 @@ func (c *Config) applyDefaults() {
 	if c.Server.RateLimitBurst == 0 {
 		c.Server.RateLimitBurst = 20
 	}
+	if c.Server.BanAfterFailures > 0 {
+		if c.Server.BanSeconds == 0 {
+			c.Server.BanSeconds = 300
+		}
+		if c.Server.BanMaxSeconds < c.Server.BanSeconds {
+			c.Server.BanMaxSeconds = 3600
+		}
+	}
 	if c.Server.LoadBalance == "" {
 		c.Server.LoadBalance = LoadBalanceRoundRobin
 	}
@@ -571,8 +621,31 @@ func (c *Config) DHTNodeID() (dht.ID, error) {
 	return id, nil
 }
 
+// DHTTrustedKeys parses [dht].trusted_keys.
+func (c *Config) DHTTrustedKeys() ([]ed25519.PublicKey, error) {
+	keys := make([]ed25519.PublicKey, 0, len(c.DHT.TrustedKeys))
+	for _, text := range c.DHT.TrustedKeys {
+		key, err := crypto.ParseIdentityKey(text)
+		if err != nil {
+			return nil, fmt.Errorf("dht.trusted_keys entry %q: %w", text, err)
+		}
+		keys = append(keys, key)
+	}
+	return keys, nil
+}
+
 // DHTSettings maps the section onto the discovery package's configuration.
+//
+// The signing key is not part of the mapping: it is a file the role that publishes
+// has to load, and the loader lives next to the code that publishes. An entry in
+// trusted_keys that does not parse is dropped here, because Load rejects it before
+// a caller can reach this point.
 func (c *Config) DHTSettings(logger *log.Logger) discovery.Config {
+	trusted, err := c.DHTTrustedKeys()
+	if err != nil {
+		logger.Printf("warning: %v", err)
+		trusted = nil
+	}
 	return discovery.Config{
 		ListenAddr:        c.DHT.ListenAddr,
 		Bootstrap:         c.DHT.Bootstrap,
@@ -582,6 +655,8 @@ func (c *Config) DHTSettings(logger *log.Logger) discovery.Config {
 		AnnounceTTL:       time.Duration(c.DHT.AnnounceTTLSeconds) * time.Second,
 		RepublishInterval: time.Duration(c.DHT.RepublishSeconds) * time.Second,
 		LookupTimeout:     time.Duration(c.DHT.LookupTimeoutSeconds) * time.Second,
+		RequireSigned:     c.DHT.RequireSigned,
+		TrustedKeys:       trusted,
 		Logger:            logger,
 	}
 }
@@ -876,6 +951,26 @@ func (c *Config) Validate(role string) error {
 			problems = append(problems, fmt.Sprintf("server.deny_cidrs entry %q is not a CIDR: %v", cidr, err))
 		}
 	}
+	if c.Server.BanAfterFailures < 0 {
+		problems = append(problems, fmt.Sprintf("server.ban_after_failures must not be negative, got %d", c.Server.BanAfterFailures))
+	}
+	if c.Server.BanSeconds < 0 {
+		problems = append(problems, fmt.Sprintf("server.ban_seconds must not be negative, got %d", c.Server.BanSeconds))
+	}
+	if c.Server.BanMaxSeconds < 0 {
+		problems = append(problems, fmt.Sprintf("server.ban_max_seconds must not be negative, got %d", c.Server.BanMaxSeconds))
+	}
+	if c.Server.BanAfterFailures > 0 && c.Server.BanSeconds > 0 &&
+		c.Server.BanMaxSeconds > 0 && c.Server.BanMaxSeconds < c.Server.BanSeconds {
+		problems = append(problems, fmt.Sprintf(
+			"server.ban_max_seconds (%d) is smaller than server.ban_seconds (%d)",
+			c.Server.BanMaxSeconds, c.Server.BanSeconds))
+	}
+	for _, cidr := range c.Server.BanIgnoreCIDRs {
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			problems = append(problems, fmt.Sprintf("server.ban_ignore_cidrs entry %q is not a CIDR: %v", cidr, err))
+		}
+	}
 	if c.VPN.Enabled {
 		if c.VPN.MTU != 0 && (c.VPN.MTU < vpn.MinMTU || c.VPN.MTU > vpn.MaxMTU) {
 			problems = append(problems, fmt.Sprintf("vpn.mtu must be %d-%d, got %d", vpn.MinMTU, vpn.MaxMTU, c.VPN.MTU))
@@ -939,9 +1034,26 @@ func (c *Config) Validate(role string) error {
 				"dht.ttl_seconds (%d) must not be shorter than dht.announce_ttl_seconds (%d), otherwise records expire in the DHT before readers stop honouring them",
 				c.DHT.TTLSeconds, c.DHT.AnnounceTTLSeconds))
 		}
+		for _, key := range c.DHT.TrustedKeys {
+			if _, err := crypto.ParseIdentityKey(key); err != nil {
+				problems = append(problems, fmt.Sprintf("dht.trusted_keys entry %q: %v", key, err))
+			}
+		}
 
 		switch role {
 		case RoleServer:
+			if c.DHT.SigningKeyFile == "" {
+				c.Warnings = append(c.Warnings,
+					"dht.signing_key_file is empty, so announcements are unsigned: "+
+						"any node on the DHT can replace this server's records with an address of its own, "+
+						"and a client that sets dht.require_signed or dht.trusted_keys will refuse them")
+			}
+			if c.DHT.RequireSigned {
+				c.Warnings = append(c.Warnings, "dht.require_signed has no effect in a server configuration: it governs what this node accepts when it resolves a name")
+			}
+			if len(c.DHT.TrustedKeys) > 0 {
+				c.Warnings = append(c.Warnings, "dht.trusted_keys has no effect in a server configuration: it lists the publishers this node accepts when it resolves a name")
+			}
 			if strings.Contains(c.DHT.AdvertiseHost, ":") {
 				problems = append(problems, fmt.Sprintf(
 					"dht.advertise_host %q contains a port: give the host only, because the port is the one that serves each proxy",
@@ -967,6 +1079,14 @@ func (c *Config) Validate(role string) error {
 				c.Warnings = append(c.Warnings, "dht.advertise_host has no effect in a client configuration: it describes the addresses a server publishes")
 			}
 		}
+
+		// The reader's policy applies to a client and to a query that only
+		// resolves a name, so it is checked for both.
+		if role != RoleServer && !c.DHT.RequireSigned && len(c.DHT.TrustedKeys) == 0 {
+			c.Warnings = append(c.Warnings,
+				"dht.require_signed is false and dht.trusted_keys is empty, so any record found under the key is "+
+					"accepted: set dht.trusted_keys to the announcement keys you trust")
+		}
 	}
 
 	seen := map[string]bool{}
@@ -986,14 +1106,42 @@ func (c *Config) Validate(role string) error {
 				p.Name, p.Type, strings.Join(ProxyTypes, ", ")))
 			continue
 		}
-		if p.LocalPort < 1 || p.LocalPort > 65535 {
-			problems = append(problems, fmt.Sprintf("proxy %q: local_port must be 1-65535, got %d", p.Name, p.LocalPort))
+		// A socks5 tunnel has no local service to name: the visitor chooses the
+		// target, so local_ip and local_port are not part of its configuration.
+		if p.Type != ProxyTypeSOCKS {
+			if p.LocalPort < 1 || p.LocalPort > 65535 {
+				problems = append(problems, fmt.Sprintf("proxy %q: local_port must be 1-65535, got %d", p.Name, p.LocalPort))
+			}
+		} else if p.LocalPort != 0 || p.LocalIP != "" {
+			c.Warnings = append(c.Warnings, fmt.Sprintf(
+				"proxy %q: local_ip and local_port have no effect on a socks5 tunnel, whose target comes from the request",
+				p.Name))
 		}
 		if p.RemotePort < 0 || p.RemotePort > 65535 {
 			problems = append(problems, fmt.Sprintf("proxy %q: remote_port must be 0-65535, got %d", p.Name, p.RemotePort))
 		}
+		for _, cidr := range append(append([]string{}, p.AllowCIDRs...), p.DenyCIDRs...) {
+			if _, _, err := net.ParseCIDR(cidr); err != nil {
+				problems = append(problems, fmt.Sprintf("proxy %q: %q is not a CIDR: %v", p.Name, cidr, err))
+			}
+		}
 
 		switch p.Type {
+		case ProxyTypeSOCKS:
+			if p.RemotePort == 0 {
+				problems = append(problems, fmt.Sprintf(
+					"proxy %q: a socks5 tunnel needs a remote_port, because visitors reach it on a public port", p.Name))
+			}
+			if len(p.AllowTargets) == 0 {
+				problems = append(problems, fmt.Sprintf(
+					"proxy %q: a socks5 tunnel needs allow_targets: without a list the client would be an exit for everything it can reach",
+					p.Name))
+			}
+			for _, cidr := range p.AllowTargets {
+				if _, err := socks.NewTargetPolicy([]string{cidr}); err != nil {
+					problems = append(problems, fmt.Sprintf("proxy %q: allow_targets entry %q: %v", p.Name, cidr, err))
+				}
+			}
 		case ProxyTypeHTTP, ProxyTypeHTTPS:
 			if p.RemotePort != 0 {
 				problems = append(problems, fmt.Sprintf(

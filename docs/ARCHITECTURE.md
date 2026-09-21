@@ -66,6 +66,7 @@ them on disconnect; every number the dashboard shows is read from those managers
 | `stcp` | 无 | 访客连服务器控制端口，按名字配对，字节流 |
 | `sudp` | 无 | 同上，数据报 |
 | `xtcp` | 无 | 打洞直连或中继回退，两者都是字节流 |
+| `socks5` | 独立端口 `remote_port` | 访客先做 SOCKS5 协商并指定目标，服务器把目标放进 `DataRequest.target`，客户端拨号后回拨；`allow_targets` 之外的目标以回复码 `0x02` 拒绝 |
 
 ```
 访问者连接 ──► ProxyGroup.acceptLoop ──► pick() 选出成员 ──► 分配 streamID
@@ -126,9 +127,26 @@ them on disconnect; every number the dashboard shows is read from those managers
 值与提供者记录分属两个命名空间，记录按 TTL 过期，本节点拥有的记录会被定期重发。
 
 `pkg/discovery` 在其上定义隧道自己的记录格式：键为 `<namespace>/proxy/<name>`，
-值是 JSON（名字、类型、地址、域名、更新时间、过期时间）。服务器在某个代理第一次出现时
-写入记录，最后一个成员离开时删除本地记录（`Forget`）；记录自带有效期，读取端把过期
-记录当作不存在，因此服务端下掉代理后，对端已复制的副本会在一个通告周期内失效。
+值是 JSON（名字、类型、地址、域名、更新时间、过期时间，以及可选签名公钥与签名）。
+服务器在某个代理第一次出现时写入记录，最后一个成员离开时删除本地记录（`Forget`）；
+记录自带有效期，读取端把过期记录当作不存在，因此服务端下掉代理后，对端已复制的副本会在
+一个通告周期内失效。
+
+DHT 的值没有写入权限控制：任何节点都能写同一个键。因此服务器可以为记录签名
+（`[dht] signing_key_file`，Ed25519），签名覆盖读取端会使用的每个字段；读取端按
+`require_signed` 与 `trusted_keys` 决定接受什么，并在判断有效期之前先校验签名，
+使被改写的记录报"签名不通过"而不是"已过期"。
+
+## 7.1 准入与策略
+
+每条被接受的连接先过 `Server.admit`：封禁名单、`allow_cidrs` / `deny_cidrs`、按来源的令牌桶，
+全部在读取任何帧之前执行。认证失败由 `recordAuthFailure` 记账，同一来源在十分钟窗口内失败
+达到 `ban_after_failures` 次即写入封禁名单（时长按倍数增长到 `ban_max_seconds`），
+成功认证清零；封禁按来源地址生效，不区分客户端。
+
+代理自身的 `allow_cidrs` / `deny_cidrs` 是第二层：在服务器整体接受连接之后、分配流之前按
+代理判断访客来源，拒绝会写 `proxy_visitor_denied` 审计记录。`socks5` 的 `allow_targets`
+是唯一按**目标地址**判断的名单，在客户端拨号前生效。
 
 ## 8. 三层隧道
 

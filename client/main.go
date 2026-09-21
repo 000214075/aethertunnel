@@ -25,6 +25,7 @@ import (
 	flynet "github.com/aethertunnel/aethertunnel/pkg/net"
 	"github.com/aethertunnel/aethertunnel/pkg/obfs"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
+	"github.com/aethertunnel/aethertunnel/pkg/socks"
 	"github.com/aethertunnel/aethertunnel/pkg/vpn"
 )
 
@@ -103,7 +104,12 @@ func (c *client) refreshTarget() {
 	c.mu.Lock()
 	c.target = record.Server
 	c.mu.Unlock()
-	c.logger.Printf("dht: %q resolves to %s (type %s)", record.Name, record.Server, record.Type)
+	if record.Verified {
+		c.logger.Printf("dht: %q resolves to %s (type %s), signed by %s",
+			record.Name, record.Server, record.Type, record.PublicKey)
+		return
+	}
+	c.logger.Printf("dht: %q resolves to %s (type %s), unsigned", record.Name, record.Server, record.Type)
 }
 
 func main() {
@@ -176,7 +182,13 @@ func main() {
 		if err != nil {
 			logger.Fatalf("dht lookup of %q failed: %v", *discover, err)
 		}
-		fmt.Printf("%s -> %s (type %s, announced %s)\n",
+		if record.Verified {
+			fmt.Printf("%s -> %s (type %s, announced %s, signed by %s)\n",
+				record.Name, record.Server, record.Type,
+				record.Updated.UTC().Format(time.RFC3339), record.PublicKey)
+			return
+		}
+		fmt.Printf("%s -> %s (type %s, announced %s, unsigned)\n",
 			record.Name, record.Server, record.Type, record.Updated.UTC().Format(time.RFC3339))
 		return
 	}
@@ -576,9 +588,20 @@ func (c *client) registerProxies(framer *protocol.Framer) error {
 			AuthMethod: proxy.AuthMethod,
 			Group:      proxy.Group,
 			Multipath:  proxy.Multipath,
+			// The visitor filters and, for a socks5 tunnel, the ranges it may
+			// dial travel with the registration, because both are properties of
+			// this client rather than of the server's configuration.
+			AllowCIDRs:   proxy.AllowCIDRs,
+			DenyCIDRs:    proxy.DenyCIDRs,
+			AllowTargets: proxy.AllowTargets,
 		}
 		if err := framer.WriteJSON(protocol.TypeRegisterProxy, spec); err != nil {
 			return fmt.Errorf("register proxy %q: %w", proxy.Name, err)
+		}
+		if proxy.Type == config.ProxyTypeSOCKS {
+			c.logger.Printf("requested tunnel %q (%s) -> the address the visitor asks for (public port %d)",
+				proxy.Name, proxy.Type, proxy.RemotePort)
+			continue
 		}
 		c.logger.Printf("requested tunnel %q (%s) -> %s (public port %d)",
 			proxy.Name, proxy.Type, spec.LocalAddr, proxy.RemotePort)
@@ -645,11 +668,27 @@ func (c *client) serveStream(session string, request protocol.DataRequest) {
 		return
 	}
 
+	// The service is dialled before the data connection is opened, so a failure is
+	// reported to the server — and from there to the visitor — instead of leaving
+	// the visitor to wait for the server's dial timeout. A socks5 tunnel dials the
+	// address the visitor asked for, checked against the ranges its configuration
+	// allows; a datagram tunnel dials its own UDP socket later.
+	var local net.Conn
+	if !config.IsDatagramProxyType(proxy.Type) {
+		local, err = c.dialForProxy(proxy, request.Target)
+		if err != nil {
+			c.reportStreamFailure(session, request.Proxy, request.StreamID, err)
+			return
+		}
+		defer local.Close()
+	}
+
 	conn, err := c.dialServer()
 	if err != nil {
 		c.logger.Printf("stream for %q: cannot reach the server: %v", request.Proxy, err)
 		return
 	}
+	defer conn.Close()
 
 	framer := protocol.NewFramerWithOptions(conn, c.cipher, c.framerOptions())
 	fail := func(reason string) {
@@ -697,18 +736,72 @@ func (c *client) serveStream(session string, request protocol.DataRequest) {
 		return
 	}
 
-	local, err := net.DialTimeout("tcp", proxy.LocalAddr(), dialTimeout)
-	if err != nil {
-		c.logger.Printf("stream for %q: cannot reach the local service %s: %v", request.Proxy, proxy.LocalAddr(), err)
-		_ = conn.Close()
-		return
-	}
-
 	serverSide := &cryptoStreamConn{Stream: crypto.NewStream(conn, streamCipher), conn: conn}
 	idle := time.Duration(c.cfg.Client.IdleTimeoutSecs) * time.Second
 	toServer, fromServer := flynet.Pipe(local, serverSide, idle)
 	c.logger.Printf("stream for %q finished (sent %d bytes to the server, received %d)",
 		request.Proxy, toServer, fromServer)
+}
+
+// dialForProxy opens the connection a stream should carry. A socks5 tunnel is
+// dialled at the address the visitor asked for, checked against the ranges its
+// configuration allows; every other type is dialled at its configured local
+// service.
+func (c *client) dialForProxy(proxy config.ProxyConfig, target string) (net.Conn, error) {
+	dialTimeout := time.Duration(c.cfg.Client.DialTimeoutSecs) * time.Second
+
+	if proxy.Type != config.ProxyTypeSOCKS {
+		conn, err := net.DialTimeout("tcp", proxy.LocalAddr(), dialTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("cannot reach the local service %s: %w", proxy.LocalAddr(), err)
+		}
+		return conn, nil
+	}
+
+	if target == "" {
+		return nil, errors.New("a socks5 stream arrived without a target")
+	}
+	policy, err := socks.NewTargetPolicy(proxy.AllowTargets)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := policy.Dial(target, dialTimeout)
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
+}
+
+// reportStreamFailure tells the server that no data connection is coming.
+//
+// It opens a data connection only to carry the refusal: the server's stream is
+// waiting on that answer, so the visitor learns the reason now instead of waiting
+// for the dial timeout. Nothing is sent on the connection afterwards.
+func (c *client) reportStreamFailure(session, proxy, streamID string, cause error) {
+	c.logger.Printf("stream for %q: %v", proxy, cause)
+
+	dialTimeout := time.Duration(c.cfg.Client.DialTimeoutSecs) * time.Second
+	conn, err := c.dialServer()
+	if err != nil {
+		c.logger.Printf("stream for %q: cannot report the failure to the server: %v", proxy, err)
+		return
+	}
+	defer conn.Close()
+
+	_ = conn.SetDeadline(time.Now().Add(dialTimeout))
+	framer := protocol.NewFramerWithOptions(conn, c.cipher, c.framerOptions())
+	if err := framer.WriteJSON(protocol.TypeDataOpen, protocol.DataOpen{
+		Session:  session,
+		Proxy:    proxy,
+		StreamID: streamID,
+		Error:    cause.Error(),
+	}); err != nil {
+		c.logger.Printf("stream for %q: cannot report the failure: %v", proxy, err)
+		return
+	}
+
+	var ack protocol.DataOpenAck
+	_ = framer.ReadJSON(protocol.TypeDataOpenAck, &ack)
 }
 
 // serveDatagrams relays a datagram stream: each TypeUDPPacket frame carries one

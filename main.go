@@ -39,6 +39,7 @@ func main() {
 		verifyPath  = flag.String("verify-ledger", "", "verify a bandwidth ledger file against a public key and exit")
 		verifyKey   = flag.String("ledger-key", "", "verification key for -verify-ledger: a hex Ed25519 public key or a signing key file")
 		dhtLookup   = flag.String("dht-lookup", "", "resolve a proxy name through the [dht] network and exit")
+		dhtKey      = flag.Bool("dht-key", false, "print the [dht] announcement signing key and exit")
 	)
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [flags] [config-file]\n\n", os.Args[0])
@@ -49,6 +50,7 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "  %s -config server.toml\n", os.Args[0])
 		fmt.Fprintf(flag.CommandLine.Output(), "  %s -verify-ledger aethertunnel-ledger.jsonl -ledger-key 3b1f...\n", os.Args[0])
 		fmt.Fprintf(flag.CommandLine.Output(), "  %s -dht-lookup ssh -config server.toml\n", os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "  %s -dht-key -config server.toml\n", os.Args[0])
 	}
 	flag.Parse()
 
@@ -97,6 +99,15 @@ func main() {
 		return
 	}
 
+	if *dhtKey {
+		key, err := server.AnnouncementKey(cfg)
+		if err != nil {
+			logger.Fatalf("dht announcement key: %v", err)
+		}
+		fmt.Printf("%s\n", key)
+		return
+	}
+
 	if *dhtLookup != "" {
 		record, err := server.LookupProxy(cfg, logger, *dhtLookup)
 		if err != nil {
@@ -107,7 +118,12 @@ func main() {
 		if len(record.Domains) > 0 {
 			fmt.Printf(", domains %s", strings.Join(record.Domains, ","))
 		}
-		fmt.Printf(", announced %s)\n", record.Updated.UTC().Format(time.RFC3339))
+		fmt.Printf(", announced %s", record.Updated.UTC().Format(time.RFC3339))
+		if record.Verified {
+			fmt.Printf(", signed by %s)\n", record.PublicKey)
+		} else {
+			fmt.Printf(", unsigned)\n")
+		}
 		return
 	}
 

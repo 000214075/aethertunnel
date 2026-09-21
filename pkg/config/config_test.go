@@ -1,6 +1,8 @@
 package config
 
 import (
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +10,9 @@ import (
 
 	"github.com/aethertunnel/aethertunnel/pkg/dht"
 )
+
+// discardConfigLogger silences the diagnostics DHTSettings emits.
+func discardConfigLogger() *log.Logger { return log.New(io.Discard, "", 0) }
 
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
@@ -506,6 +511,187 @@ func TestDHTNodeIDRoundTrip(t *testing.T) {
 	}
 	if id[19] != 0xff {
 		t.Errorf("the parsed node id ends in %#x, want 0xff", id[19])
+	}
+}
+
+// --- announcement signing -----------------------------------------------------
+
+func TestLocalAddrIsEmptyForASocks5Proxy(t *testing.T) {
+	// A socks5 tunnel forwards to the address the visitor names, so there is no
+	// local service to report; the dashboard shows a dash for it.
+	socks := ProxyConfig{Name: "exit", Type: ProxyTypeSOCKS, LocalPort: 0}
+	if got := socks.LocalAddr(); got != "" {
+		t.Errorf("LocalAddr() for a socks5 proxy is %q, want an empty string", got)
+	}
+
+	tcp := ProxyConfig{Name: "ssh", Type: ProxyTypeTCP, LocalPort: 22}
+	if got := tcp.LocalAddr(); got != "127.0.0.1:22" {
+		t.Errorf("LocalAddr() for a tcp proxy is %q, want 127.0.0.1:22", got)
+	}
+
+	// An explicit local_ip still counts, including on a socks5 proxy whose address
+	// is not used: only the type decides.
+	explicit := ProxyConfig{Name: "web", Type: ProxyTypeTCP, LocalIP: "10.0.0.5", LocalPort: 8080}
+	if got := explicit.LocalAddr(); got != "10.0.0.5:8080" {
+		t.Errorf("LocalAddr() is %q, want 10.0.0.5:8080", got)
+	}
+}
+
+// A key pair in the form identity.allowed_keys and dht.trusted_keys accept.
+const dhtTestKey = "8d5c1b6a1f3f2a4b0c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3"
+
+func TestDHTSignerAndReaderKeysLoad(t *testing.T) {
+	serverPath := writeConfig(t, `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[dht]
+enabled = true
+advertise_host = "tunnel.example"
+signing_key_file = "dht.key"
+`)
+	cfg, err := LoadServer(serverPath)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if cfg.DHT.SigningKeyFile != "dht.key" {
+		t.Errorf("DHT.SigningKeyFile = %q, want dht.key", cfg.DHT.SigningKeyFile)
+	}
+	if warnings := strings.Join(cfg.Warnings, "\n"); strings.Contains(warnings, "announcements are unsigned") {
+		t.Errorf("a server with a signing key was warned about unsigned announcements: %v", cfg.Warnings)
+	}
+
+	clientPath := writeConfig(t, `
+[client]
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[dht]
+enabled = true
+discover = "ssh"
+require_signed = true
+trusted_keys = ["`+dhtTestKey+`"]
+`)
+	clientCfg, err := LoadClient(clientPath)
+	if err != nil {
+		t.Fatalf("LoadClient: %v", err)
+	}
+	if !clientCfg.DHT.RequireSigned {
+		t.Error("DHT.RequireSigned was not loaded")
+	}
+	keys, err := clientCfg.DHTTrustedKeys()
+	if err != nil {
+		t.Fatalf("DHTTrustedKeys: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("DHTTrustedKeys returned %d keys, want 1", len(keys))
+	}
+	if warnings := strings.Join(clientCfg.Warnings, "\n"); strings.Contains(warnings, "dht.require_signed is false") {
+		t.Errorf("a client with a reader policy was warned that it accepts anything: %v", clientCfg.Warnings)
+	}
+
+	settings := clientCfg.DHTSettings(discardConfigLogger())
+	if !settings.RequireSigned {
+		t.Error("DHTSettings dropped require_signed")
+	}
+	if len(settings.TrustedKeys) != 1 || !settings.TrustedKeys[0].Equal(keys[0]) {
+		t.Errorf("DHTSettings carries %d trusted keys, want the one from the file", len(settings.TrustedKeys))
+	}
+}
+
+func TestDHTTrustedKeysRejectAValueThatIsNotAKey(t *testing.T) {
+	path := writeConfig(t, `
+[client]
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[dht]
+enabled = true
+discover = "ssh"
+trusted_keys = ["not-hex"]
+`)
+	_, err := LoadClient(path)
+	if err == nil || !strings.Contains(err.Error(), "dht.trusted_keys entry") {
+		t.Fatalf("expected a trusted_keys error, got %v", err)
+	}
+}
+
+func TestDHTTrustedKeysRejectAKeyOfTheWrongLength(t *testing.T) {
+	path := writeConfig(t, `
+[client]
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[dht]
+enabled = true
+discover = "ssh"
+trusted_keys = ["aabbcc"]
+`)
+	_, err := LoadClient(path)
+	if err == nil {
+		t.Fatal("a key that is not 32 bytes was accepted")
+	}
+}
+
+func TestDHTUnsignedDeploymentWarnsOnTheServer(t *testing.T) {
+	path := writeConfig(t, `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[dht]
+enabled = true
+`)
+	cfg, err := LoadServer(path)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if !strings.Contains(strings.Join(cfg.Warnings, "\n"), "dht.signing_key_file is empty") {
+		t.Fatalf("expected a warning that announcements are unsigned, got %v", cfg.Warnings)
+	}
+}
+
+func TestDHTReaderSettingsOnTheServerRoleWarn(t *testing.T) {
+	path := writeConfig(t, `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[dht]
+enabled = true
+signing_key_file = "dht.key"
+require_signed = true
+trusted_keys = ["`+dhtTestKey+`"]
+`)
+	cfg, err := LoadServer(path)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	warnings := strings.Join(cfg.Warnings, "\n")
+	if !strings.Contains(warnings, "dht.require_signed has no effect in a server configuration") {
+		t.Errorf("expected a warning about require_signed on the server role, got %v", cfg.Warnings)
+	}
+	if !strings.Contains(warnings, "dht.trusted_keys has no effect in a server configuration") {
+		t.Errorf("expected a warning about trusted_keys on the server role, got %v", cfg.Warnings)
+	}
+}
+
+func TestDHTReaderWithoutAPolicyWarns(t *testing.T) {
+	path := writeConfig(t, `
+[client]
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[dht]
+enabled = true
+discover = "ssh"
+`)
+	cfg, err := LoadClient(path)
+	if err != nil {
+		t.Fatalf("LoadClient: %v", err)
+	}
+	if !strings.Contains(strings.Join(cfg.Warnings, "\n"), "dht.trusted_keys is empty") {
+		t.Fatalf("expected a warning that any record is accepted, got %v", cfg.Warnings)
 	}
 }
 

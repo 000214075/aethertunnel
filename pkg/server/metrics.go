@@ -24,6 +24,10 @@ type Metrics struct {
 	dataConnections  atomic.Int64
 	aclDenied        atomic.Int64
 	rateLimited      atomic.Int64
+	bans             atomic.Int64
+	banRefused       atomic.Int64
+	visitorDenied    atomic.Int64
+	socksRequests    atomic.Int64
 	streamsActive    atomic.Int64
 	streamsTotal     atomic.Int64
 	bytesFromClients atomic.Int64
@@ -113,10 +117,14 @@ func (m *Metrics) Render() string {
 
 	gauge("aethertunnel_uptime_seconds", "Seconds since the process started.", int64(time.Since(m.startedAt).Seconds()))
 	counter("aethertunnel_control_connections_total", "Control connections accepted.", m.controlAccepted.Load())
-	counter("aethertunnel_control_rejected_total", "Control connections refused (capacity, ACL or rate limit).", m.controlRejected.Load())
+	counter("aethertunnel_control_rejected_total", "Control connections refused (capacity, ACL, rate limit or ban).", m.controlRejected.Load())
 	counter("aethertunnel_auth_failures_total", "Authentication attempts with an invalid token.", m.authFailures.Load())
 	counter("aethertunnel_connections_denied_by_acl_total", "Connections refused by allow/deny lists.", m.aclDenied.Load())
 	counter("aethertunnel_connections_rate_limited_total", "Connections refused by the per-IP rate limit.", m.rateLimited.Load())
+	counter("aethertunnel_sources_banned_total", "Sources banned after repeated authentication failures.", m.bans.Load())
+	counter("aethertunnel_banned_connections_refused_total", "Connections refused because the source is banned.", m.banRefused.Load())
+	counter("aethertunnel_visitors_denied_by_proxy_total", "Visitors refused by a proxy's own allow/deny lists.", m.visitorDenied.Load())
+	counter("aethertunnel_socks5_requests_total", "SOCKS5 CONNECT requests served.", m.socksRequests.Load())
 	counter("aethertunnel_data_connections_total", "Data connections opened by clients.", m.dataConnections.Load())
 	gauge("aethertunnel_streams_active", "Tunnelled streams currently open.", m.streamsActive.Load())
 	counter("aethertunnel_streams_total", "Tunnelled streams completed.", m.streamsTotal.Load())

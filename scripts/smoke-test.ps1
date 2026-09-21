@@ -14,6 +14,15 @@
       stcp       a private tunnel reached by a visitor, authenticated with the secret
       sudp       a private tunnel carrying datagrams
       xtcp       a visitor that first tries a direct path and otherwise relays
+      socks5     an exit reached with curl --socks5-hostname, and a target outside
+                 its allow_targets list refused with a SOCKS5 error code
+      acl        a proxy whose own allow_cidrs refuses one loopback address and
+                 serves the other, with the refusal in the audit log
+      ban        a second server that bans a source after repeated authentication
+                 failures, refuses an accepted client from that source, and lets it
+                 back in once the window passes
+      dht        announcements signed by the server, verified by a reader that names
+                 the key, and refused by a reader that names another one
       tls        the control port wrapped in TLS
       identity   an Ed25519 client identity the server requires
       post_quantum  X25519 with ML-KEM-768 and a per-stream key
@@ -118,20 +127,35 @@ function Start-Background {
     return $process
 }
 
+# The binaries log to standard error, and standard output stays empty except for the
+# one-shot subcommands. Both files are read so a check sees everything, and the
+# result is always a string: an empty file would otherwise return $null, and
+# "if ($null -notmatch 'pattern')" is false, which would pass every assertion below
+# without checking anything.
 function Read-Log {
     param([string]$LogPath)
 
-    if (-not (Test-Path $LogPath)) { return '' }
-    return (Get-Content -Raw -Path $LogPath -ErrorAction SilentlyContinue)
+    $text = ''
+    foreach ($path in @($LogPath, ($LogPath + '.err'))) {
+        if (-not (Test-Path $path)) { continue }
+        $content = Get-Content -Raw -Path $path -ErrorAction SilentlyContinue
+        if ($content) { $text += $content }
+    }
+    return $text
 }
 
 function Invoke-TcpEcho {
-    param([int]$Port, [string]$Payload, [int]$ExpectedLength = 0, [string]$Host_ = '127.0.0.1')
+    param([int]$Port, [string]$Payload, [int]$ExpectedLength = 0, [string]$Host_ = '127.0.0.1', [string]$LocalAddress = '')
 
     if ($ExpectedLength -eq 0) { $ExpectedLength = $Payload.Length }
 
     $client = New-Object System.Net.Sockets.TcpClient
     try {
+        # A proxy with an allow list is tested from a second loopback address, so
+        # the source has to be chosen before the connection is opened.
+        if ($LocalAddress) {
+            $client.Client.Bind((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($LocalAddress), 0)))
+        }
         $client.Connect($Host_, $Port)
         $client.ReceiveTimeout = 8000
         $stream = $client.GetStream()
@@ -191,6 +215,20 @@ function Invoke-Curl {
 
     $output = & curl.exe @Arguments 2>&1
     return ($output | Out-String).Trim()
+}
+
+# Invoke-CurlExit reports what a request did as well as what it said, which is what
+# a check that expects curl to fail needs. Like Invoke-Binary it goes through cmd,
+# because a native command's standard error becomes an error record and ends the
+# script under ErrorActionPreference Stop.
+function Invoke-CurlExit {
+    param([string[]]$Arguments)
+
+    $line = '"curl"'
+    foreach ($argument in $Arguments) { $line += ' "' + $argument + '"' }
+    $raw = cmd /c ($line + ' 2>&1')
+    $code = $LASTEXITCODE
+    return [pscustomobject]@{ Exit = $code; Output = ($raw | Out-String).Trim() }
 }
 
 # The binaries log to standard error. PowerShell 5.1 turns a native command's
@@ -298,6 +336,11 @@ $udpProxyPort = Get-FreePort
 $stcpVisitorPort = Get-FreePort
 $sudpVisitorPort = Get-FreePort
 $xtcpVisitorPort = Get-FreePort
+$socksPort = Get-FreePort
+$aclProxyPort = Get-FreePort
+$banControlPort = Get-FreePort
+$banDashboardPort = Get-FreePort
+$banProxyPort = Get-FreePort
 
 $token = 'smoke-test-token-0123456789abcdef'
 $passphrase = 'smoke-test-passphrase'
@@ -412,6 +455,24 @@ type = "xtcp"
 local_ip = "127.0.0.1"
 local_port = $tcpEchoPort
 secret_key = "direct-secret"
+
+# A socks5 exit: the visitor names the address, and the client dials it rather
+# than its own local service. allow_targets is what bounds it.
+[[proxies]]
+name = "socks-exit"
+type = "socks5"
+remote_port = $socksPort
+allow_targets = ["127.0.0.0/8"]
+
+# A proxy whose own allow list admits only the second loopback address, so the
+# refusal path is exercised from 127.0.0.1 and the accept path from 127.0.0.2.
+[[proxies]]
+name = "acl-echo"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = $tcpEchoPort
+remote_port = $aclProxyPort
+allow_cidrs = ["127.0.0.2/32"]
 "@ | Set-Content -Path $clientToml -Encoding UTF8
 
 @"
@@ -530,6 +591,7 @@ signing_key_file = "$RootFwd/ledger.key"
 enabled = true
 listen_addr = "127.0.0.1:$dhtPort"
 advertise_host = "127.0.0.1"
+signing_key_file = "$RootFwd/dht.key"
 
 $commonObfuscation
 "@ | Set-Content -Path $serverToml -Encoding UTF8
@@ -547,6 +609,121 @@ listen_addr = "127.0.0.1:0"
 bootstrap = ["127.0.0.1:$dhtPort"]
 discover = "tcp-echo"
 "@ | Set-Content -Path $dhtToml -Encoding UTF8
+
+# The operator hands a reader the announcement key, so only records signed with it
+# are believed.
+$dhtKey = (Invoke-Binary -FilePath $serverExe -Arguments @('-config', $serverToml, '-dht-key')).Trim()
+if ($dhtKey.Length -ne 64) { throw "the server did not report a usable announcement key: '$dhtKey'" }
+Write-Host "   announcement key $dhtKey"
+
+$dhtTrustedToml = Join-Path $Root 'dht-trusted.toml'
+@"
+[client]
+auth_token = "$token"
+
+[dht]
+enabled = true
+listen_addr = "127.0.0.1:0"
+bootstrap = ["127.0.0.1:$dhtPort"]
+discover = "tcp-echo"
+require_signed = true
+trusted_keys = ["$dhtKey"]
+"@ | Set-Content -Path $dhtTrustedToml -Encoding UTF8
+
+$dhtUntrustedToml = Join-Path $Root 'dht-untrusted.toml'
+@"
+[client]
+auth_token = "$token"
+
+[dht]
+enabled = true
+listen_addr = "127.0.0.1:0"
+bootstrap = ["127.0.0.1:$dhtPort"]
+discover = "tcp-echo"
+require_signed = true
+trusted_keys = ["$identityKey"]
+"@ | Set-Content -Path $dhtUntrustedToml -Encoding UTF8
+
+# A second server exists for the ban checks: banning the loopback address on the
+# deployment under test would stop every other check from reaching it.
+$banServerToml = Join-Path $Root 'ban-server.toml'
+@"
+[server]
+bind_addr = "127.0.0.1"
+bind_port = $banControlPort
+auth_token = "$token"
+ban_after_failures = 3
+ban_seconds = 20
+
+$commonSecurity
+cert_file = "$certFile"
+key_file = "$keyFile"
+
+[identity]
+enabled = true
+require_identity = true
+allowed_keys = ["$identityKey"]
+
+[dashboard]
+enabled = true
+bind_addr = "127.0.0.1"
+port = $banDashboardPort
+
+[metrics]
+enabled = true
+
+[audit]
+enabled = true
+path = "$RootFwd/ban-audit.jsonl"
+"@ | Set-Content -Path $banServerToml -Encoding UTF8
+
+# A client whose identity key the ban server does not accept, and which retries
+# quickly so the failure count is reached inside the check.
+$banBadIdentity = "$RootFwd/ban-bad-identity.key"
+$banBadClientToml = Join-Path $Root 'ban-bad-client.toml'
+@"
+[client]
+server_addr = "127.0.0.1:$banControlPort"
+auth_token = "$token"
+reconnect_seconds = 1
+max_reconnect_seconds = 1
+
+$commonSecurity
+ca_file = ""
+server_name = "127.0.0.1"
+insecure_skip_verify = true
+
+[identity]
+enabled = true
+key_file = "$banBadIdentity"
+"@ | Set-Content -Path $banBadClientToml -Encoding UTF8
+
+# The same server, reached by a client it does accept: this is what proves a ban
+# covers a source and not only the client that earned it.
+$banOkClientToml = Join-Path $Root 'ban-ok-client.toml'
+@"
+[client]
+server_addr = "127.0.0.1:$banControlPort"
+auth_token = "$token"
+reconnect_seconds = 1
+max_reconnect_seconds = 1
+
+$commonSecurity
+ca_file = ""
+server_name = "127.0.0.1"
+insecure_skip_verify = true
+
+[identity]
+enabled = true
+key_file = "$identityFile"
+
+[[proxies]]
+name = "ban-echo"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = $tcpEchoPort
+remote_port = $banProxyPort
+"@ | Set-Content -Path $banOkClientToml -Encoding UTF8
 
 Write-Step "validating the configuration"
 foreach ($pair in @(
@@ -720,6 +897,77 @@ Test-Check 'xtcp: the owner reported the punch outcome' {
     return $true
 }
 
+Write-Step "exercising the socks5 exit and the per-proxy ACL"
+
+Test-Check 'socks5: a visitor reaches the address it asks for' {
+    # The visitor names the target; the client dials it through its own network,
+    # so the address below is one only this host can reach.
+    $result = Invoke-CurlExit @('-s', '--max-time', '15', '--socks5-hostname', "127.0.0.1:$socksPort",
+        "http://127.0.0.1:$httpEchoPort/through-socks")
+    if ($result.Exit -ne 0) { throw "curl exited $($result.Exit): $($result.Output)" }
+    if ($result.Output -notmatch 'smoketest-http') { throw "unexpected body: $($result.Output)" }
+    if ($result.Output -notmatch 'path=/through-socks') { throw "the path did not survive: $($result.Output)" }
+    return $true
+}
+
+Test-Check 'socks5: a target outside allow_targets is refused' {
+    $result = Invoke-CurlExit @('-s', '--max-time', '15', '--socks5-hostname', "127.0.0.1:$socksPort",
+        'http://10.99.0.1/')
+    if ($result.Exit -eq 0) { throw "a target outside the allow list was reached: $($result.Output)" }
+    return $true
+}
+
+Test-Check 'socks5: the refusal names the target and is logged' {
+    $log = Read-Log $clientLog
+    if ($log -notmatch 'socks: target 10\.99\.0\.1:80 is not allowed') {
+        throw "the client did not report the refused target: $log"
+    }
+    return $true
+}
+
+Test-Check 'socks5: the dashboard reports the exit with its traffic' {
+    $body = Invoke-Curl @('-s', '-H', "Authorization: Bearer $token", "http://127.0.0.1:$dashboardPort/api/proxies")
+    $proxy = ($body | ConvertFrom-Json).proxies | Where-Object { $_.name -eq 'socks-exit' }
+    if (-not $proxy) { throw "the exit is not reported: $body" }
+    if ($proxy.type -ne 'socks5') { throw "the exit is reported as type '$($proxy.type)'" }
+    if ([int]$proxy.total_connections -lt 1) { throw "the exit reports $($proxy.total_connections) connections" }
+    if ([int64]$proxy.bytes_in -le 0) { throw "the exit reports $($proxy.bytes_in) bytes in" }
+    return $true
+}
+
+Test-Check 'per-proxy acl: a visitor outside allow_cidrs is refused' {
+    # The connection is admitted by the server and refused by the proxy's own list,
+    # so the visitor sees the stream close without an answer.
+    $client = New-Object System.Net.Sockets.TcpClient
+    try {
+        $client.Connect('127.0.0.1', $aclProxyPort)
+        $client.ReceiveTimeout = 3000
+        $stream = $client.GetStream()
+        $bytes = [System.Text.Encoding]::ASCII.GetBytes('acl-should-not-arrive')
+        $stream.Write($bytes, 0, $bytes.Length)
+        $buffer = New-Object byte[] 64
+        try { $count = $stream.Read($buffer, 0, $buffer.Length) } catch { $count = 0 }
+        if ($count -gt 0) { throw "the proxy served a visitor it does not allow: $([System.Text.Encoding]::ASCII.GetString($buffer, 0, $count))" }
+        return $true
+    } finally {
+        $client.Dispose()
+    }
+}
+
+Test-Check 'per-proxy acl: the refusal is recorded with the proxy name' {
+    $audit = Get-Content -Raw (Join-Path $Root 'audit.jsonl')
+    if ($audit -notmatch 'proxy_visitor_denied') { throw "no proxy visitor refusal is recorded" }
+    if ($audit -notmatch '"proxy":"acl-echo"') { throw "the refusal does not name the proxy" }
+    return $true
+}
+
+Test-Check 'per-proxy acl: a visitor inside allow_cidrs is served' {
+    # The second loopback address is the one the proxy allows.
+    $reply = Invoke-TcpEcho -Port $aclProxyPort -Payload 'acl-allowed' -LocalAddress '127.0.0.2'
+    if ($reply -ne 'acl-allowed') { throw "echo returned '$reply'" }
+    return $true
+}
+
 Write-Step "checking the refusal paths"
 
 $badVisitorLog = Join-Path $Root 'bad-visitor.log'
@@ -759,9 +1007,16 @@ Test-Check 'the DHT node is serving' {
 Test-Check 'the DHT announced every public proxy' {
     $body = Invoke-Curl @('-s', "http://127.0.0.1:$dashboardPort/api/dht")
     $announced = ($body | ConvertFrom-Json).announced
-    foreach ($name in @('tcp-echo', 'udp-echo', 'private', 'direct')) {
+    foreach ($name in @('tcp-echo', 'udp-echo', 'private', 'direct', 'socks-exit')) {
         if ($announced -notcontains $name) { throw "$name was not announced; the directory holds $($announced -join ', ')" }
     }
+    return $true
+}
+
+Test-Check 'the DHT publishes its announcement signing key' {
+    $body = Invoke-Curl @('-s', "http://127.0.0.1:$dashboardPort/api/dht")
+    $key = ($body | ConvertFrom-Json).signing_key
+    if ($key -ne $dhtKey) { throw "the dashboard reports signing key '$key', want '$dhtKey'" }
     return $true
 }
 
@@ -790,6 +1045,25 @@ Test-Check 'a name that was never published is reported as unknown' {
     $output = Invoke-Binary -FilePath $clientExe -Arguments @('-config', $dhtToml, '-discover', 'nothing-here') -AllowFailure
     if ($output -notmatch 'not found') { throw "the lookup returned '$output'" }
     if ($output -match 'not found' -and $output -notmatch 'failed') { throw "the lookup did not fail: $output" }
+    return $true
+}
+
+Test-Check 'a lookup reports which key signed the announcement' {
+    $record = (Invoke-Binary -FilePath $serverExe -Arguments @('-config', $serverToml, '-dht-lookup', 'tcp-echo') -AllowFailure).Trim()
+    if ($record -notmatch [regex]::Escape("signed by $dhtKey")) { throw "the lookup returned '$record'" }
+    return $true
+}
+
+Test-Check 'a reader that trusts the announcement key resolves the name' {
+    $resolved = (Invoke-Binary -FilePath $clientExe -Arguments @('-config', $dhtTrustedToml, '-discover', 'tcp-echo') -AllowFailure).Trim()
+    if ($resolved -notmatch "-> 127\.0\.0\.1:$tcpProxyPort") { throw "discovery returned '$resolved'" }
+    if ($resolved -notmatch 'signed by') { throw "the reader did not report a verified signature: '$resolved'" }
+    return $true
+}
+
+Test-Check 'a reader that trusts another key refuses the announcement' {
+    $output = Invoke-Binary -FilePath $clientExe -Arguments @('-config', $dhtUntrustedToml, '-discover', 'tcp-echo') -AllowFailure
+    if ($output -notmatch 'not trusted') { throw "the reader accepted a record signed by another key: '$output'" }
     return $true
 }
 
@@ -922,6 +1196,94 @@ Test-Check 'the metrics counters moved' {
     if ([int]$match.Groups[1].Value -le 0) { throw "the udp datagram counter is still zero" }
     return $true
 }
+
+Write-Step "checking the automatic ban of failing sources"
+
+# A second server, so that banning the loopback address cannot disturb the checks
+# above. It requires an identity and accepts only the owner client's key, which is
+# how the failing client below is made to fail: it presents another key.
+$banServerLog = Join-Path $Root 'ban-server.log'
+$banServer = Start-Background -FilePath $serverExe -Arguments @('-config', $banServerToml) -LogPath $banServerLog -WorkingDirectory $Root
+Wait-ForPort -Port $banControlPort | Out-Null
+
+$banBadClientLog = Join-Path $Root 'ban-bad-client.log'
+$banBadClient = Start-Background -FilePath $clientExe -Arguments @('-config', $banBadClientToml) -LogPath $banBadClientLog -WorkingDirectory $Root
+# Three failures are needed; the client retries every second with the fast
+# reconnect settings in its own configuration.
+Start-Sleep -Seconds 8
+
+Test-Check 'a source that keeps failing authentication is banned' {
+    $body = Invoke-Curl @('-s', "http://127.0.0.1:$banDashboardPort/metrics")
+    $match = [regex]::Match($body, 'aethertunnel_sources_banned_total (\d+)')
+    if (-not $match.Success) { throw "no banned-sources counter" }
+    if ([int]$match.Groups[1].Value -lt 1) { throw "the counter is still $($match.Groups[1].Value) after three failures" }
+    $failures = [regex]::Match($body, 'aethertunnel_auth_failures_total (\d+)')
+    if (-not $failures.Success -or [int]$failures.Groups[1].Value -lt 3) {
+        throw "the authentication failure counter is $($failures.Groups[1].Value)"
+    }
+    return $true
+}
+
+Test-Check 'the ban appears in the server log and the audit log' {
+    $log = Read-Log $banServerLog
+    if ($log -notmatch 'banned') { throw "the server never reported a ban: $log" }
+    $audit = Get-Content -Raw (Join-Path $Root 'ban-audit.jsonl')
+    if ($audit -notmatch 'source_banned') { throw "the audit log has no source_banned record" }
+    return $true
+}
+
+if ($banBadClient -and -not $banBadClient.HasExited) { Stop-Process -Id $banBadClient.Id -Force -ErrorAction SilentlyContinue }
+
+$banOkClientLog = Join-Path $Root 'ban-ok-client.log'
+$banOkClient = Start-Background -FilePath $clientExe -Arguments @('-config', $banOkClientToml) -LogPath $banOkClientLog -WorkingDirectory $Root
+Start-Sleep -Seconds 4
+
+Test-Check 'a banned source is refused before the handshake' {
+    $audit = Get-Content -Raw (Join-Path $Root 'ban-audit.jsonl')
+    if ($audit -notmatch 'ban_refused') { throw "no refusal of a banned source is recorded" }
+    $body = Invoke-Curl @('-s', "http://127.0.0.1:$banDashboardPort/metrics")
+    $match = [regex]::Match($body, 'aethertunnel_banned_connections_refused_total (\d+)')
+    if (-not $match.Success -or [int]$match.Groups[1].Value -lt 1) {
+        throw "the banned-connection counter is $($match.Groups[1].Value)"
+    }
+    return $true
+}
+
+Test-Check 'the ban covers the source, not the client that earned it' {
+    # This client presents a key the server accepts and retries every second, so a
+    # working path shows up in about a second. Three seconds without a session, well
+    # inside the 20-second window the failing client earned, is the ban and not a
+    # slow handshake.
+    $deadline = (Get-Date).AddSeconds(3)
+    while ((Get-Date) -lt $deadline) {
+        if ((Read-Log $banOkClientLog) -match 'as session') {
+            throw "a client with an accepted identity connected from a banned address: $(Read-Log $banOkClientLog)"
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    $body = Invoke-Curl @('-s', "http://127.0.0.1:$banDashboardPort/metrics")
+    $accepted = [regex]::Match($body, 'aethertunnel_control_connections_total (\d+)')
+    if ($accepted.Success -and [int]$accepted.Groups[1].Value -gt 0) {
+        # Nothing has authenticated on this server: the failing client never got past
+        # its identity check, and the accepted one has been refused since it started.
+        throw "the server accepted $($accepted.Groups[1].Value) control connections from a banned source"
+    }
+    return $true
+}
+
+Test-Check 'the ban lapses after ban_seconds' {
+    # ban_seconds is 20 in this configuration, and the accepted client reconnects
+    # every second, so it holds a session once the entry expires.
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $deadline) {
+        if ((Read-Log $banOkClientLog) -match 'as session') { return $true }
+        Start-Sleep -Milliseconds 500
+    }
+    throw "the accepted client was still refused 30s after the ban window: $(Read-Log $banOkClientLog)"
+}
+
+if ($banOkClient -and -not $banOkClient.HasExited) { Stop-Process -Id $banOkClient.Id -Force -ErrorAction SilentlyContinue }
+if ($banServer -and -not $banServer.HasExited) { Stop-Process -Id $banServer.Id -Force -ErrorAction SilentlyContinue }
 
 Write-Step "summary"
 Write-Host ""

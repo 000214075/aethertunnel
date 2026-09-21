@@ -70,7 +70,7 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 
 | 能力 | 状态 | 说明 |
 |---|---|---|
-| 代理类型 | ✅ 可用 | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp`；http/https 走服务器的共享监听并按 Host 头选择隧道，stcp/sudp/xtcp 为私有隧道 |
+| 代理类型 | ✅ 可用 | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`；http/https 走服务器的共享监听并按 Host 头选择隧道，stcp/sudp/xtcp 为私有隧道，socks5 是出口代理（访客指定目标，客户端拨号，`allow_targets` 限定可达范围） |
 | XTCP 直连 | ✅ 可用 | 自研 UDP 打洞（HMAC-SHA256 同时打开 + 可靠有序字节流），打洞失败自动回退到服务器中继；两者都会写进日志与审计 |
 | TCP/UDP 转发 | ✅ 可用 | 访问者 → 服务器端口 → 客户端 → 本地服务；TCP 保留半关闭，UDP 按来源地址分会话 |
 | 负载均衡 | ✅ 可用 | 同名代理可由多个客户端组成代理池，策略：`round-robin` `random` `latency` `failover` `adaptive` |
@@ -83,30 +83,41 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 | 抗量子密钥协商 | ✅ 可用 | `encryption.post_quantum`：X25519 与 ML-KEM-768 混合（HKDF 同时纳入两者），每条数据连接单独派生密钥 |
 | 零知识证明 | ✅ 可用 | `auth_method = "nizk"`：访客用 P-256 上的 Schnorr 证明自己知道 secret_key，过程中不发送该值 |
 | 带宽账本 | ✅ 可用 | Ed25519 签名、哈希链式追加的用量记录（JSONL），`GET /api/ledger` 发布公钥与条目，`--verify-ledger` 可离线校验；改一个字节或换一串公钥都会失败 |
-| 去中心化目录 | ✅ 可用 | 基于 Kademlia 的 DHT（160 位、k 桶、迭代查找）；服务端把已发布的代理写成记录，客户端可用 `dht.discover` 按名字找服务器，运维可用 `--dht-lookup` / `--discover` |
+| 去中心化目录 | ✅ 可用 | 基于 Kademlia 的 DHT（160 位、k 桶、迭代查找）；服务端把已发布的代理写成记录，客户端可用 `dht.discover` 按名字找服务器，运维可用 `--dht-lookup` / `--discover` / `--dht-key` |
+| 通告签名 | ✅ 可用 | DHT 上任何节点都能写同一个键，所以服务端用 Ed25519 给每条通告签名；读取端 `require_signed` 拒绝无签名记录，`trusted_keys` 只认指定公钥。改一个字段或换一把key都会失败 |
 | 三层隧道 | ⚠️ 仅 Linux | `[vpn]`：客户端从服务端领取地址，IP 包经控制连接转发；服务端是共享一张网卡的路由器。Linux 上打开或创建 tun 设备；其它平台**明确拒绝启动**并说明缺少什么，不会静默降级 |
 | 流量混淆 | ✅ 可用 | `pad_to` 补齐帧长度、`jitter_millis` 加抖动；`disguise = "tls-record"` 把每个写入包进 TLS 1.2 应用数据记录 |
-| 访问控制 | ✅ 可用 | `allow_cidrs` / `deny_cidrs` 在握手前执行；无法解析的来源在存在规则时按拒绝处理 |
+| 访问控制 | ✅ 可用 | `allow_cidrs` / `deny_cidrs` 在握手前执行；无法解析的来源在存在规则时按拒绝处理。单个代理还能再限定自己的访客来源（`[[proxies]]` 的 `allow_cidrs` / `deny_cidrs`） |
 | 连接限流 | ✅ 可用 | 按来源地址的令牌桶，在握手前执行；空闲桶会被回收 |
+| 自动封禁 | ✅ 可用 | 同一来源认证失败 `ban_after_failures` 次后，在握手前拒绝该来源 `ban_seconds` 秒，期间任何凭据都被拒；再次违规时长翻倍，上限 `ban_max_seconds`；`ban_ignore_cidrs` 排除负载均衡与监控地址 |
 | 审计日志 | ✅ 可用 | JSON Lines，记录接入/拒绝、认证失败、上下线、代理注册与拒绝、访客接受与拒绝、打洞结果、隧道地址分配；按大小轮转 |
-| Prometheus 指标 | ✅ 可用 | `GET /metrics`（文本格式 0.0.4），含连接、认证失败、拒绝、流、双向字节与按隧道的序列 |
+| Prometheus 指标 | ✅ 可用 | `GET /metrics`（文本格式 0.0.4），含连接、认证失败、拒绝、封禁、按代理拒绝的访客、socks5 请求数、流、双向字节与按隧道的序列 |
 | 健康探针 | ✅ 可用 | `GET /healthz` 恒 200；`GET /readyz` 在监听器未就绪或正在关闭时返回 503 |
 | Web 面板 | ✅ 可用 | 单页、自带资源（编译进二进制）、中英双语、手机可用；含 `/api/ledger` 与 `/api/dht`，代理池的成员数与可用数在代理表格中显示 |
 | 容器与编排 | ✅ 可用 | `Dockerfile`（多阶段 → distroless）与 `deploy/kubernetes/` 清单；凭据可用环境变量提供，不必写进 ConfigMap |
 | 多平台 | ✅ 可用 | linux/darwin/windows × amd64/arm64，`scripts/build-release.*` 一键出 12 个产物 + SHA256 |
 | 配置校验 | ✅ 可用 | 未知配置项会**报出来**而不是静默忽略；`--check` 只校验不启动 |
-| 单元 + 端到端测试 | ✅ 可用 | 含"访问者→隧道→本地服务"的真实回环测试，明文与加密两种模式；另有 38 项检查的运维脚本 `scripts/smoke-test.ps1` |
+| 单元 + 端到端测试 | ✅ 可用 | 含"访问者→隧道→本地服务"的真实回环测试，明文与加密两种模式；另有 54 项检查的运维脚本 `scripts/smoke-test.ps1` |
 
 ### 这一版没有什么
 
-以下能力**没有实现**，文档与配置示例里不再出现对应描述：
+以下能力**没有实现**，文档与配置示例里不再出现对应描述。每一条都写清楚缺什么、
+以及同样目的下本程序真正可用、已在 CI 与 `scripts/smoke-test.ps1` 里跑过的做法：
 
 - ❌ **移动端 App**。本仓库只产出服务端与客户端两个可执行程序，没有 iOS/Android 工程，
-  也没有可用的移动端工具链或设备。
+  也没有可用的移动端工具链或设备，因此**没有任何移动端构建产物**。
+  **可用的替代**：在服务端发布一个 `socks5` 出口（`remote_port` + `allow_targets`），
+  手机上的任意 SOCKS5 客户端指向 `<服务器>:<remote_port>` 即可使用；
+  http/https 代理也可以被系统代理设置直接使用。smoke test 里
+  `socks5: a visitor reaches the address it asks for`、`socks5: a target outside allow_targets is refused`
+  两项就是用真实二进制与 curl 跑通这条路径的。
 - ❌ **Windows 与 macOS 的 tun 设备**。三层隧道只在 Linux 上打开设备；Windows 需要 Wintun
   驱动，macOS 需要 utun 控制套接字，本程序都不安装也不打开。Linux 那条路径每次 CI 都会
   交叉编译，但**没有在真实 tun 设备上运行过**；非 Linux 平台启动 `vpn.enabled = true`
-  会直接报错退出。
+  会直接报错退出，smoke test 的 `the vpn section refuses to start where there is no tun device`
+  一项断言了这个拒绝行为与报错内容。
+  **可用的替代**：非 Linux 上按端口转发使用 `tcp` / `udp` 代理，按地址使用上面那个 `socks5` 出口；
+  两者都不需要驱动，也不需要改动路由表。
 - ❌ **机器学习的路由或调度**。`load_balance = "adaptive"` 的代价函数是"移动平均时延 ×
   连续失败惩罚"，没有模型、没有训练、没有历史样本。
 - ❌ **区块链、代币或激励**。带宽账本是一条签名哈希链，没有共识、没有货币、没有矿工。
@@ -143,7 +154,8 @@ post_quantum = true                 # 再用 X25519 + ML-KEM-768 协商每条连
   没有客户端时显示空状态。
 - `/api/ledger` 返回公钥、链头、最近的账本条目与按客户端汇总的用量；条目本身已签名，
   拿到响应的人可以独立校验。
-- `/api/dht` 返回 DHT 节点标识、绑定地址、已知节点数、对外通告的主机名与当前已通告的代理名。
+- `/api/dht` 返回 DHT 节点标识、绑定地址、已知节点数、对外通告的主机名、当前已通告的代理名，
+  以及 `signing_key`（通告用的 Ed25519 公钥；未签名部署为空串）。
 
 ### 运维
 
@@ -154,11 +166,24 @@ post_quantum = true                 # 再用 X25519 + ML-KEM-768 协商每条连
 # 按名字查一条代理记录（用服务端配置即可，查询节点自己绑临时端口）
 ./aethertunnel-server --config server.toml --dht-lookup ssh
 
+# 读出通告签名公钥，填进客户端的 dht.trusted_keys
+./aethertunnel-server --config server.toml --dht-key
+
 # 从客户端角色解析同一个名字
 ./aethertunnel-client --config client.toml --discover ssh
 
+# 通过一个 socks5 出口访问内网地址
+curl --socks5-hostname 服务器IP:6100 http://10.0.0.5:8080/
+
 # 离线核对带宽账本，只需要公钥
 ./aethertunnel-server --verify-ledger ledger.jsonl --ledger-key <64 位十六进制公钥>
+```
+
+封禁与按代理 ACL 都不需要额外命令，但它们留下的痕迹可以这样看：
+
+```bash
+curl -s http://127.0.0.1:7500/metrics | grep -E 'sources_banned|banned_connections_refused|visitors_denied_by_proxy|socks5_requests'
+grep -E 'source_banned|ban_refused|proxy_visitor_denied' aethertunnel-audit.jsonl
 ```
 
 `scripts/smoke-test.ps1` 会构建两个二进制、起一个本地服务集合（TCP/UDP/HTTP 回显）、
@@ -179,7 +204,7 @@ make check          # 校验示例配置
 Windows 无 make 时：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 -Version v3.2.0
+powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 -Version v3.3.0
 powershell -ExecutionPolicy Bypass -File scripts\smoke-test.ps1
 ```
 
@@ -263,7 +288,7 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 
 | Capability | State | Notes |
 |---|---|---|
-| Proxy types | ✅ works | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp`; http and https use one shared listener and are selected by the Host header; stcp, sudp and xtcp are private |
+| Proxy types | ✅ works | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`; http and https use one shared listener and are selected by the Host header; stcp, sudp and xtcp are private; socks5 is an exit, where the visitor names the target and `allow_targets` bounds what may be reached |
 | XTCP direct path | ✅ works | its own UDP hole punching (HMAC-SHA256 simultaneous open over a reliable ordered byte stream) with an automatic fall back to the server's relay; both outcomes are logged and audited |
 | TCP and UDP forwarding | ✅ works | visitor → server port → client → local service; TCP preserves half-close, UDP keeps one session per source address |
 | Load balancing | ✅ works | several clients may publish one name as a pool; strategies `round-robin`, `random`, `latency`, `failover`, `adaptive` |
@@ -276,29 +301,44 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 | Post-quantum key agreement | ✅ works | `encryption.post_quantum`: X25519 together with ML-KEM-768, both folded into one HKDF, and a separate key per data connection |
 | Proof of token knowledge | ✅ works | `auth_method = "nizk"` proves knowledge of `secret_key` with a Schnorr proof over P-256; the secret itself is never sent |
 | Bandwidth ledger | ✅ works | Ed25519-signed, hash-chained usage records (JSONL); `GET /api/ledger` publishes the public key and the entries, and `--verify-ledger` checks them offline; one altered byte or a different key fails |
-| Decentralised directory | ✅ works | a Kademlia DHT (160-bit, k-buckets, iterative lookup); the server publishes one record per proxy, a client resolves a name with `dht.discover`, and operators use `--dht-lookup` or `--discover` |
+| Decentralised directory | ✅ works | a Kademlia DHT (160-bit, k-buckets, iterative lookup); the server publishes one record per proxy, a client resolves a name with `dht.discover`, and operators use `--dht-lookup`, `--discover` or `--dht-key` |
+| Signed announcements | ✅ works | any node can write to a proxy's key, so the server signs every record with Ed25519; a reader sets `require_signed` to refuse unsigned records and `trusted_keys` to believe named keys only. One altered field or a different key fails |
 | Layer-3 tunnel | ⚠️ Linux only | `[vpn]`: a client is given an address and its IP packets travel on the control connection; the server is a router over one shared interface. Linux opens or creates a tun device; every other platform **refuses to start** and says what is missing instead of degrading silently |
 | Traffic obfuscation | ✅ works | `pad_to` rounds frame lengths, `jitter_millis` adds delay, and `disguise = "tls-record"` puts every write inside TLS 1.2 application-data records |
-| Access control | ✅ works | `allow_cidrs` / `deny_cidrs` before the handshake; an unparseable source is refused when any rule exists |
+| Access control | ✅ works | `allow_cidrs` / `deny_cidrs` before the handshake; an unparseable source is refused when any rule exists. A single proxy can restrict its own visitors further with `allow_cidrs` / `deny_cidrs` in its `[[proxies]]` block |
 | Rate limiting | ✅ works | a per-source token bucket before the handshake, with idle buckets reclaimed |
-| Audit log | ✅ works | JSON Lines for accepted and refused connections, authentication failures, disconnects, proxy registrations and refusals, visitor outcomes, punch results and tunnel address assignments; rotates by size |
+| Automatic ban | ✅ works | after `ban_after_failures` failed authentications one source is refused before the handshake for `ban_seconds`, and every attempt from it is refused in the meantime whatever credential it carries; the window doubles for a repeat offender up to `ban_max_seconds`, and `ban_ignore_cidrs` exempts load balancers and monitors |
+| Audit log | ✅ works | JSON Lines for accepted and refused connections, authentication failures, disconnects, proxy registrations and refusals, bans and ban refusals, per-proxy visitor refusals, visitor outcomes, punch results and tunnel address assignments; rotates by size |
 | Prometheus metrics | ✅ works | `GET /metrics` in the text format 0.0.4: connections, authentication failures, refusals, streams, bytes both ways and per-tunnel series |
 | Health probes | ✅ works | `GET /healthz` is always 200; `GET /readyz` is 503 before the listener is up and while shutting down |
 | Web dashboard | ✅ works | one self-contained embedded page, English + 简体中文, usable on a phone, including `/api/ledger` and `/api/dht`; the proxies table shows how many members a pool has and how many are healthy |
 | Containers and orchestration | ✅ works | a multi-stage `Dockerfile` ending in distroless, and manifests under `deploy/kubernetes/`; credentials can come from environment variables instead of the ConfigMap |
 | Platforms | ✅ works | linux/darwin/windows × amd64/arm64; `scripts/build-release.*` produces 12 binaries + SHA256 |
 | Config validation | ✅ works | unknown keys are **reported**, not ignored; `--check` validates without starting |
-| Tests | ✅ works | unit tests, a real end-to-end tunnel test in cleartext and encrypted modes, and a 38-check operations script, `scripts/smoke-test.ps1` |
+| Tests | ✅ works | unit tests, a real end-to-end tunnel test in cleartext and encrypted modes, and a 54-check operations script, `scripts/smoke-test.ps1` |
 
 ### What this release does not do
 
+Each item below says what is missing and which tested path covers the same need:
+
 - ❌ **Mobile apps.** This repository produces a server and a client binary. There is no
-  iOS or Android project, and no mobile toolchain or device was used to build or test one.
+  iOS or Android project, and no mobile toolchain or device was used to build or test one,
+  so there is no mobile artifact of any kind.
+  **What works instead:** publish a `socks5` exit on the server (`remote_port` plus
+  `allow_targets`) and point any SOCKS5 client app on the phone at
+  `<server>:<remote_port>`; an `http` or `https` proxy can be used from the system proxy
+  settings. The smoke test drives that path with the real binaries and curl in
+  `socks5: a visitor reaches the address it asks for` and
+  `socks5: a target outside allow_targets is refused`.
 - ❌ **A tun device on Windows or macOS.** The layer-3 tunnel opens a device only on Linux.
   Windows would need the Wintun driver and macOS a utun control socket; this program installs
   neither and opens neither. The Linux path is cross-compiled on every CI run but **has not
   been exercised on a real tun device**. On any other platform, `vpn.enabled = true` makes the
-  server exit with an error naming what is missing.
+  server exit with an error naming what is missing, and the smoke test's
+  `the vpn section refuses to start where there is no tun device` asserts that refusal and the
+  message it prints.
+  **What works instead:** port forwarding with a `tcp` or `udp` proxy, and address-based access
+  with the `socks5` exit above. Neither needs a driver or a routing change.
 - ❌ **Learned routing.** `load_balance = "adaptive"` scores a member by its moving-average
   response time multiplied by a penalty for consecutive failures. There is no model, no
   training and no sample history.

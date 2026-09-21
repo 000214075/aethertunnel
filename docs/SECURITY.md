@@ -108,25 +108,37 @@ Schnorr 证明在 NIST P-256 上，用 Fiat-Shamir 去交互；上下文含服�
 协议识别规则，骗不过会建模 TLS 会话的识别器——没有 ClientHello、没有证书、没有密钥交换。
 接收端只凭帧标志位去补齐，两端不需要配置一致；`disguise` 必须两端一致。
 
-## 7. 访问控制、限流与审计
+## 7. 访问控制、限流、封禁与审计
 
 | 能力 | 配置 | 行为 |
 |---|---|---|
 | 来源白名单 | `[server] allow_cidrs` | 非空时只有匹配的来源可以建立连接 |
 | 来源黑名单 | `[server] deny_cidrs` | 优先级高于白名单；先匹配 deny，再匹配 allow |
 | 连接限流 | `[server] rate_limit_per_second` / `rate_limit_burst` | 按来源地址的令牌桶，在握手前执行；空闲桶会被回收 |
+| 自动封禁 | `[server] ban_after_failures` / `ban_seconds` / `ban_max_seconds` / `ban_ignore_cidrs` | 同一来源认证失败达到次数后，在握手前拒绝该来源；每次封禁时长翻倍，直到上限 |
+| 按代理的访客 ACL | `[[proxies]] allow_cidrs` / `deny_cidrs` | 服务器整体接受之后、建立隧道之前，再按该代理自己的名单判断 |
 | 审计日志 | `[audit]` | JSON Lines，超过 `max_bytes` 轮转为 `<path>.1` |
 
 规则在握手**之前**执行，被拒绝的连接不会消耗会话槽位，也不会读取任何帧。白名单或黑名单
 非空时，来源地址无法解析的连接按拒绝处理。
 
+封禁只统计**认证失败**（令牌错误、身份断言无效、抗量子密钥协商失败），且按**来源地址**记账，
+不区分是哪个客户端触发的：一个地址被封后，同一地址上任何凭据都会被拒。失败计数在 10 分钟
+的窗口内累积，成功认证会清零；重复被封的地址时长按倍数增长（`ban_seconds`、2 倍、4 倍…），
+到 `ban_max_seconds` 为止。因此**负载均衡、健康检查与监控地址必须写进 `ban_ignore_cidrs`**，
+否则它们会和攻击者共用同一个来源地址。
+
+按代理的 ACL 只匹配**来源地址**，不做目标地址或用户的判断。
+
 审计 `event` 取值：`control_accepted`、`control_rejected`、`auth_failed`、
 `client_disconnected`、`proxy_registered`、`proxy_rejected`、`proxy_removed`、`acl_denied`、
-`rate_limited`、`dashboard_action`、`visitor_accepted`、`visitor_rejected`、`p2p_direct`、
-`p2p_relayed`、`vpn_address_assigned`、`vpn_address_rejected`。
+`rate_limited`、`source_banned`、`ban_refused`、`proxy_visitor_denied`、
+`dashboard_action`、`visitor_accepted`、`visitor_rejected`、`p2p_direct`、`p2p_relayed`、
+`vpn_address_assigned`、`vpn_address_rejected`。
 
-**没有按代理或按目标地址的访问控制**：任何能连到某个公开 `remote_port` 的人都能使用那条
-隧道。ACL 只按来源地址判断。需要更细的规则请用防火墙或反向代理保护 `remote_port`。
+公开的 `remote_port` 仍然可以被上面这些规则之外的任何人连接：按来源的名单挡的是"谁能连"，
+挡不住"连上之后能做什么"。`socks5` 出口多一层 `allow_targets`，它限制的是客户端能拨到哪些
+地址，是唯一按**目标**判断的名单。
 
 ## 8. 面板与指标
 
@@ -162,12 +174,26 @@ Schnorr 证明在 NIST P-256 上，用 Fiat-Shamir 去交互；上下文含服�
 `<namespace>/proxy/<name>`，客户端可以只凭代理名解析。记录自带过期时间，读取端把过期记录
 当作不存在。
 
-**记录没有签名。**任何能写入同一 `namespace` 的人都可以为任意代理名发布一条指向别处的记录，
-读取端无法区分真假。可用的缓解手段：
+DHT 的值谁都能写：同一 `namespace` 下的任何节点都可以为任意代理名写一条指向别处的记录。
+因此服务端可以给每条通告签名（`[dht] signing_key_file`，Ed25519，密钥首次使用时生成，
+权限 0600），签名覆盖名字、类型、地址、域名、发布时间与失效时间以及签名公钥本身；
+读取端有两种策略：
+
+- `require_signed = true`：没有签名的记录直接拒绝；
+- `trusted_keys = ["<公钥十六进制>"]`：只接受这些公钥签发的记录，同时也会拒绝无签名记录。
+
+校验失败的错误分别是 `the announcement carries no signature`、
+`the announcement's signature does not verify`（有人改写了值）与
+`the announcement is signed by a key that is not trusted`。
+签名**不隐藏**元数据：代理名、类型与地址仍然对 DHT 上的任何人可见，只保证它们确实来自
+被信任的服务端。要连元数据也不暴露，就不要启用 `[dht]`。
+
+仍然有效的缓解手段：
 
 - 客户端显式配置 `client.server_addr`，不使用 `[dht] discover`；
 - 只把 `bootstrap` 指向自己控制的节点；
-- 用 `namespace` 把两套部署分开，并用非默认值避免与陌生部署同名共享。
+- 用 `namespace` 把两套部署分开，并用非默认值避免与陌生部署同名共享；
+- 在客户端设置 `trusted_keys`，这样即使键被投毒，指向别处的记录也会被拒绝。
 
 即使发现被投毒，连接仍然要过 `auth_token`（以及可选的身份与 TLS 校验），攻击者拿到的是
 让客户端连到自己服务器上的机会，不是解密既有流量的能力。

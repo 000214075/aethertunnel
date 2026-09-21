@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/aethertunnel/aethertunnel/pkg/crypto"
 	flynet "github.com/aethertunnel/aethertunnel/pkg/net"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
+	"github.com/aethertunnel/aethertunnel/pkg/socks"
 )
 
 // ProxyGroup is the published endpoint for one proxy name.
@@ -52,6 +54,11 @@ type ProxyGroup struct {
 
 	mu      sync.RWMutex
 	members []*Tunnel
+
+	// allowVisitor and denyVisitor are the proxy's own visitor filters, compiled
+	// from [[proxies]] allow_cidrs and deny_cidrs.
+	allowVisitor []*net.IPNet
+	denyVisitor  []*net.IPNet
 
 	// endpointMu guards the published endpoint. It is separate from mu because the
 	// dashboard reads Addr while the control path may be binding or closing the
@@ -133,23 +140,55 @@ func (t *Tunnel) Latency() time.Duration { return time.Duration(t.dialLatency.Lo
 
 func newProxyGroup(spec protocol.ProxySpec, manager *TunnelManager) *ProxyGroup {
 	return &ProxyGroup{
-		Name:        spec.Name,
-		Type:        spec.Type,
-		Private:     config.IsPrivateProxyType(spec.Type),
-		Domains:     append([]string(nil), spec.Domains...),
-		SecretKey:   spec.SecretKey,
-		AuthMethod:  spec.AuthMethod,
-		RemotePort:  spec.RemotePort,
-		Group:       spec.Group,
-		Multipath:   spec.Multipath,
-		manager:     manager,
-		logger:      manager.logger,
-		cipher:      manager.cipher,
-		metrics:     manager.metrics,
-		idleTimeout: time.Duration(manager.cfg.Server.ReadTimeoutSecs) * time.Second,
-		dialTimeout: time.Duration(manager.cfg.Server.DialTimeoutSecs) * time.Second,
-		strategy:    manager.cfg.Server.LoadBalance,
-		done:        make(chan struct{}),
+		Name:         spec.Name,
+		Type:         spec.Type,
+		Private:      config.IsPrivateProxyType(spec.Type),
+		Domains:      append([]string(nil), spec.Domains...),
+		SecretKey:    spec.SecretKey,
+		AuthMethod:   spec.AuthMethod,
+		RemotePort:   spec.RemotePort,
+		Group:        spec.Group,
+		Multipath:    spec.Multipath,
+		allowVisitor: compileCIDRs(spec.AllowCIDRs),
+		denyVisitor:  compileCIDRs(spec.DenyCIDRs),
+		manager:      manager,
+		logger:       manager.logger,
+		cipher:       manager.cipher,
+		metrics:      manager.metrics,
+		idleTimeout:  time.Duration(manager.cfg.Server.ReadTimeoutSecs) * time.Second,
+		dialTimeout:  time.Duration(manager.cfg.Server.DialTimeoutSecs) * time.Second,
+		strategy:     manager.cfg.Server.LoadBalance,
+		done:         make(chan struct{}),
+	}
+}
+
+// compileCIDRs parses a list config validation has already accepted.
+func compileCIDRs(entries []string) []*net.IPNet {
+	nets := make([]*net.IPNet, 0, len(entries))
+	for _, entry := range entries {
+		if _, network, err := net.ParseCIDR(strings.TrimSpace(entry)); err == nil {
+			nets = append(nets, network)
+		}
+	}
+	return nets
+}
+
+// ipOfAddr extracts the address of a peer, whatever form the caller has it in.
+func ipOfAddr(addr net.Addr) net.IP {
+	switch typed := addr.(type) {
+	case *net.TCPAddr:
+		return typed.IP
+	case *net.UDPAddr:
+		return typed.IP
+	default:
+		if addr == nil {
+			return nil
+		}
+		host, _, err := net.SplitHostPort(addr.String())
+		if err != nil {
+			return nil
+		}
+		return net.ParseIP(host)
 	}
 }
 
@@ -387,10 +426,69 @@ func (g *ProxyGroup) bind() error {
 		}
 		g.logger.Printf("proxy %q (%s) registered as private, reachable by visitors", g.Name, g.Type)
 
+	case protocol.ProxyTypeSOCKS:
+		if g.RemotePort == 0 {
+			return fmt.Errorf("proxy %q: a socks5 endpoint needs a remote port", g.Name)
+		}
+		addr := net.JoinHostPort(g.manager.cfg.Server.BindAddr, strconv.Itoa(g.RemotePort))
+		listener, err := net.Listen("tcp", addr)
+		if err != nil {
+			return fmt.Errorf("cannot publish %s on %s: %w", g.Name, addr, err)
+		}
+		g.endpointMu.Lock()
+		g.listener = listener
+		g.endpointMu.Unlock()
+		go g.acceptLoop()
+		g.logger.Printf("proxy %q (socks5) published on %s", g.Name, addr)
+
 	default:
 		return fmt.Errorf("proxy type %q has no binding", g.Type)
 	}
 	return nil
+}
+
+// --- per-proxy visitor access control ------------------------------------------
+
+// visitorAllowed reports whether a visitor source address may use this proxy.
+//
+// [server] allow_cidrs and deny_cidrs decide who may reach the server at all; the
+// lists on a proxy decide which of those visitors may use this particular tunnel,
+// so a server that publishes one proxy to the world can keep another to a single
+// network.
+func (g *ProxyGroup) visitorAllowed(remote net.Addr) bool {
+	if len(g.allowVisitor) == 0 && len(g.denyVisitor) == 0 {
+		return true
+	}
+
+	ip := ipOfAddr(remote)
+	if ip == nil {
+		// A source that cannot be parsed is refused as soon as a rule exists.
+		return false
+	}
+	for _, network := range g.denyVisitor {
+		if network.Contains(ip) {
+			return false
+		}
+	}
+	if len(g.allowVisitor) == 0 {
+		return true
+	}
+	for _, network := range g.allowVisitor {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// refuseVisitor records and reports a visitor that the proxy's rules excluded.
+func (g *ProxyGroup) refuseVisitor(remote net.Addr, detail string) {
+	g.metrics.visitorDenied.Add(1)
+	g.manager.auditor.Record(AuditEvent{
+		Event: EventProxyVisitorDenied, Proxy: g.Name, Remote: remote.String(),
+		Outcome: "denied", Detail: detail,
+	})
+	g.logger.Printf("proxy %q: visitor %s refused: %s", g.Name, remote, detail)
 }
 
 // matchesSecret compares a visitor's secret with the group's in constant time.
@@ -528,9 +626,78 @@ func (g *ProxyGroup) acceptLoop() {
 	}
 }
 
-// serveVisit matches one public connection with a member, moving on to the next
-// member when one cannot provide a stream.
+// serveVisit handles one accepted public connection.
+//
+// A socks5 endpoint speaks the SOCKS5 greeting before anything is dialled, so it
+// has its own handler; every other type is handed straight to serveVisit.
 func (g *ProxyGroup) serveVisit(public net.Conn) {
+	if g.Type != protocol.ProxyTypeSOCKS {
+		g.serveStream(public)
+		return
+	}
+	defer public.Close()
+
+	if !g.visitorAllowed(public.RemoteAddr()) {
+		g.refuseVisitor(public.RemoteAddr(), "source address rejected by the proxy's allow/deny lists")
+		return
+	}
+
+	request, err := socks.ReadRequest(public, g.dialTimeout)
+	if err != nil {
+		// ReadRequest answers the negotiation itself; a caller that got an error
+		// only has to make sure the visitor is not left waiting.
+		g.logger.Printf("proxy %q: socks5 request from %s refused: %v", g.Name, public.RemoteAddr(), err)
+		g.metrics.visitorDenied.Add(1)
+		return
+	}
+
+	tried := make(map[*Tunnel]bool)
+	attempts := g.memberCount()
+	if attempts == 0 {
+		attempts = 1
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		member := g.pickExcluding(tried)
+		if member == nil {
+			break
+		}
+		tried[member] = true
+
+		stream, err := g.openStreamFor(member, false, request.Target)
+		if err != nil {
+			lastErr = err
+			g.logger.Printf("proxy %q: member %s did not serve %s: %v", g.Name, member.Session.ID, request.Target, err)
+			continue
+		}
+
+		if err := socks.WriteReply(public, socks.ReplySucceeded); err != nil {
+			_ = stream.dc.Close()
+			stream.release()
+			return
+		}
+		g.metrics.socksRequests.Add(1)
+		_ = member.pipeStream(public, stream.dc, request.Target)
+		return
+	}
+
+	if lastErr == nil {
+		lastErr = errors.New("no member is available")
+	}
+	_ = socks.WriteReply(public, socks.ReplyFor(lastErr))
+	g.logger.Printf("proxy %q: %s asked for %s and was refused: %v",
+		g.Name, public.RemoteAddr(), request.Target, lastErr)
+}
+
+// serveStream matches one public connection with a member, moving on to the next
+// member when one cannot provide a stream.
+func (g *ProxyGroup) serveStream(public net.Conn) {
+	if !g.visitorAllowed(public.RemoteAddr()) {
+		g.refuseVisitor(public.RemoteAddr(), "source address rejected by the proxy's allow/deny lists")
+		_ = public.Close()
+		return
+	}
 	tried := make(map[*Tunnel]bool)
 	attempts := g.memberCount()
 	if attempts == 0 {
@@ -576,8 +743,14 @@ type openedStream struct {
 // openStream asks one member for a data connection and records how long it took,
 // which is what the latency strategy compares.
 func (g *ProxyGroup) openStream(member *Tunnel, visitor bool) (*openedStream, error) {
+	return g.openStreamFor(member, visitor, "")
+}
+
+// openStreamFor asks a member for a stream, optionally naming the address it
+// should reach. Only a socks5 proxy passes a target.
+func (g *ProxyGroup) openStreamFor(member *Tunnel, visitor bool, target string) (*openedStream, error) {
 	started := time.Now()
-	dc, release, err := member.openStream(visitor)
+	dc, release, err := member.openStreamFor(visitor, target)
 	if err != nil {
 		member.failures.Add(1)
 		return nil, err
@@ -614,6 +787,10 @@ func (g *ProxyGroup) startUDP() {
 		Socket: packet,
 		Paths:  paths,
 		Open: func(addr net.Addr) (*protocol.Framer, func(), error) {
+			if !g.visitorAllowed(addr) {
+				g.refuseVisitor(addr, "source address rejected by the proxy's allow/deny lists")
+				return nil, nil, errors.New("the visitor source is not allowed by this proxy")
+			}
 			member := g.pick()
 			if member == nil {
 				return nil, nil, errors.New("no member is available")
@@ -697,6 +874,13 @@ func (g *ProxyGroup) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	proxy := g.httpProxy()
 	if proxy == nil {
 		http.Error(w, "this proxy has no http handler", http.StatusInternalServerError)
+		return
+	}
+
+	remote, err := net.ResolveTCPAddr("tcp", r.RemoteAddr)
+	if err == nil && !g.visitorAllowed(remote) {
+		g.refuseVisitor(remote, "source address rejected by the proxy's allow/deny lists")
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 

@@ -141,7 +141,29 @@ aethertunnel-server v3.2.0 (protocol 4, built 2026-09-20T07:12:44Z, commit 12345
 
 若仍显示 `dev` 或旧版本号，说明你是用不带 `-ldflags` 的 `go build` 构建的。
 
-## 4. 升级检查清单
+## 4. 从 v3.2.1 到 v3.3.0
+
+不需要改动任何既有配置：协议版本仍是 4，没有删除或改名任何键，旧配置照旧可用。
+新增的都是可选项，默认值保持既有行为。
+
+| 新增 | 位置 | 默认 | 打开后发生什么 |
+|---|---|---|---|
+| `[[proxies]] type = "socks5"` | 客户端 | 不使用 | 新增一种代理类型：访客指定目标，客户端拨号；`remote_port` 与 `allow_targets` 都是必填 |
+| `[[proxies]] allow_cidrs` / `deny_cidrs` | 客户端 | 空 | 该代理只服务名单内的访客来源；空 = 不限（与升级前一致） |
+| `[server] ban_after_failures` | 服务端 | 0 | 0 = 不封禁；设置后同一来源认证失败达到次数即被拒 |
+| `[server] ban_seconds` / `ban_max_seconds` / `ban_ignore_cidrs` | 服务端 | 300 / 3600 / 空 | 封禁时长、上限与豁免地址 |
+| `[dht] signing_key_file` | 服务端 | 空 | 空 = 通告不签名（并把这件事写进启动警告）；设置后每条通告带 Ed25519 签名 |
+| `[dht] require_signed` / `trusted_keys` | 客户端与查询端 | false / 空 | 拒绝无签名通告，或只接受指定公钥签发的通告 |
+| `--dht-key` | 服务端命令行 | — | 打印通告签名公钥 |
+
+升级后如果要让客户端只接受签名通告，顺序是：先在服务端设置 `[dht] signing_key_file`
+并重启，用 `--dht-key` 读出公钥，再把它填进客户端的 `[dht] trusted_keys`（可同时设
+`require_signed = true`）。反过来先给客户端设 `trusted_keys` 会让它拒绝升级前发布的所有记录。
+
+封禁按**来源地址**记账，因此部署在负载均衡或反向代理后面、或由监控系统探测的地址，必须写进
+`ban_ignore_cidrs`，否则它们会与攻击者共用同一个来源地址。
+
+## 5. 升级检查清单
 
 1. 两端一起换成 v3.2.0 的二进制。
 2. 用 `--check` 校验新配置，把报出的未知键逐个处理掉；`[vpn]` 的旧键必须删掉。
@@ -151,5 +173,6 @@ aethertunnel-server v3.2.0 (protocol 4, built 2026-09-20T07:12:44Z, commit 12345
 5. 启动后确认：客户端日志出现 `connected ... as session <id>` 与
    `server confirms N tunnel(s)`；面板 `/api/status` 的连接数与隧道数符合预期。
 6. 用真实客户端做一次访问（例如 `ssh -p <remote_port> ...`），确认数据真的通。
-7. 用到的新功能各自验证一次：`--dht-lookup`、`--verify-ledger`、`--discover`，
-   或直接跑 `scripts/smoke-test.ps1`。
+7. 用到的新功能各自验证一次：`--dht-lookup`、`--verify-ledger`、`--discover`、`--dht-key`，
+   或直接跑 `scripts/smoke-test.ps1`（54 项检查，覆盖全部代理类型、签名通告、按代理 ACL 与
+   自动封禁）。

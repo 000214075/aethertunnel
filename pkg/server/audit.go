@@ -33,6 +33,16 @@ const (
 	EventRateLimited     = "rate_limited"
 	EventDashboardAction = "dashboard_action"
 
+	// EventSourceBanned is recorded when a source is banned after repeated
+	// authentication failures, and EventBanRefused when a banned source tries
+	// again.
+	EventSourceBanned = "source_banned"
+	EventBanRefused   = "ban_refused"
+
+	// EventProxyVisitorDenied is recorded when a proxy's own allow/deny lists
+	// refuse a visitor that the server as a whole had admitted.
+	EventProxyVisitorDenied = "proxy_visitor_denied"
+
 	EventVisitorAccepted = "visitor_accepted"
 	EventVisitorRejected = "visitor_rejected"
 	EventP2PDirect       = "p2p_direct"

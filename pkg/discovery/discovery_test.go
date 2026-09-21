@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aethertunnel/aethertunnel/pkg/crypto"
 	"github.com/aethertunnel/aethertunnel/pkg/dht"
 )
 
@@ -376,5 +378,262 @@ func TestConcurrentPublishAndResolve(t *testing.T) {
 	}
 	if got := len(node.Announced()); got != 8 {
 		t.Errorf("%d names are announced, want 8", got)
+	}
+}
+
+// --- signed announcements ------------------------------------------------------
+
+// publisher is the signer the tests publish with. It is the same identity type the
+// server loads from [identity] and [dht].signing_key_file.
+func publisher(t *testing.T) *crypto.Identity {
+	t.Helper()
+	identity, err := crypto.NewIdentity()
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	return identity
+}
+
+func TestARecordSignedByThePublisherVerifiesOnTheReader(t *testing.T) {
+	key := publisher(t)
+	writer := startNode(t, Config{ListenAddr: freeUDPAddr(t), Signer: key})
+	reader := startNode(t, Config{
+		ListenAddr:  freeUDPAddr(t),
+		Bootstrap:   []string{writer.Addr()},
+		TrustedKeys: []ed25519.PublicKey{key.PublicKey()},
+	})
+	waitForContacts(t, reader, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := writer.Publish(ctx, sampleRecord("ssh", "203.0.113.5:7000")); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	rec, err := reader.Resolve("ssh")
+	if err != nil {
+		t.Fatalf("Resolve from a reader that trusts the key: %v", err)
+	}
+	if !rec.Verified {
+		t.Error("the resolved record is not reported as verified")
+	}
+	if rec.PublicKey != key.PublicKeyHex() {
+		t.Errorf("the record names key %q, want %q", rec.PublicKey, key.PublicKeyHex())
+	}
+	if rec.Server != "203.0.113.5:7000" {
+		t.Errorf("resolved server %q, want 203.0.113.5:7000", rec.Server)
+	}
+}
+
+func TestAnUnsignedRecordIsRefusedWhenSignaturesAreRequired(t *testing.T) {
+	writer := startNode(t, Config{ListenAddr: freeUDPAddr(t)})
+	reader := startNode(t, Config{
+		ListenAddr:    freeUDPAddr(t),
+		Bootstrap:     []string{writer.Addr()},
+		RequireSigned: true,
+	})
+	waitForContacts(t, reader, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := writer.Publish(ctx, sampleRecord("ssh", "203.0.113.5:7000")); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	if _, err := reader.Resolve("ssh"); !errors.Is(err, ErrUnsigned) {
+		t.Fatalf("an unsigned record resolved to %v, want ErrUnsigned", err)
+	}
+}
+
+func TestAnUnsignedRecordIsRefusedWhenKeysAreNamed(t *testing.T) {
+	writer := startNode(t, Config{ListenAddr: freeUDPAddr(t)})
+	reader := startNode(t, Config{
+		ListenAddr:  freeUDPAddr(t),
+		Bootstrap:   []string{writer.Addr()},
+		TrustedKeys: []ed25519.PublicKey{publisher(t).PublicKey()},
+	})
+	waitForContacts(t, reader, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := writer.Publish(ctx, sampleRecord("ssh", "203.0.113.5:7000")); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	// A named key is a statement that only that key is believed, so a record that
+	// carries no key at all cannot satisfy it.
+	if _, err := reader.Resolve("ssh"); !errors.Is(err, ErrUnsigned) {
+		t.Fatalf("an unsigned record resolved to %v, want ErrUnsigned", err)
+	}
+}
+
+func TestARecordSignedByAKeyTheReaderWasNotGivenIsRefused(t *testing.T) {
+	stranger := publisher(t)
+	trusted := publisher(t)
+	writer := startNode(t, Config{ListenAddr: freeUDPAddr(t), Signer: stranger})
+	reader := startNode(t, Config{
+		ListenAddr:  freeUDPAddr(t),
+		Bootstrap:   []string{writer.Addr()},
+		TrustedKeys: []ed25519.PublicKey{trusted.PublicKey()},
+	})
+	waitForContacts(t, reader, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := writer.Publish(ctx, sampleRecord("ssh", "203.0.113.5:7000")); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	if _, err := reader.Resolve("ssh"); !errors.Is(err, ErrUntrustedPublisher) {
+		t.Fatalf("a record signed by a stranger resolved to %v, want ErrUntrustedPublisher", err)
+	}
+}
+
+func TestARewrittenRecordFailsItsSignature(t *testing.T) {
+	key := publisher(t)
+	node := startNode(t, Config{ListenAddr: freeUDPAddr(t), Signer: key})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := node.Publish(ctx, sampleRecord("ssh", "203.0.113.5:7000")); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	// What a node on the DHT can do: read the stored value, point it at an address
+	// of its own, and write it back under the same key without the signing key.
+	signed := Record{Name: "ssh", Type: "tcp", Server: "203.0.113.5:7000", Domains: []string{"a.example"}}
+	signed.Updated = time.Now()
+	signed.Expires = time.Now().Add(time.Minute)
+	signed.sign(key)
+	forged := signed
+	forged.Server = "198.51.100.66:7000"
+	value, err := json.Marshal(forged)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := node.table.Put(ctx, node.Key("ssh"), value); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	if _, err := node.Resolve("ssh"); !errors.Is(err, ErrBadSignature) {
+		t.Fatalf("a rewritten record resolved to %v, want ErrBadSignature", err)
+	}
+}
+
+func TestTheSignatureCoversEveryFieldAReaderActsOn(t *testing.T) {
+	key := publisher(t)
+
+	base := Record{Name: "ssh", Type: "tcp", Server: "203.0.113.5:7000",
+		Domains: []string{"a.example", "b.example"},
+		Updated: time.Now(), Expires: time.Now().Add(time.Minute)}
+	base.sign(key)
+
+	if verified, err := (&base).verify(true, nil); err != nil || !verified {
+		t.Fatalf("the signed record did not verify: verified=%v err=%v", verified, err)
+	}
+
+	changes := map[string]func(*Record){
+		"name":    func(r *Record) { r.Name = "other" },
+		"type":    func(r *Record) { r.Type = "udp" },
+		"server":  func(r *Record) { r.Server = "198.51.100.66:7000" },
+		"domains": func(r *Record) { r.Domains = []string{"c.example"} },
+		"updated": func(r *Record) { r.Updated = r.Updated.Add(time.Second) },
+		"expires": func(r *Record) { r.Expires = r.Expires.Add(time.Hour) },
+		"key":     func(r *Record) { r.PublicKey = publisher(t).PublicKeyHex() },
+	}
+	for field, change := range changes {
+		tampered := base
+		change(&tampered)
+		if verified, err := (&tampered).verify(false, nil); err == nil {
+			t.Errorf("changing the %s left the record verifying (verified=%v)", field, verified)
+		}
+	}
+}
+
+func TestAnUnsignedRecordIsAcceptedWithoutAReaderPolicy(t *testing.T) {
+	key := publisher(t)
+	writer := startNode(t, Config{ListenAddr: freeUDPAddr(t)})
+	reader := startNode(t, Config{ListenAddr: freeUDPAddr(t), Bootstrap: []string{writer.Addr()}})
+	waitForContacts(t, reader, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := writer.Publish(ctx, sampleRecord("ssh", "203.0.113.5:7000")); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	rec, err := reader.Resolve("ssh")
+	if err != nil {
+		t.Fatalf("Resolve with no signature policy: %v", err)
+	}
+	if rec.Verified {
+		t.Error("an unsigned record is reported as verified")
+	}
+	if rec.PublicKey != "" || rec.Signature != "" {
+		t.Errorf("an unsigned record carries key %q and signature %q",
+			rec.PublicKey, rec.Signature)
+	}
+
+	// The same reader still refuses a forged record when it is told which key to
+	// believe, even though it accepted the unsigned one.
+	strict := startNode(t, Config{
+		ListenAddr:  freeUDPAddr(t),
+		Bootstrap:   []string{writer.Addr()},
+		TrustedKeys: []ed25519.PublicKey{key.PublicKey()},
+	})
+	waitForContacts(t, strict, 1)
+	if _, err := strict.Resolve("ssh"); !errors.Is(err, ErrUnsigned) {
+		t.Fatalf("a reader naming a key resolved an unsigned record to %v, want ErrUnsigned", err)
+	}
+}
+
+func TestRepublishingKeepsASignatureValid(t *testing.T) {
+	key := publisher(t)
+	writer := startNode(t, Config{
+		ListenAddr:        freeUDPAddr(t),
+		Signer:            key,
+		AnnounceTTL:       900 * time.Millisecond,
+		RepublishInterval: 60 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := writer.Publish(ctx, sampleRecord("ssh", "203.0.113.5:7000")); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	// Several republications later the record has a new timestamp and a new
+	// signature; the reader's policy has to hold for both.
+	time.Sleep(400 * time.Millisecond)
+	rec, err := writer.Resolve("ssh")
+	if err != nil {
+		t.Fatalf("Resolve after republishing: %v", err)
+	}
+	if !rec.Verified {
+		t.Error("a republished record is not reported as verified")
+	}
+	if !rec.Fresh(time.Now()) {
+		t.Errorf("the republished record is stale: %+v", rec)
+	}
+}
+
+func TestPublishRefusesAnOversizedSignedRecord(t *testing.T) {
+	key := publisher(t)
+	node := startNode(t, Config{ListenAddr: freeUDPAddr(t), Signer: key})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// The key and signature add bytes to the stored value, so the limit still has
+	// to be checked after signing rather than before.
+	domains := make([]string, 60)
+	for i := range domains {
+		domains[i] = strings.Repeat("d", 30) + ".example"
+	}
+	err := node.Publish(ctx, Record{Name: "huge", Server: "203.0.113.5:7000", Domains: domains})
+	if err == nil {
+		t.Fatalf("an announcement of %d domains was accepted", len(domains))
+	}
+	if !strings.Contains(err.Error(), "DHT value") {
+		t.Errorf("the oversized announcement failed with %v, which does not name the value limit", err)
 	}
 }

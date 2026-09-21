@@ -55,6 +55,7 @@ type Server struct {
 	tunnels   *TunnelManager
 	metrics   *Metrics
 	acl       *AccessControl
+	bans      *banList
 	auditor   *Auditor
 	ledger    *ledgerStore
 	vhost     *vhostSet
@@ -90,6 +91,13 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	}
 	acl, err := NewAccessControl(cfg.Server.AllowCIDRs, cfg.Server.DenyCIDRs,
 		cfg.Server.RateLimitPerSecond, cfg.Server.RateLimitBurst)
+	if err != nil {
+		return nil, err
+	}
+	bans, err := newBanList(cfg.Server.BanAfterFailures,
+		time.Duration(cfg.Server.BanSeconds)*time.Second,
+		time.Duration(cfg.Server.BanMaxSeconds)*time.Second,
+		cfg.Server.BanIgnoreCIDRs)
 	if err != nil {
 		return nil, err
 	}
@@ -135,6 +143,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		startedAt:  time.Now(),
 		metrics:    newMetrics(),
 		acl:        acl,
+		bans:       bans,
 		auditor:    auditor,
 		ledger:     bandwidth,
 		tlsConfig:  tlsConfig,
@@ -145,7 +154,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	}
 	sessions := newSessionManager(cfg.Server.MaxConnections)
 	s.sessions = sessions
-	s.tunnels = newTunnelManager(cfg, logger, cipher, sessions, s.metrics)
+	s.tunnels = newTunnelManager(cfg, logger, cipher, sessions, s.metrics, auditor)
 	s.tunnels.directory = dir
 
 	s.vhost = newVhostSet(cfg, logger, s.metrics)
@@ -261,6 +270,9 @@ func (s *Server) Run(ctx context.Context) error {
 		_ = listener.Close()
 		return err
 	}
+	if s.bans.enabled() {
+		go s.collectBans(ctx)
+	}
 	if s.p2p != nil {
 		if err := s.p2p.Start(s.cfg.P2PAddr()); err != nil {
 			s.vhost.stop()
@@ -301,6 +313,19 @@ func (s *Server) Run(ctx context.Context) error {
 // admit applies the access-control rules to a freshly accepted connection. It
 // returns false when the connection has already been closed.
 func (s *Server) admit(conn net.Conn) bool {
+	if banned, remaining := s.bans.blocked(remoteIP(conn)); banned {
+		s.metrics.banRefused.Add(1)
+		s.metrics.controlRejected.Add(1)
+		s.auditor.Record(AuditEvent{
+			Event: EventBanRefused, Remote: conn.RemoteAddr().String(),
+			Outcome: "denied", Detail: fmt.Sprintf("the source is banned for another %s", remaining.Round(time.Second)),
+		})
+		s.logger.Printf("connection from %s refused: the source is banned for another %s",
+			conn.RemoteAddr(), remaining.Round(time.Second))
+		_ = conn.Close()
+		return false
+	}
+
 	switch s.acl.Check(conn) {
 	case DenyCIDR:
 		s.metrics.aclDenied.Add(1)
@@ -323,6 +348,52 @@ func (s *Server) admit(conn net.Conn) bool {
 	default:
 		return true
 	}
+}
+
+// collectBans drops ban entries that have expired and carry no failures, so a
+// long-running server does not keep one entry per source that ever failed.
+func (s *Server) collectBans(ctx context.Context) {
+	interval := time.Duration(s.cfg.Server.BanSeconds) * time.Second
+	if interval < time.Minute {
+		interval = time.Minute
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.bans.collect()
+		}
+	}
+}
+
+// recordAuthFailure books one failed authentication and bans the source when it
+// has failed often enough. It is the only place a ban is imposed, so every way of
+// failing to authenticate counts.
+func (s *Server) recordAuthFailure(conn net.Conn) {
+	banned, count := s.bans.fail(remoteIP(conn))
+	if !banned {
+		return
+	}
+
+	// The entry was reset, so the count is the number of bans the source has had.
+	s.metrics.bans.Add(1)
+	s.auditor.Record(AuditEvent{
+		Event: EventSourceBanned, Remote: conn.RemoteAddr().String(),
+		Outcome: "denied",
+		Detail:  fmt.Sprintf("banned after %d failed attempt(s), ban number %d", s.cfg.Server.BanAfterFailures, count),
+	})
+	s.logger.Printf("source %s banned after %d failed attempt(s)", conn.RemoteAddr(), s.cfg.Server.BanAfterFailures)
+}
+
+// recordAuthSuccess clears a source's failure count, so a client that eventually
+// authenticates does not carry its earlier typos towards a ban.
+func (s *Server) recordAuthSuccess(conn net.Conn) {
+	s.bans.succeed(remoteIP(conn))
 }
 
 // Shutdown stops the listener and disconnects every client.
@@ -484,6 +555,7 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 			Outcome: "denied", Detail: "invalid auth token",
 		})
 		s.logger.Printf("authentication failed for %s (client %s)", conn.RemoteAddr(), req.ClientVersion)
+		s.recordAuthFailure(conn)
 		_ = framer.WriteJSON(protocol.TypeAuthResponse, protocol.AuthResponse{
 			OK: false, ServerVersion: s.version, Protocol: protocol.ProtocolVersion,
 			Encryption: s.Cipher(), Error: "invalid auth token",
@@ -513,6 +585,7 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 			Outcome: "denied", Detail: err.Error(),
 		})
 		s.logger.Printf("identity check failed for %s: %v", conn.RemoteAddr(), err)
+		s.recordAuthFailure(conn)
 		reject(err.Error(), s.cfg.Identity.RequireIdentity)
 		return
 	}
@@ -531,6 +604,7 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 			s.metrics.authFailures.Add(1)
 			s.metrics.controlRejected.Add(1)
 			s.logger.Printf("post-quantum key agreement with %s failed: %v", conn.RemoteAddr(), err)
+			s.recordAuthFailure(conn)
 			reject("post-quantum key agreement failed", false)
 			return
 		}
@@ -561,6 +635,7 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 		return
 	}
 	s.metrics.controlAccepted.Add(1)
+	s.recordAuthSuccess(conn)
 	s.auditor.Record(AuditEvent{
 		Event: EventControlAccepted, ClientID: session.ID, Remote: session.RemoteAddr,
 		Outcome: "ok",
@@ -788,7 +863,16 @@ func (s *Server) handleData(conn net.Conn, framer *protocol.Framer, msg *protoco
 		return
 	}
 
+	// A client that cannot serve the stream says so before the handshake, so the
+	// waiting visitor fails now instead of after its dial timeout.
+	if open.Error != "" {
+		waiting <- streamResult{err: errors.New(open.Error)}
+		fail("the client could not serve the stream: " + open.Error)
+		return
+	}
+
 	if err := framer.WriteJSON(protocol.TypeDataOpenAck, protocol.DataOpenAck{OK: true}); err != nil {
+		waiting <- streamResult{err: errors.New("the stream was withdrawn before it was acknowledged")}
 		_ = conn.Close()
 		return
 	}
@@ -814,7 +898,7 @@ func (s *Server) handleData(conn net.Conn, framer *protocol.Framer, msg *protoco
 	// proxy, TypeUDPPacket frames for a datagram proxy. Handing it over is a
 	// non-blocking send because waiting is buffered with capacity 1 and only
 	// ever used once.
-	waiting <- dc
+	waiting <- streamResult{conn: dc}
 }
 
 // totalBytes reports aggregate tunnel traffic.

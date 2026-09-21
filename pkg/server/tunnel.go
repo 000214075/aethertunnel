@@ -8,6 +8,7 @@ import (
 	"net"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +32,13 @@ func matchesSecret(expected, presented string) bool {
 // The returned release function accounts for the stream's lifetime and must be
 // called once the stream has ended.
 func (t *Tunnel) openStream(visitor bool) (*dataConn, func(), error) {
+	return t.openStreamFor(visitor, "")
+}
+
+// openStreamFor asks the client for a data connection, optionally naming the
+// address the stream should reach. A target is only used by a socks5 proxy, whose
+// client dials what the visitor asked for instead of its own local_addr.
+func (t *Tunnel) openStreamFor(visitor bool, target string) (*dataConn, func(), error) {
 	streamID := newID(8)
 
 	waiting, err := t.Session.AddPending(streamID)
@@ -38,7 +46,7 @@ func (t *Tunnel) openStream(visitor bool) (*dataConn, func(), error) {
 		return nil, nil, err
 	}
 
-	request := protocol.DataRequest{Proxy: t.Name, StreamID: streamID, Visitor: visitor}
+	request := protocol.DataRequest{Proxy: t.Name, StreamID: streamID, Visitor: visitor, Target: target}
 	if err := t.Session.Framer().WriteJSON(protocol.TypeDataRequest, request); err != nil {
 		t.Session.DropPending(streamID)
 		return nil, nil, fmt.Errorf("cannot ask the client for a stream: %w", err)
@@ -55,12 +63,16 @@ func (t *Tunnel) openStream(visitor bool) (*dataConn, func(), error) {
 	defer timer.Stop()
 
 	select {
-	case dc := <-waiting:
-		if dc == nil {
+	case result := <-waiting:
+		if result.err != nil {
+			release()
+			return nil, nil, result.err
+		}
+		if result.conn == nil {
 			release()
 			return nil, nil, errors.New("the client disconnected while the stream was pending")
 		}
-		return dc, release, nil
+		return result.conn, release, nil
 	case <-timer.C:
 		t.Session.DropPending(streamID)
 		release()
@@ -179,13 +191,14 @@ type TunnelManager struct {
 	cipher   *crypto.Cipher
 	sessions *SessionManager
 	metrics  *Metrics
+	auditor  *Auditor
 
 	vhost     *vhostSet
 	p2p       *p2pRendezvous
 	directory *directory
 }
 
-func newTunnelManager(cfg *config.Config, logger *log.Logger, cipher *crypto.Cipher, sessions *SessionManager, metrics *Metrics) *TunnelManager {
+func newTunnelManager(cfg *config.Config, logger *log.Logger, cipher *crypto.Cipher, sessions *SessionManager, metrics *Metrics, auditor *Auditor) *TunnelManager {
 	return &TunnelManager{
 		groups:   make(map[string]*ProxyGroup),
 		cfg:      cfg,
@@ -193,6 +206,7 @@ func newTunnelManager(cfg *config.Config, logger *log.Logger, cipher *crypto.Cip
 		cipher:   cipher,
 		sessions: sessions,
 		metrics:  metrics,
+		auditor:  auditor,
 	}
 }
 
@@ -220,6 +234,16 @@ func (m *TunnelManager) Register(session *Session, spec protocol.ProxySpec) (*Tu
 	}
 	if spec.Multipath < 0 || spec.Multipath > config.MaxMultipath {
 		return nil, fmt.Errorf("multipath %d is out of range (0-%d)", spec.Multipath, config.MaxMultipath)
+	}
+	if spec.Type == protocol.ProxyTypeSOCKS && len(spec.AllowTargets) == 0 {
+		// The list is what bounds the endpoint, so a registration that leaves it
+		// out is refused rather than published as an exit for everything.
+		return nil, errors.New("a socks5 tunnel needs allow_targets: it names the ranges the client may dial")
+	}
+	for _, cidr := range append(append([]string{}, spec.AllowCIDRs...), spec.DenyCIDRs...) {
+		if _, _, err := net.ParseCIDR(strings.TrimSpace(cidr)); err != nil {
+			return nil, fmt.Errorf("visitor CIDR %q is not valid: %w", cidr, err)
+		}
 	}
 	if config.IsPrivateProxyType(spec.Type) {
 		if spec.SecretKey == "" {

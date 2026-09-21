@@ -69,7 +69,9 @@ to start, and says so in its log.
 
 ## State
 
-The audit log, the bandwidth ledger and the ledger's signing key are written to
+The audit log, the bandwidth ledger and the signing keys — the ledger's and the DHT
+announcement key from `[dht] signing_key_file` — are written to
 `/var/lib/aethertunnel`, which is an `emptyDir` here and therefore lost when the pod
 is replaced. Replace it with a `PersistentVolumeClaim` before using the ledger as a
-record of anything.
+record of anything, and before handing clients the announcement key: a node restarted
+with a fresh key file signs with a key those clients do not trust.

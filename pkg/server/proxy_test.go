@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -37,6 +38,27 @@ type testAgent struct {
 	done    chan struct{}
 	stopped chan struct{}
 	verdict chan *protocol.Message
+
+	// dialTarget decides what a socks5 request may reach. It emulates the real
+	// client, which dials the address the visitor named rather than a local
+	// service of its own; leaving it nil means this agent serves no socks5 proxy.
+	// serve goroutines run on the agent's own goroutine, so it is set and read
+	// under dialMu.
+	dialMu     sync.Mutex
+	dialTarget func(target string) (net.Conn, error)
+}
+
+// setDialTarget installs the dial function a socks5 request goes through.
+func (a *testAgent) setDialTarget(fn func(string) (net.Conn, error)) {
+	a.dialMu.Lock()
+	a.dialTarget = fn
+	a.dialMu.Unlock()
+}
+
+func (a *testAgent) targetDialer() func(string) (net.Conn, error) {
+	a.dialMu.Lock()
+	defer a.dialMu.Unlock()
+	return a.dialTarget
 }
 
 func startAgent(t *testing.T, serverAddr string, encryption bool, handlers map[string]dataHandler) *testAgent {
@@ -123,6 +145,12 @@ func (a *testAgent) loop(handlers map[string]dataHandler) {
 			if err := json.Unmarshal(msg.Payload, &request); err != nil {
 				continue
 			}
+			if request.Target != "" {
+				// A socks5 request carries the address to reach, so it needs no
+				// entry in the handlers map: the agent dials the target itself.
+				go a.serve(request, nil)
+				continue
+			}
 			handler, ok := handlers[request.Proxy]
 			if !ok {
 				continue
@@ -144,6 +172,15 @@ func (a *testAgent) serve(request protocol.DataRequest, handler dataHandler) {
 		return
 	}
 	framer := protocol.NewFramer(conn, a.client.cipher, 0)
+
+	// A socks5 request names its own target, so the agent dials it (subject to
+	// whatever ranges the test allows) and reports a refusal the way the real
+	// client does, before the stream is handed over.
+	if request.Target != "" {
+		a.serveTarget(conn, framer, request)
+		return
+	}
+
 	if err := framer.WriteJSON(protocol.TypeDataOpen, protocol.DataOpen{
 		Session: a.client.session, Proxy: request.Proxy, StreamID: request.StreamID,
 	}); err != nil {
@@ -156,6 +193,47 @@ func (a *testAgent) serve(request protocol.DataRequest, handler dataHandler) {
 		return
 	}
 	handler(conn, framer)
+}
+
+// serveTarget emulates the client end of a socks5 stream.
+func (a *testAgent) serveTarget(conn net.Conn, framer *protocol.Framer, request protocol.DataRequest) {
+	open := protocol.DataOpen{Session: a.client.session, Proxy: request.Proxy, StreamID: request.StreamID}
+
+	dial := a.targetDialer()
+	if dial == nil {
+		open.Error = "this agent serves no socks5 tunnel"
+		a.refuseTarget(conn, framer, open)
+		return
+	}
+
+	target, err := dial(request.Target)
+	if err != nil {
+		open.Error = err.Error()
+		a.refuseTarget(conn, framer, open)
+		return
+	}
+	defer target.Close()
+
+	if err := framer.WriteJSON(protocol.TypeDataOpen, open); err != nil {
+		_ = conn.Close()
+		return
+	}
+	var ack protocol.DataOpenAck
+	if err := framer.ReadJSON(protocol.TypeDataOpenAck, &ack); err != nil || !ack.OK {
+		_ = conn.Close()
+		return
+	}
+
+	toTarget, fromTarget := flynet.Pipe(target, conn, 5*time.Second)
+	a.t.Logf("socks5 stream for %s finished (%d bytes to the target, %d back)", request.Target, toTarget, fromTarget)
+}
+
+// refuseTarget reports a stream the agent will not serve.
+func (a *testAgent) refuseTarget(conn net.Conn, framer *protocol.Framer, open protocol.DataOpen) {
+	defer conn.Close()
+	_ = framer.WriteJSON(protocol.TypeDataOpen, open)
+	var ack protocol.DataOpenAck
+	_ = framer.ReadJSON(protocol.TypeDataOpenAck, &ack)
 }
 
 // --- local services -----------------------------------------------------------

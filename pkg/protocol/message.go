@@ -426,6 +426,10 @@ const (
 	ProxyTypeSTCP  = "stcp"
 	ProxyTypeSUDP  = "sudp"
 	ProxyTypeXTCP  = "xtcp"
+	// ProxyTypeSOCKS is a public SOCKS5 endpoint: the visitor asks for a target
+	// and the client dials it, which is what lets a machine that cannot create a
+	// tun device route TCP traffic through the tunnel.
+	ProxyTypeSOCKS = "socks5"
 )
 
 // ProxySpec describes a tunnel a client wants to publish.
@@ -447,6 +451,14 @@ type ProxySpec struct {
 	// Multipath is how many parallel data connections carry one datagram
 	// session. Zero or one means a single path.
 	Multipath int `json:"multipath,omitempty"`
+	// AllowTargets lists the address ranges a socks5 proxy may dial. A socks5
+	// registration without it is refused, so a client cannot publish an exit for
+	// everything it can reach by leaving the list out.
+	AllowTargets []string `json:"allow_targets,omitempty"`
+	// AllowCIDRs and DenyCIDRs restrict which visitor sources may use this proxy,
+	// on top of the server's own [server] allow_cidrs and deny_cidrs.
+	AllowCIDRs []string `json:"allow_cidrs,omitempty"`
+	DenyCIDRs  []string `json:"deny_cidrs,omitempty"`
 }
 
 // VisitorConnect is the first frame of a visitor connection. A visitor is a
@@ -548,6 +560,9 @@ type DataRequest struct {
 	// Visitor marks a stream that was requested by a visitor connection rather
 	// than by a visit to a public port.
 	Visitor bool `json:"visitor,omitempty"`
+	// Target is the address a socks5 visitor asked for. It is empty for every
+	// other proxy type, whose target is the client's own local_addr.
+	Target string `json:"target,omitempty"`
 }
 
 // DataOpen asks the server to open a new data stream for a proxy. After the ack
@@ -556,6 +571,10 @@ type DataOpen struct {
 	Session  string `json:"session"`
 	Proxy    string `json:"proxy"`
 	StreamID string `json:"stream_id"`
+	// Error carries the reason the client could not serve the stream, so the
+	// server can fail the waiting visitor at once instead of waiting for the dial
+	// timeout and can answer a socks5 client with the matching reply code.
+	Error string `json:"error,omitempty"`
 }
 
 // DataOpenAck accepts or rejects a data stream.
