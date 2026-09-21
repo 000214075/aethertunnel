@@ -25,6 +25,11 @@
 - 发布流程新增一个 Windows 作业，在打标签的源码上跑 `scripts/smoke-test.ps1`，
   `create the release` 以它为前提：脚本不通过就不会创建 Release。CI 的 Windows 作业每次
   推送也跑同一个脚本，所以这套真实进程检查不再只在开发者的机器上跑过。
+- 发布流程在 Release 建好之后还有一个作业检查**发布页本身**：逐个文件核对 `SHA256SUMS`、
+  确认两个 Windows 二进制报出的版本就是标签版本、用随发布一起上传的示例配置各做一次
+  `--check`，最后用这两个**已发布**的二进制跑完整套运维脚本。`scripts/smoke-test.ps1`
+  为此新增 `-ServerExe`、`-ClientExe`、`-HelperExe`：给了哪个就用哪个，不再重新构建。
+  这一条是上面那些作业证明不了的：它们测的是刚构建出来的产物，不是上传之后的那份。
 
 ### 修复
 

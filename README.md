@@ -98,7 +98,7 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 | 容器与编排 | ✅ 可用 | `Dockerfile`（多阶段 → distroless）与 `deploy/kubernetes/` 清单；凭据可用环境变量提供，不必写进 ConfigMap |
 | 多平台 | ✅ 可用 | linux/darwin/windows × amd64/arm64，`scripts/build-release.*` 一键出 12 个产物 + SHA256 |
 | 配置校验 | ✅ 可用 | 未知配置项会**报出来**而不是静默忽略；`--check` 只校验不启动 |
-| 单元 + 端到端测试 | ✅ 可用 | 含"访问者→隧道→本地服务"的真实回环测试，明文与加密两种模式；另有 86 项检查的运维脚本 `scripts/smoke-test.ps1`（CI 的 Windows 作业与发布流程都会跑它，发布前不通过就不出 Release）与真实 tun 设备上的 `scripts/vpn-linux-test.sh` |
+| 单元 + 端到端测试 | ✅ 可用 | 含"访问者→隧道→本地服务"的真实回环测试，明文与加密两种模式；另有 86 项检查的运维脚本 `scripts/smoke-test.ps1`（CI 的 Windows 作业与发布流程都会跑它，发布前不通过就不出 Release；发布后还会把发布页上的二进制下载下来再跑一遍），以及真实 tun 设备上的 `scripts/vpn-linux-test.sh` |
 
 ### 这一版没有什么
 
@@ -361,7 +361,7 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 | Containers and orchestration | ✅ works | a multi-stage `Dockerfile` ending in distroless, and manifests under `deploy/kubernetes/`; credentials can come from environment variables instead of the ConfigMap |
 | Platforms | ✅ works | linux/darwin/windows × amd64/arm64; `scripts/build-release.*` produces 12 binaries + SHA256 |
 | Config validation | ✅ works | unknown keys are **reported**, not ignored; `--check` validates without starting |
-| Tests | ✅ works | unit tests, a real end-to-end tunnel test in cleartext and encrypted modes, an 86-check operations script `scripts/smoke-test.ps1` (run by CI and required before a release is created), and a layer-3 run on real tun devices in `scripts/vpn-linux-test.sh` |
+| Tests | ✅ works | unit tests, a real end-to-end tunnel test in cleartext and encrypted modes, an 86-check operations script `scripts/smoke-test.ps1` (run by CI, required before a release is created, and run again against the published binaries afterwards), and a layer-3 run on real tun devices in `scripts/vpn-linux-test.sh` |
 
 ### What this release does not do
 

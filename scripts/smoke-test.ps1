@@ -38,6 +38,12 @@
 
 .PARAMETER Keep
     Leave the working directory and any running process in place for inspection.
+
+.PARAMETER ServerExe
+    Exercise this server binary instead of building one. ClientExe and HelperExe work
+    the same way; anything not given is built from this checkout. The release workflow
+    passes the artifacts it has just published, so the checks run against what was
+    uploaded rather than against a fresh build of the same source.
 #>
 [CmdletBinding()]
 param(
@@ -45,7 +51,13 @@ param(
     [switch]$Keep,
     # Appends each step and verdict here as it happens. stdout is buffered when the
     # script is run with its output redirected, so this is what shows where a run is.
-    [string]$ProgressLog = ''
+    [string]$ProgressLog = '',
+    # Binaries to exercise instead of building them from this checkout. The release
+    # workflow hands in the artifacts it just published, which is the only way to show
+    # that what was uploaded is what was tested. Anything not handed in is built.
+    [string]$ServerExe = '',
+    [string]$ClientExe = '',
+    [string]$HelperExe = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -412,22 +424,36 @@ function Resolve-Go {
     throw "the Go toolchain was not found; install it or put go.exe on PATH"
 }
 
-$goExe = Resolve-Go
+$goExe = ''
 
-Write-Step "building the binaries"
-Push-Location $repo
-try {
-    & $goExe build -o (Join-Path $bin 'aethertunnel-server.exe') . ; if ($LASTEXITCODE -ne 0) { throw "server build failed" }
-    & $goExe build -o (Join-Path $bin 'aethertunnel-client.exe') ./client ; if ($LASTEXITCODE -ne 0) { throw "client build failed" }
-    & $goExe build -o (Join-Path $bin 'smoketest.exe') ./scripts/smoketest ; if ($LASTEXITCODE -ne 0) { throw "helper build failed" }
-} finally {
-    Pop-Location
+$serverExe = $ServerExe
+$clientExe = $ClientExe
+$helperExe = $HelperExe
+
+if (-not ($serverExe -and $clientExe -and $helperExe)) {
+    $goExe = Resolve-Go
+    Write-Step "building the binaries"
+    Push-Location $repo
+    try {
+        & $goExe build -o (Join-Path $bin 'aethertunnel-server.exe') . ; if ($LASTEXITCODE -ne 0) { throw "server build failed" }
+        & $goExe build -o (Join-Path $bin 'aethertunnel-client.exe') ./client ; if ($LASTEXITCODE -ne 0) { throw "client build failed" }
+        & $goExe build -o (Join-Path $bin 'smoketest.exe') ./scripts/smoketest ; if ($LASTEXITCODE -ne 0) { throw "helper build failed" }
+    } finally {
+        Pop-Location
+    }
+    Write-Host "   binaries in $bin"
+    if (-not $serverExe) { $serverExe = Join-Path $bin 'aethertunnel-server.exe' }
+    if (-not $clientExe) { $clientExe = Join-Path $bin 'aethertunnel-client.exe' }
+    if (-not $helperExe) { $helperExe = Join-Path $bin 'smoketest.exe' }
 }
-Write-Host "   binaries in $bin"
 
-$serverExe = Join-Path $bin 'aethertunnel-server.exe'
-$clientExe = Join-Path $bin 'aethertunnel-client.exe'
-$helperExe = Join-Path $bin 'smoketest.exe'
+foreach ($pair in @(@('server', $serverExe), @('client', $clientExe), @('helper', $helperExe))) {
+    if (-not (Test-Path $pair[1])) { throw "the $($pair[0]) binary does not exist: $($pair[1])" }
+    Write-Host ("   {0,-7} {1}" -f $pair[0], (Resolve-Path $pair[1]).Path)
+}
+$serverExe = (Resolve-Path $serverExe).Path
+$clientExe = (Resolve-Path $clientExe).Path
+$helperExe = (Resolve-Path $helperExe).Path
 
 $controlPort = Get-FreePort
 $httpPort = Get-FreePort

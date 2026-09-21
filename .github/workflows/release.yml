@@ -100,3 +100,73 @@ jobs:
             dist/aethertunnel-* dist/SHA256SUMS \
             server.toml.example client.toml.example
           echo "released $tag"
+
+  # Checks the release page itself, from a network that can download it: every
+  # published file against SHA256SUMS, the version the published binaries report, the
+  # example configurations shipped beside them, and then the whole operations script
+  # against the two published Windows binaries. A red job here means the release page
+  # does not hold what was built and tested, which is the one thing the jobs above
+  # cannot show.
+  verify:
+    name: verify the published artifacts
+    needs: release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: download the release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path published | Out-Null
+          gh release download "${{ github.ref_name }}" --dir published
+          Get-ChildItem published | Select-Object Name, Length | Format-Table -AutoSize
+
+      - name: every published file matches SHA256SUMS
+        shell: pwsh
+        run: |
+          $checked = 0
+          foreach ($line in Get-Content published/SHA256SUMS) {
+            if ($line.Trim() -eq '') { continue }
+            $parts = $line -split '\s+'
+            $want = $parts[0].ToLower()
+            # The sums name their entries as ./<file>.
+            $name = $parts[1] -replace '^\./', ''
+            $path = "published/$name"
+            if (-not (Test-Path $path)) { Write-Error "$name is listed in SHA256SUMS but was not uploaded"; exit 1 }
+            $got = (Get-FileHash $path -Algorithm SHA256).Hash.ToLower()
+            if ($got -ne $want) { Write-Error "$name does not match the hash published for it"; exit 1 }
+            $checked++
+          }
+          Write-Host "$checked published files match SHA256SUMS"
+
+      - name: the published binaries report the released version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          foreach ($name in @('aethertunnel-server-windows-amd64.exe', 'aethertunnel-client-windows-amd64.exe')) {
+            $out = & "./published/$name" --version
+            Write-Host $out
+            if ($out -notmatch [regex]::Escape($tag)) { Write-Error "$name does not report $tag"; exit 1 }
+          }
+
+      - name: the published binaries accept the example configurations
+        shell: pwsh
+        run: |
+          & ./published/aethertunnel-server-windows-amd64.exe --config published/server.toml.example --check
+          if ($LASTEXITCODE -ne 0) { Write-Error "the published server refused its example configuration"; exit 1 }
+          & ./published/aethertunnel-client-windows-amd64.exe --config published/client.toml.example --check
+          if ($LASTEXITCODE -ne 0) { Write-Error "the published client refused its example configuration"; exit 1 }
+
+      - name: the operations script passes against the published binaries
+        shell: pwsh
+        run: |
+          ./scripts/smoke-test.ps1 `
+            -ServerExe ./published/aethertunnel-server-windows-amd64.exe `
+            -ClientExe ./published/aethertunnel-client-windows-amd64.exe
