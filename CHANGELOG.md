@@ -36,7 +36,10 @@
 - **`aethertunnel_bytes_from_clients_total` 与按隧道的字节计数不含 UDP。** 数据报会话只在
   `Tunnel` 上记账、只写进账本，没有进指标，而 `aethertunnel_bytes_to_clients_total` 的说明是
   "发往客户端的字节"。现在 UDP 会话的字节也计入全局与按隧道的字节计数（数据报会话不计为"流"，
-  所以 `streams_total` 不受影响）。
+  所以 `streams_total` 不受影响）。这些字节是在**会话释放时**一次性计入的，也就是该来源地址
+  安静 `server.read_timeout_seconds`（默认 120）秒之后，与它从
+  `aethertunnel_udp_sessions_active` 消失的时刻相同；按数据报即时增加的是
+  `aethertunnel_udp_datagrams_total`。所以数据报在传、而两个字节计数器还没动，是正常现象。
 - **`GET /api/status` 的 `traffic` 在客户端全部断开后归零**，而面板上写着"计数器自服务器启动起
   累计"。它原本是"当前注册的这些隧道各自累计了多少"，最后一个发布该代理的客户端断开后就变成 0；
   同一时刻 `/metrics` 的两个字节计数器仍在累计，两个视图互相矛盾。现在 `traffic` 是自启动起的

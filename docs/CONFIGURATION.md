@@ -184,6 +184,10 @@ SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` �
 三条审计序列只在 `[audit] enabled = true` 时出现。审计关闭时不输出它们，因为恒为 0 的
 "丢失 0 条"会被读成"审计正常"，而实际上根本没有任何日志。
 
+UDP 数据报会话的字节在**会话释放时**计入两个字节计数器与按隧道的计数，即该来源地址安静
+`server.read_timeout_seconds`（默认 120）秒之后，与它从 `aethertunnel_udp_sessions_active`
+消失的时刻相同；每收到一个数据报就增加的是 `aethertunnel_udp_datagrams_total`。
+
 ## `[audit]`（服务端）
 
 | 键 | 类型 | 默认 | 说明 |

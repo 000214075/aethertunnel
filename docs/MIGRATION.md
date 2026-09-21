@@ -234,7 +234,9 @@ v3.6.0 的配置可以直接用。变的是审计日志写不进去时的行为�
   计数器一致。它此前等于"当前注册的这些隧道各自累计了多少"，最后一个发布该代理的
   客户端断开后归零。按隧道的数字仍随注册重置，留在 `/api/proxies` 里。
 - **UDP 数据报会话的字节计入全局与按隧道的字节计数**，此前它只写在账本里。
-  数据报不计为"流"，`streams_total` 不受影响。
+  数据报不计为"流"，`streams_total` 不受影响。这些字节在会话释放时一次性计入，
+  即该来源地址安静 `server.read_timeout_seconds`（默认 120）秒之后；按数据报即时增加的
+  只有 `aethertunnel_udp_datagrams_total`。把这个值调小（例如 2）可以让面板更快显示出来。
 - **`GET /api/status` 新增 `audit` 段**（`enabled`、`writable`、`path`、`max_bytes`、
   `bytes_written`、`write_failures`、`records_lost`、`recovered`、`last_error`），
   面板的"服务器状态"栏新增"审计日志"一行与丢失横幅，中英双语。配置了审计但当前写不进去
