@@ -1,0 +1,4 @@
+# Shell scripts run on Linux, whatever platform the checkout happened on, so their
+# line endings are pinned. Without this a Windows checkout would turn them into CRLF
+# and every one of them would fail with "bad interpreter" the moment it is run.
+*.sh text eol=lf

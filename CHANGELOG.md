@@ -25,11 +25,15 @@
 - 发布流程新增一个 Windows 作业，在打标签的源码上跑 `scripts/smoke-test.ps1`，
   `create the release` 以它为前提：脚本不通过就不会创建 Release。CI 的 Windows 作业每次
   推送也跑同一个脚本，所以这套真实进程检查不再只在开发者的机器上跑过。
-- 发布流程在 Release 建好之后还有一个作业检查**发布页本身**：逐个文件核对 `SHA256SUMS`、
-  确认两个 Windows 二进制报出的版本就是标签版本、用随发布一起上传的示例配置各做一次
-  `--check`，最后用这两个**已发布**的二进制跑完整套运维脚本。`scripts/smoke-test.ps1`
-  为此新增 `-ServerExe`、`-ClientExe`、`-HelperExe`：给了哪个就用哪个，不再重新构建。
-  这一条是上面那些作业证明不了的：它们测的是刚构建出来的产物，不是上传之后的那份。
+- 发布流程在 Release 建好之后还有两个作业检查**发布页本身**：一个在 Windows 上逐个文件核对
+  `SHA256SUMS`、确认两个 Windows 二进制报出的版本就是标签版本、用随发布一起上传的示例配置
+  各做一次 `--check`，再用这两个**已发布**的二进制跑完整套运维脚本；一个在 Linux 上把
+  `aethertunnel-server-linux-amd64` 与客户端下载下来，核对校验和与版本，然后跑
+  `scripts/verify-release-linux.sh`——服务端起得来、`/healthz` 200、审计日志在运行中被
+  `mv` 走之后按配置路径重建、`audit.keep` 留下该留的代数、`SIGTERM` 后退出并写出日志。
+  这些是构建作业证明不了的：它们测的是刚构建的产物，不是上传之后的那份；而审计日志被改名
+  重建这一条在 Windows 上根本做不出来。`scripts/smoke-test.ps1` 为此新增 `-ServerExe`、
+  `-ClientExe`、`-HelperExe`：给了哪个就用哪个，不再重新构建。
 
 ### 修复
 

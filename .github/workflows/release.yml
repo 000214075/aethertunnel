@@ -170,3 +170,26 @@ jobs:
           ./scripts/smoke-test.ps1 `
             -ServerExe ./published/aethertunnel-server-windows-amd64.exe `
             -ClientExe ./published/aethertunnel-client-windows-amd64.exe
+
+  # The same idea for the Linux artifacts, on a Linux kernel: the checks that cannot be
+  # made on Windows live here, above all the audit log being renamed away underneath a
+  # running server, which Windows refuses to do to an open file.
+  verify-linux:
+    name: verify the published linux artifacts
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: download the release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p published
+          gh release download "${GITHUB_REF_NAME}" --dir published \
+            --pattern 'aethertunnel-*-linux-amd64' --pattern 'SHA256SUMS'
+          chmod +x published/aethertunnel-*-linux-amd64
+          ls -l published
+
+      - name: run the published linux binaries
+        run: bash scripts/verify-release-linux.sh "$PWD/published" "${GITHUB_REF_NAME}"
