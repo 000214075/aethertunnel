@@ -309,6 +309,111 @@ local_port = 8080
 	}
 }
 
+// --- [[proxies]] as a server-side policy ---------------------------------------
+
+// TestAServerProxyPolicyNeedsNoLocalService covers what an entry means in a server
+// configuration: the policy for a name a client will publish, so the keys that
+// describe the client's own service are not required and the type stays unset unless
+// the operator pins one.
+func TestAServerProxyPolicyNeedsNoLocalService(t *testing.T) {
+	path := writeConfig(t, `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[[proxies]]
+name = "ssh"
+remote_port = 6022
+allow_cidrs = ["10.0.0.0/8"]
+`)
+	cfg, err := LoadServer(path)
+	if err != nil {
+		t.Fatalf("a policy without a local service must load: %v", err)
+	}
+	if cfg.Proxies[0].Type != "" {
+		t.Fatalf("the policy pinned type %q; an entry that names no type accepts any", cfg.Proxies[0].Type)
+	}
+	if cfg.Proxies[0].RemotePort != 6022 {
+		t.Fatalf("the policy pins remote_port %d, want 6022", cfg.Proxies[0].RemotePort)
+	}
+}
+
+// TestAServerProxyPolicyReportsTheKeysItIgnores covers the other half of the same
+// rule: a key that describes the client's service is accepted so one file can be
+// used for both roles, and it is reported because the server does not act on it.
+func TestAServerProxyPolicyReportsTheKeysItIgnores(t *testing.T) {
+	path := writeConfig(t, `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[[proxies]]
+name = "ssh"
+local_port = 22
+group = "pool"
+`)
+	cfg, err := LoadServer(path)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	warnings := strings.Join(cfg.Warnings, "\n")
+	for _, key := range []string{"local_port", "group"} {
+		if !strings.Contains(warnings, key+" has no effect in a server configuration") {
+			t.Errorf("no warning for %s: %v", key, cfg.Warnings)
+		}
+	}
+}
+
+// TestAServerProxyPolicyIsChecked covers the values a policy does have to get right.
+func TestAServerProxyPolicyIsChecked(t *testing.T) {
+	body := `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+`
+	for _, tc := range []struct {
+		name     string
+		policy   string
+		problems []string
+	}{
+		{
+			name:     "an unknown type",
+			policy:   "[[proxies]]\nname = \"ssh\"\ntype = \"gopher\"\n",
+			problems: []string{"type \"gopher\" is not supported"},
+		},
+		{
+			name:     "a visitor list that is not a CIDR",
+			policy:   "[[proxies]]\nname = \"ssh\"\nallow_cidrs = [\"10.0.0.0\"]\n",
+			problems: []string{"is not a CIDR"},
+		},
+		{
+			name:     "a private type with a public port",
+			policy:   "[[proxies]]\nname = \"ssh\"\ntype = \"stcp\"\nremote_port = 6022\n",
+			problems: []string{"has no public port"},
+		},
+		{
+			name:     "a multipath setting out of range",
+			policy:   "[[proxies]]\nname = \"ssh\"\nmultipath = 99\n",
+			problems: []string{"multipath must be 0-"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := LoadServer(writeConfig(t, body+tc.policy))
+			if err == nil {
+				t.Fatalf("the policy was accepted: %+v", cfg.Proxies)
+			}
+			for _, problem := range tc.problems {
+				if !strings.Contains(err.Error(), problem) {
+					t.Errorf("the refusal does not mention %q: %v", problem, err)
+				}
+			}
+		})
+	}
+}
+
 // --- bandwidth ledger ---------------------------------------------------------
 
 func TestLedgerDefaultsAreApplied(t *testing.T) {

@@ -77,6 +77,30 @@ aethertunnel-client --config client.toml --check
 SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` 在服务器接受连接之后、
 建立隧道之前执行，被拒绝的访客会留下 `proxy_visitor_denied` 审计记录。
 
+## `[[proxies]]`（服务端，可重复）
+
+服务端本身不发布代理：发布什么由连上来的客户端决定。服务端配置里的 `[[proxies]]` 是
+**针对某个代理名的策略**，任何客户端注册这个名字都按它执行；没有条目的名字不受策略约束，
+与升级前一致。
+
+| 键 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `name` | string | 必填 | 策略针对的代理名 |
+| `type` | string | 空 | 该名字允许发布的类型；留空表示任意类型 |
+| `remote_port` | int | 0 | 该名字必须使用的对外端口；0 表示由客户端决定 |
+| `allow_cidrs` | []string | 空 | 允许访问该名字的来源地址；留空表示这里不限 |
+| `deny_cidrs` | []string | 空 | 拒绝的来源地址，优先级高于 `allow_cidrs` |
+
+注册阶段先比对 `type` 与 `remote_port`：不匹配时不建立隧道，客户端收到说明服务端期望的类型
+或端口，服务端记录 `proxy_rejected`。访客阶段先过服务端策略的 `allow_cidrs` / `deny_cidrs`，
+再过客户端为该代理声明的名单，两边都通过才建立隧道；被服务端策略拒绝的访客记入
+`proxy_visitor_denied` 与 `aethertunnel_visitors_denied_by_proxy_total`，审计记录的 `detail`
+指出是服务端策略拒绝的。
+
+描述客户端自身服务的键（`local_ip`、`local_port`、`group`、`multipath`、`secret_key`、
+`auth_method`、`allow_targets`、`domains`）在服务端配置里会加载成功但不生效，`--check` 会逐条
+输出警告。因此同一份 `[[proxies]]` 列表可以放在两种角色的配置里，只是含义不同。
+
 ## `[[visitors]]`（客户端，可重复）
 
 | 键 | 类型 | 默认 | 说明 |

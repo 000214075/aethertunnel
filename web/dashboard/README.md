@@ -24,6 +24,19 @@ registered"; before the first successful load, the tables show `—`. 请求失�
 的错误横幅；`/api/status` 失败还会显示「连接断开 — 正在重试」；列表为空时明确显示
 「当前没有已连接的客户端」「暂无已注册的代理」。
 
+## Connections / 连接数
+
+The overview counts four things and shows them as four tiles: *Active connections*
+(`connections.active`, the sessions that are connected now), *Total connections*
+(`connections.total`, every TCP socket the listener has accepted, including the ones
+refused before the handshake), *Authenticated connections* (`connections.authenticated`,
+the ones that completed the handshake and got a session) and *Max connections*
+(`connections.max`). The middle two are different numbers whenever a source connects and
+says nothing: only the second of the two matches `aethertunnel_control_connections_total`
+on `/metrics`. 概览页的四格分别是当前连接数、监听器接受过的连接总数（含握手前就被拒的）、
+通过握手的连接数（与 `/metrics` 的 `aethertunnel_control_connections_total` 同源）与上限；
+有人连上却不发握手时，前两个数字就不相等。
+
 ## Audit log / 审计日志
 
 The `audit` section of `/api/status` is the only place a stopped audit log is visible, so
@@ -47,7 +60,7 @@ proxies table shows the member count and how many of them are healthy in the *Me
 column, next to the first member's client and local address, and the strategy the pool is
 being served with in the *Load balancing* column (`load_balance`). The client rows carry a
 *Client version* column, which is what that client reported when it connected. The
-configuration view shows *Published proxies*, the number of `[[proxies]]` entries in the
+configuration view shows *Proxy policies*, the number of `[[proxies]]` entries in the
 server's own configuration — not the number of proxies connected clients have registered,
 which is the *registered* count on the overview. `/api/proxies` each proxy returns one row
 and carries the per-member detail for anything the table does not show. `/api/proxies`
@@ -55,7 +68,7 @@ and carries the per-member detail for anything the table does not show. `/api/pr
 `latency_ms`、`failures`、`healthy`）；表格的「成员」列显示成员数与其中可用（healthy）的
 个数，客户端与本地地址仍是第一个成员的，「负载均衡」列显示这个池当前使用的策略
 （`load_balance`）。客户端一行的「客户端版本」列是它连接时报告的版本；配置页的
-「发布的代理」是服务端自己配置里的 `[[proxies]]` 条数，与概览页「已注册」那个数字不同——
+「代理策略」是服务端自己配置里的 `[[proxies]]` 条数，与概览页「已注册」那个数字不同——
 后者属于已连接客户端。其余成员明细需要直接读取 `/api/proxies`。
 
 Byte and connection counters advance when a stream or a request finishes, and the page polls

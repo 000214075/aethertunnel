@@ -18,6 +18,8 @@
                  its allow_targets list refused with a SOCKS5 error code
       acl        a proxy whose own allow_cidrs refuses one loopback address and
                  serves the other, with the refusal in the audit log
+      policy     a server whose own [[proxies]] list refuses a registration it does
+                 not describe and a visitor whose source the client admitted
       ban        a second server that bans a source after repeated authentication
                  failures, refuses an accepted client from that source, and lets it
                  back in once the window passes
@@ -1736,6 +1738,83 @@ Test-Check 'the metrics endpoint is protected' {
     return $true
 }
 
+Test-Check 'the status endpoint and the metrics endpoint report the same numbers' {
+    # Two endpoints, one set of numbers. Anything an operator reads from the panel has
+    # to be the same value a Prometheus scrape sees, or the two tell different stories
+    # about the same server: that is how the traffic reading came to reset while the
+    # counters kept counting.
+    $status = Get-Status
+    $body = Invoke-Curl @('-s', "http://127.0.0.1:$dashboardPort/metrics")
+    $pairs = @(
+        @('traffic.bytes_in', [int64]$status.traffic.bytes_in, 'aethertunnel_bytes_from_clients_total'),
+        @('traffic.bytes_out', [int64]$status.traffic.bytes_out, 'aethertunnel_bytes_to_clients_total'),
+        @('connections.authenticated', [int64]$status.connections.authenticated, 'aethertunnel_control_connections_total'),
+        @('proxies.active_streams', [int64]$status.proxies.active_streams, 'aethertunnel_streams_active'),
+        @('audit.records_lost', [int64]$status.audit.records_lost, 'aethertunnel_audit_records_lost_total'),
+        @('audit.write_failures', [int64]$status.audit.write_failures, 'aethertunnel_audit_write_failures_total'),
+        @('audit.recovered', [int64]$status.audit.recovered, 'aethertunnel_audit_records_recovered_total'))
+    foreach ($pair in $pairs) {
+        # The body arrives with CRLF endings, so the end-of-line anchor has to allow
+        # a carriage return or every match fails on a line that is plainly there.
+        $match = [regex]::Match($body, '(?m)^' + [regex]::Escape($pair[2]) + ' (-?\d+)\r?$')
+        if (-not $match.Success) { throw "the metrics output has no $($pair[2])" }
+        if ([int64]$match.Groups[1].Value -ne $pair[1]) {
+            throw "$($pair[0]) is $($pair[1]) on /api/status and $($match.Groups[1].Value) on /metrics"
+        }
+    }
+
+    # The accepted, authenticated and active counts are three different things and have
+    # to stay ordered that way: a socket is accepted before it authenticates, and only
+    # some of the authenticated ones are still connected.
+    if ([int64]$status.connections.total -lt [int64]$status.connections.authenticated) {
+        throw "$($status.connections.total) sockets were accepted but $($status.connections.authenticated) authenticated"
+    }
+    if ([int64]$status.connections.active -gt [int64]$status.connections.authenticated) {
+        throw "$($status.connections.active) sessions are connected but only $($status.connections.authenticated) authenticated"
+    }
+
+    # Both endpoints count the same thing here too, and the live reads happen close
+    # enough together that nothing can have joined in between.
+    $clients = (Invoke-Curl @('-s', '-H', "Authorization: Bearer $token", "http://127.0.0.1:$dashboardPort/api/clients") | ConvertFrom-Json).clients
+    if (@($clients).Count -ne [int]$status.connections.active) {
+        throw "/api/clients lists $(@($clients).Count) clients and /api/status reports $($status.connections.active) active"
+    }
+    $proxies = (Invoke-Curl @('-s', '-H', "Authorization: Bearer $token", "http://127.0.0.1:$dashboardPort/api/proxies") | ConvertFrom-Json).proxies
+    if (@($proxies).Count -ne [int]$status.proxies.registered) {
+        throw "/api/proxies lists $(@($proxies).Count) proxies and /api/status reports $($status.proxies.registered) registered"
+    }
+
+    # The uptime is read from two clocks a moment apart, so it may differ by a second.
+    $uptime = [regex]::Match($body, '(?m)^aethertunnel_uptime_seconds (\d+)\r?$')
+    if (-not $uptime.Success) { throw "the metrics output has no uptime" }
+    $drift = [Math]::Abs([int64]$status.uptime_seconds - [int64]$uptime.Groups[1].Value)
+    if ($drift -gt 1) { throw "/api/status says $($status.uptime_seconds)s of uptime and /metrics says $($uptime.Groups[1].Value)s" }
+    return $true
+}
+
+Test-Check 'a refused connection is counted as accepted but not as authenticated' {
+    # This is the difference the two connection counters exist to show, and it was
+    # invisible while /api/status had no authenticated count to compare against.
+    $before = Get-Status
+    for ($attempt = 0; $attempt -lt 3; $attempt++) {
+        $socket = New-Object System.Net.Sockets.TcpClient('127.0.0.1', $controlPort)
+        $socket.Close()
+    }
+    $deadline = (Get-Date).AddSeconds(5)
+    $after = Get-Status
+    while ((Get-Date) -lt $deadline -and [int64]$after.connections.total -lt ([int64]$before.connections.total + 3)) {
+        Start-Sleep -Milliseconds 200
+        $after = Get-Status
+    }
+    if ([int64]$after.connections.total -lt ([int64]$before.connections.total + 3)) {
+        throw "three sockets were accepted but the total went from $($before.connections.total) to $($after.connections.total)"
+    }
+    if ([int64]$after.connections.authenticated -ne [int64]$before.connections.authenticated) {
+        throw "a socket that never sent a handshake was counted as authenticated ($($before.connections.authenticated) -> $($after.connections.authenticated))"
+    }
+    return $true
+}
+
 Test-Check 'the metrics endpoint reports the data path' {
     $body = Invoke-Curl @('-s', "http://127.0.0.1:$dashboardPort/metrics")
     foreach ($series in @(
@@ -2205,6 +2284,289 @@ Test-Check 'a disconnect ordered from the dashboard is in the audit log' {
 if ($conflictClient -and -not $conflictClient.HasExited) { Stop-Process -Id $conflictClient.Id -Force -ErrorAction SilentlyContinue }
 if ($dashOwner -and -not $dashOwner.HasExited) { Stop-Process -Id $dashOwner.Id -Force -ErrorAction SilentlyContinue }
 if ($dashServer -and -not $dashServer.HasExited) { Stop-Process -Id $dashServer.Id -Force -ErrorAction SilentlyContinue }
+
+Write-Step "checking that a client survives a restart of the server"
+
+# What an operator does on every upgrade: the server goes away and comes back on the
+# same ports. Nothing is restarted on the client side, so this is the client's own
+# reconnection and re-registration being exercised, and a stream has to work again
+# afterwards without anyone touching the client.
+$restartControlPort = Get-FreePort
+$restartDashboardPort = Get-FreePort
+$restartProxyPort = Get-FreePort
+$restartAudit = Join-Path $Root 'restart-audit.jsonl'
+$restartToml = Join-Path $Root 'restart-server.toml'
+@"
+[server]
+bind_addr = "127.0.0.1"
+bind_port = $restartControlPort
+auth_token = "$token"
+
+[dashboard]
+enabled = true
+bind_addr = "127.0.0.1"
+port = $restartDashboardPort
+token = "$token"
+
+[metrics]
+enabled = true
+
+[audit]
+enabled = true
+path = "$RootFwd/restart-audit.jsonl"
+"@ | Set-Content -Path $restartToml -Encoding UTF8
+
+$restartClientToml = Join-Path $Root 'restart-client.toml'
+@"
+[client]
+server_addr = "127.0.0.1:$restartControlPort"
+auth_token = "$token"
+reconnect_seconds = 1
+max_reconnect_seconds = 2
+
+[[proxies]]
+name = "restart-echo"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = $tcpEchoPort
+remote_port = $restartProxyPort
+"@ | Set-Content -Path $restartClientToml -Encoding UTF8
+
+$restartServerLog = Join-Path $Root 'restart-server.log'
+$restartServer = Start-Background -FilePath $serverExe -Arguments @('-config', $restartToml) -LogPath $restartServerLog -WorkingDirectory $Root
+Wait-ForPort -Port $restartControlPort | Out-Null
+$restartClientLog = Join-Path $Root 'restart-client.log'
+$restartClient = Start-Background -FilePath $clientExe -Arguments @('-config', $restartClientToml) -LogPath $restartClientLog -WorkingDirectory $Root
+Wait-ForPort -Port $restartProxyPort | Out-Null
+
+Test-Check 'a stream works before the server is restarted' {
+    $answer = Invoke-TcpEcho -Port $restartProxyPort -Payload 'before-the-restart'
+    if ($answer -ne 'before-the-restart') { throw "the stream answered '$answer'" }
+    return $true
+}
+
+# The stop is the graceful one, so the client sees the control connection end the way
+# it would during an upgrade rather than a dropped socket.
+Send-StopSignal $restartServer
+$deadline = (Get-Date).AddSeconds(15)
+while (-not $restartServer.HasExited -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
+if (-not $restartServer.HasExited) { throw "the server did not stop, so the restart cannot be tested" }
+
+Test-Check 'the client notices the server leaving' {
+    $deadline = (Get-Date).AddSeconds(15)
+    while ((Get-Date) -lt $deadline) {
+        if ((Read-Log $restartClientLog) -match 'session ended|reconnect|connection') { return $true }
+        Start-Sleep -Milliseconds 250
+    }
+    throw "the client never reported the server going away: $(Read-Log $restartClientLog)"
+}
+
+# The same configuration, so the same ports: this is the restart an operator performs.
+Remove-Item $restartAudit -ErrorAction SilentlyContinue
+$restartServer = Start-Background -FilePath $serverExe -Arguments @('-config', $restartToml) -LogPath $restartServerLog -WorkingDirectory $Root
+Test-Check 'the server comes back on the same port' {
+    Wait-ForPort -Port $restartControlPort | Out-Null
+    return $true
+}
+
+Test-Check 'the client reconnects and publishes its proxy again by itself' {
+    $deadline = (Get-Date).AddSeconds(30)
+    $published = $false
+    while ((Get-Date) -lt $deadline -and -not $published) {
+        try {
+            $proxies = (Invoke-Curl @('-s', '-H', "Authorization: Bearer $token", "http://127.0.0.1:$restartDashboardPort/api/proxies") | ConvertFrom-Json).proxies
+            $published = @($proxies | Where-Object { $_.name -eq 'restart-echo' }).Count -eq 1
+        } catch { }
+        if (-not $published) { Start-Sleep -Milliseconds 500 }
+    }
+    if (-not $published) { throw "the proxy was not published again after 30s: $(Read-Log $restartClientLog)" }
+    $audit = Get-Content -Raw $restartAudit
+    foreach ($event in @('control_accepted', 'proxy_registered')) {
+        if ($audit -notmatch $event) { throw "the restarted server has no $event record" }
+    }
+    return $true
+}
+
+Test-Check 'a stream works again through the same published port' {
+    $deadline = (Get-Date).AddSeconds(30)
+    $answer = $null
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $answer = Invoke-TcpEcho -Port $restartProxyPort -Payload 'after-the-restart'
+            if ($answer -eq 'after-the-restart') { return $true }
+        } catch { $answer = $_.Exception.Message }
+        Start-Sleep -Milliseconds 500
+    }
+    throw "the stream did not come back after the restart: $answer"
+}
+
+if ($restartClient -and -not $restartClient.HasExited) { Stop-Process -Id $restartClient.Id -Force -ErrorAction SilentlyContinue }
+if ($restartServer -and -not $restartServer.HasExited) { Stop-Process -Id $restartServer.Id -Force -ErrorAction SilentlyContinue }
+
+Write-Step "checking the server's own rule for a published name"
+
+# What a server operator writes when the clients, not the operator, choose what is
+# published: the [[proxies]] list of a server configuration names what may be
+# published and to whom. The client below is the one that gets it wrong.
+$policyControlPort = Get-FreePort
+$policyDashboardPort = Get-FreePort
+$policyPinnedPort = Get-FreePort
+$policyVisitorPort = Get-FreePort
+$policyRefusedPort = Get-FreePort
+$policyAudit = Join-Path $Root 'policy-audit.jsonl'
+$policyToml = Join-Path $Root 'policy-server.toml'
+@"
+[server]
+bind_addr = "127.0.0.1"
+bind_port = $policyControlPort
+auth_token = "$token"
+
+[[proxies]]
+name = "pinned-echo"
+type = "tcp"
+remote_port = $policyPinnedPort
+
+[[proxies]]
+name = "guarded-echo"
+remote_port = $policyVisitorPort
+allow_cidrs = ["10.9.9.0/24"]
+
+[dashboard]
+enabled = true
+bind_addr = "127.0.0.1"
+port = $policyDashboardPort
+
+[metrics]
+enabled = true
+
+[audit]
+enabled = true
+path = "$RootFwd/policy-audit.jsonl"
+"@ | Set-Content -Path $policyToml -Encoding UTF8
+
+# The proxy this client asks for is not the one the policy names, so its proxy is
+# never published. Its visitor list is empty, which is what leaves the server's own
+# list as the only thing that can refuse a visitor to guarded-echo.
+$policyClientToml = Join-Path $Root 'policy-client.toml'
+@"
+[client]
+server_addr = "127.0.0.1:$policyControlPort"
+auth_token = "$token"
+reconnect_seconds = 1
+max_reconnect_seconds = 2
+
+[[proxies]]
+name = "pinned-echo"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = $tcpEchoPort
+remote_port = $policyRefusedPort
+
+[[proxies]]
+name = "guarded-echo"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = $tcpEchoPort
+remote_port = $policyVisitorPort
+"@ | Set-Content -Path $policyClientToml -Encoding UTF8
+
+# The same asked-for name, on the port the policy names: this is the registration the
+# policy describes, and nothing else in this section would prove it is still accepted.
+$policyGoodClientToml = Join-Path $Root 'policy-good-client.toml'
+@"
+[client]
+server_addr = "127.0.0.1:$policyControlPort"
+auth_token = "$token"
+reconnect_seconds = 1
+max_reconnect_seconds = 2
+
+[[proxies]]
+name = "pinned-echo"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = $tcpEchoPort
+remote_port = $policyPinnedPort
+"@ | Set-Content -Path $policyGoodClientToml -Encoding UTF8
+
+$policyServerLog = Join-Path $Root 'policy-server.log'
+$policyServer = Start-Background -FilePath $serverExe -Arguments @('-config', $policyToml) -LogPath $policyServerLog -WorkingDirectory $Root
+Wait-ForPort -Port $policyControlPort | Out-Null
+$policyGoodClientLog = Join-Path $Root 'policy-good-client.log'
+$policyGoodClient = Start-Background -FilePath $clientExe -Arguments @('-config', $policyGoodClientToml) -LogPath $policyGoodClientLog -WorkingDirectory $Root
+Wait-ForPort -Port $policyPinnedPort | Out-Null
+$policyClientLog = Join-Path $Root 'policy-client.log'
+$policyClient = Start-Background -FilePath $clientExe -Arguments @('-config', $policyClientToml) -LogPath $policyClientLog -WorkingDirectory $Root
+Wait-ForPort -Port $policyVisitorPort | Out-Null
+
+Test-Check 'a server policy refuses a registration it does not describe' {
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $deadline) {
+        $audit = Get-Content -Raw $policyAudit
+        if ($audit -match 'proxy_rejected' -and $audit -match '"proxy":"pinned-echo"') {
+            if ($audit -notmatch [regex]::Escape("remote_port $policyPinnedPort")) {
+                throw "the refusal does not name the port the policy pins: $(Select-String -Path $policyAudit -Pattern 'proxy_rejected' | Select-Object -Last 1)"
+            }
+            return $true
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    throw "the server accepted a registration its policy does not describe: $(Read-Log $policyServerLog)"
+}
+
+Test-Check 'the registration the policy describes is published' {
+    $answer = Invoke-TcpEcho -Port $policyPinnedPort -Payload 'through-the-pinned-port'
+    if ($answer -ne 'through-the-pinned-port') { throw "the stream answered '$answer'" }
+    $proxies = @((Invoke-Curl @('-s', '-H', "Authorization: Bearer $token", "http://127.0.0.1:$policyDashboardPort/api/proxies") | ConvertFrom-Json).proxies)
+    $pinned = $proxies | Where-Object { $_.name -eq 'pinned-echo' } | Select-Object -First 1
+    if (-not $pinned) { throw "the proxy the policy describes is not published" }
+    if ([int]$pinned.remote_port -ne $policyPinnedPort) {
+        throw "the proxy is published on port $($pinned.remote_port), and the policy names $policyPinnedPort"
+    }
+    return $true
+}
+
+Test-Check 'the refused registration left its port closed' {
+    $probe = New-Object System.Net.Sockets.TcpClient
+    try {
+        try { $probe.Connect('127.0.0.1', $policyRefusedPort) } catch { return $true }
+        throw "the port the refused registration asked for answers"
+    } finally {
+        $probe.Dispose()
+    }
+}
+
+Test-Check 'the server visitor list refuses a source the client admitted' {
+    $visitor = New-Object System.Net.Sockets.TcpClient
+    try {
+        $visitor.Connect('127.0.0.1', $policyVisitorPort)
+        $visitor.ReceiveTimeout = 3000
+        $stream = $visitor.GetStream()
+        $bytes = [System.Text.Encoding]::ASCII.GetBytes('policy-should-not-arrive')
+        $stream.Write($bytes, 0, $bytes.Length)
+        $buffer = New-Object byte[] 64
+        try { $count = $stream.Read($buffer, 0, $buffer.Length) } catch { $count = 0 }
+        if ($count -gt 0) { throw "the server served a visitor its own policy excludes: $([System.Text.Encoding]::ASCII.GetString($buffer, 0, $count))" }
+    } finally {
+        $visitor.Dispose()
+    }
+    return $true
+}
+
+Test-Check 'the server policy refusal is recorded and counted' {
+    $audit = Get-Content -Raw $policyAudit
+    if ($audit -notmatch 'proxy_visitor_denied') { throw "the visitor refusal is not in the audit log" }
+    if ($audit -notmatch '"proxy":"guarded-echo"') { throw "the refusal does not name the proxy" }
+    if ($audit -notmatch "the server's policy for guarded-echo") {
+        throw "the refusal does not say which rule refused the visitor: $(Select-String -Path $policyAudit -Pattern 'proxy_visitor_denied' | Select-Object -Last 1)"
+    }
+    $denied = Get-Metric 'aethertunnel_visitors_denied_by_proxy_total' $policyDashboardPort
+    if ($denied -lt 1) { throw "the refusal counter is $denied after a refusal was recorded" }
+    return $true
+}
+
+foreach ($process in @($policyClient, $policyGoodClient, $policyServer)) {
+    if ($process -and -not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+}
 
 Write-Step "checking the server-wide access controls"
 

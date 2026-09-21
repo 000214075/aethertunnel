@@ -571,14 +571,11 @@ func (c *Config) applyDefaults() {
 	if c.Obfuscation.Enabled && c.Obfuscation.PadTo == 0 {
 		c.Obfuscation.PadTo = 256
 	}
-	for i := range c.Proxies {
-		if c.Proxies[i].Type == "" {
-			c.Proxies[i].Type = ProxyTypeTCP
-		}
-		if c.Proxies[i].AuthMethod == "" {
-			c.Proxies[i].AuthMethod = AuthMethodSecret
-		}
-	}
+	// The [[proxies]] list is left alone here: in a client configuration every entry
+	// describes a service and gets its type filled in, while in a server
+	// configuration the same list states a policy per name and an absent type means
+	// "any type". Which of the two it is is decided in Validate, which knows the
+	// role.
 	for i := range c.Visitors {
 		if c.Visitors[i].Type == "" {
 			c.Visitors[i].Type = ProxyTypeSTCP
@@ -1112,6 +1109,21 @@ func (c *Config) Validate(role string) error {
 		}
 	}
 
+	if role == RoleServer {
+		for _, p := range c.Proxies {
+			problems = append(problems, c.validateProxyPolicy(p)...)
+		}
+	} else {
+		for i := range c.Proxies {
+			if c.Proxies[i].Type == "" {
+				c.Proxies[i].Type = ProxyTypeTCP
+			}
+			if c.Proxies[i].AuthMethod == "" {
+				c.Proxies[i].AuthMethod = AuthMethodSecret
+			}
+		}
+	}
+
 	seen := map[string]bool{}
 	for _, p := range c.Proxies {
 		if p.Name == "" {
@@ -1122,6 +1134,11 @@ func (c *Config) Validate(role string) error {
 			problems = append(problems, fmt.Sprintf("duplicate proxy name %q", p.Name))
 		}
 		seen[p.Name] = true
+
+		if role == RoleServer {
+			// A server entry is a policy, not a service: its own checks ran above.
+			continue
+		}
 
 		if !IsProxyType(p.Type) {
 			problems = append(problems, fmt.Sprintf(
@@ -1276,6 +1293,62 @@ func (c *Config) Validate(role string) error {
 		return fmt.Errorf("invalid configuration:\n  - %s", strings.Join(problems, "\n  - "))
 	}
 	return nil
+}
+
+// validateProxyPolicy checks one [[proxies]] entry of a server configuration.
+//
+// A server does not publish a service of its own: an entry in this list states the
+// policy the server enforces for that name, whoever registers it. The keys that
+// describe the client's own service are still accepted, so one file can be used for
+// both roles, but they are reported because the server does not act on them.
+func (c *Config) validateProxyPolicy(p ProxyConfig) []string {
+	var problems []string
+
+	if p.Type != "" && !IsProxyType(p.Type) {
+		problems = append(problems, fmt.Sprintf(
+			"proxy policy %q: type %q is not supported (use one of %s, or leave it out to accept any type)",
+			p.Name, p.Type, strings.Join(ProxyTypes, ", ")))
+	}
+	if p.RemotePort < 0 || p.RemotePort > 65535 {
+		problems = append(problems, fmt.Sprintf(
+			"proxy policy %q: remote_port must be 0-65535, got %d", p.Name, p.RemotePort))
+	}
+	if p.RemotePort != 0 && IsPrivateProxyType(p.Type) {
+		problems = append(problems, fmt.Sprintf(
+			"proxy policy %q: %s is a private tunnel and has no public port, so remote_port must be 0",
+			p.Name, p.Type))
+	}
+	for _, cidr := range append(append([]string{}, p.AllowCIDRs...), p.DenyCIDRs...) {
+		if _, _, err := net.ParseCIDR(strings.TrimSpace(cidr)); err != nil {
+			problems = append(problems, fmt.Sprintf("proxy policy %q: %q is not a CIDR: %v", p.Name, cidr, err))
+		}
+	}
+	if p.Multipath < 0 || p.Multipath > MaxMultipath {
+		problems = append(problems, fmt.Sprintf(
+			"proxy policy %q: multipath must be 0-%d, got %d", p.Name, MaxMultipath, p.Multipath))
+	}
+
+	for _, key := range []struct {
+		name  string
+		given bool
+	}{
+		{"local_ip", p.LocalIP != ""},
+		{"local_port", p.LocalPort != 0},
+		{"group", p.Group != ""},
+		{"multipath", p.Multipath != 0},
+		{"secret_key", p.SecretKey != ""},
+		{"auth_method", p.AuthMethod != ""},
+		{"allow_targets", len(p.AllowTargets) > 0},
+		{"domains", len(p.Domains) > 0},
+	} {
+		if key.given {
+			c.Warnings = append(c.Warnings, fmt.Sprintf(
+				"proxy policy %q: %s has no effect in a server configuration; it describes the service the client publishes",
+				p.Name, key.name))
+		}
+	}
+
+	return problems
 }
 
 // ValidDomain reports whether pattern is a usable hostname or a wildcard

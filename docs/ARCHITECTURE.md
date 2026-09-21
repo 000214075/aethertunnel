@@ -168,6 +168,13 @@ DHT 的值没有写入权限控制：任何节点都能写同一个键。因此�
 代理判断访客来源，拒绝会写 `proxy_visitor_denied` 审计记录。`socks5` 的 `allow_targets`
 是唯一按**目标地址**判断的名单，在客户端拨号前生效。
 
+服务端配置里的 `[[proxies]]` 由 `TunnelManager.policies` 持有，在注册与访客两处生效：
+`Register` 先比对名字对应的 `type` / `remote_port`，不一致就不建立隧道（调用方记
+`proxy_rejected` 并把原因回给客户端）；访客阶段由 `ProxyGroup.visitorAllowed` 先过服务端
+名单、再过客户端为该代理声明的名单，两处都通过才继续，因此客户端无法放宽服务端的限制。
+两种拒绝都计入 `aethertunnel_visitors_denied_by_proxy_total`，审计记录的 `detail` 区分是哪一层
+拒绝的。
+
 ## 7.2 关闭顺序
 
 `Server.Shutdown` 的顺序是固定的，每一步都为下一步创造条件：
@@ -236,7 +243,7 @@ web/dashboard           面板单页（内嵌进二进制）
 deploy/kubernetes        Namespace、ConfigMap、Secret 示例、Deployment、Service、kustomization
 Dockerfile              多阶段构建 → distroless
 scripts/build-release.* 跨平台构建与校验和
-scripts/smoke-test.ps1  端到端运维脚本（89 项检查）
+scripts/smoke-test.ps1  端到端运维脚本（101 项检查）
 scripts/vpn-linux-test.sh  真实 tun 设备上的三层隧道检查（两端各在一个网络命名空间）
 ```
 

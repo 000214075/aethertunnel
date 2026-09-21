@@ -432,6 +432,7 @@ a { color: var(--accent); }
         <div class="metrics">
           <div class="metric"><div class="metric-label" data-i18n="metrics.activeConn">Active connections</div><div class="metric-value" id="metricConnActive">—</div></div>
           <div class="metric"><div class="metric-label" data-i18n="metrics.totalConn">Total connections</div><div class="metric-value" id="metricConnTotal">—</div></div>
+          <div class="metric"><div class="metric-label" data-i18n="metrics.authConn">Authenticated connections</div><div class="metric-value" id="metricConnAuth">—</div></div>
           <div class="metric"><div class="metric-label" data-i18n="metrics.maxConn">Max connections</div><div class="metric-value" id="metricConnMax">—</div></div>
           <div class="metric"><div class="metric-label" data-i18n="metrics.registeredProxies">Registered proxies</div><div class="metric-value" id="metricProxyRegistered">—</div></div>
           <div class="metric"><div class="metric-label" data-i18n="metrics.activeStreams">Active streams</div><div class="metric-value" id="metricProxyStreams">—</div></div>
@@ -536,7 +537,7 @@ a { color: var(--accent); }
           <div><dt data-i18n="config.enabled">Encryption enabled</dt><dd id="cfgEncEnabled">—</dd></div>
           <div><dt data-i18n="config.algorithm">Algorithm</dt><dd id="cfgEncAlgorithm">—</dd></div>
           <div><dt data-i18n="config.authRequired">Token required</dt><dd id="cfgAuthRequired">—</dd></div>
-          <div><dt data-i18n="config.proxies">Published proxies</dt><dd id="cfgProxies">—</dd></div>
+          <div><dt data-i18n="config.proxies">Proxy policies</dt><dd id="cfgProxies">—</dd></div>
         </dl>
         <p class="panel-note" data-i18n="config.note">The API returns a redacted summary only — secrets and keys are never sent to the browser.</p>
       </div>
@@ -640,6 +641,7 @@ a { color: var(--accent); }
       'metrics.title': 'Counters',
       'metrics.activeConn': 'Active connections',
       'metrics.totalConn': 'Total connections',
+      'metrics.authConn': 'Authenticated connections',
       'metrics.maxConn': 'Max connections',
       'metrics.registeredProxies': 'Registered proxies',
       'metrics.activeStreams': 'Active streams',
@@ -693,7 +695,7 @@ a { color: var(--accent); }
       'config.enabled': 'Encryption enabled',
       'config.algorithm': 'Algorithm',
       'config.authRequired': 'Token required',
-      'config.proxies': 'Published proxies',
+      'config.proxies': 'Proxy policies',
       'config.refresh': 'Refresh',
       'config.note': 'The API returns a redacted summary only — secrets and keys are never sent to the browser.',
       'vpn.title': 'Layer-3 tunnel',
@@ -772,6 +774,7 @@ a { color: var(--accent); }
       'metrics.title': '计数',
       'metrics.activeConn': '活动连接',
       'metrics.totalConn': '累计连接',
+      'metrics.authConn': '通过握手的连接',
       'metrics.maxConn': '最大连接数',
       'metrics.registeredProxies': '已注册代理',
       'metrics.activeStreams': '活动流',
@@ -825,7 +828,7 @@ a { color: var(--accent); }
       'config.enabled': '已启用加密',
       'config.algorithm': '加密算法',
       'config.authRequired': '需要令牌',
-      'config.proxies': '发布的代理',
+      'config.proxies': '代理策略',
       'config.refresh': '刷新',
       'config.note': 'API 只返回脱敏摘要 —— 密钥等敏感信息不会发送到浏览器。',
       'vpn.title': '三层隧道',
@@ -1183,6 +1186,7 @@ a { color: var(--accent); }
 
     setText(el('metricConnActive'), s.connections ? fmtInt(conns.active) : null);
     setText(el('metricConnTotal'), s.connections ? fmtInt(conns.total) : null);
+    setText(el('metricConnAuth'), s.connections ? fmtInt(conns.authenticated) : null);
     setText(el('metricConnMax'), s.connections ? fmtInt(conns.max) : null);
     setText(el('metricProxyRegistered'), s.proxies ? fmtInt(proxies.registered) : null);
     setText(el('metricProxyStreams'), s.proxies ? fmtInt(proxies.active_streams) : null);

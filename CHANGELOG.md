@@ -10,6 +10,70 @@
 
 ---
 
+## [3.7.3] — 2026-09-21
+
+本版本让服务端配置里的 `[[proxies]]` 真正生效：它从"会被校验、会被计数、但对注册不做任何
+比对"变成**按代理名的策略**。另外补上两组运维检查：面板与指标报的是不是同一批数字，以及
+客户端在服务端重启后能不能自己恢复。配置与线协议没有破坏性变化，v3.7.2 的配置可以直接用。
+
+### 变更
+
+- **服务端 `[[proxies]]` 现在是按代理名的策略**。任何客户端注册这个名字都按它执行，没有
+  条目的名字不受约束（与升级前一致）：
+  - `type` / `remote_port`：注册时比对，不一致就拒绝，客户端收到服务端期望的类型或端口，
+    审计写 `proxy_rejected`。
+  - `allow_cidrs` / `deny_cidrs`：访客来源先过服务端名单，再过客户端为该代理声明的名单，
+    两边都通过才建立隧道。被服务端拒绝的访客写 `proxy_visitor_denied`（`detail` 指出是
+    服务端策略拒绝的），并计入 `aethertunnel_visitors_denied_by_proxy_total`。客户端无法
+    放宽服务端的限制。
+  - `type` 留空表示任意类型：服务端条目不再被默认成 `tcp`。
+  - 描述客户端自身服务的键（`local_ip`、`local_port`、`group`、`multipath`、`secret_key`、
+    `auth_method`、`allow_targets`、`domains`）加载成功但不生效，`--check` 逐条给出警告，
+    因此同一份 `[[proxies]]` 列表可以放在两种角色的配置里。服务端条目不再要求 `local_port`
+    （此前缺失会以 `local_port must be 1-65535` 报错）。
+- **`GET /api/status` 新增 `connections.authenticated`**：完成握手的连接数，与
+  `aethertunnel_control_connections_total` 同源。`connections.total` 计的是监听器接受过的
+  每个 TCP socket，包括握手前就被拒的那些；两者的差别此前没有任何地方说明。
+- **面板**：概览页新增「通过握手的连接」一格；配置页那一行由「发布的代理」改为
+  **「代理策略」**（中英双语），显示服务端配置里 `[[proxies]]` 的条数，与注册路径读的是同
+  一份列表。`/api/config` 的字段名不变。
+
+### 运维测试
+
+- `scripts/smoke-test.ps1`（89 → 101 项）新增：
+  - **两个端点报同一批数字**：`/api/status` 与 `/metrics` 在流量字节、
+    `connections.authenticated` 对 `aethertunnel_control_connections_total`、活动流数、
+    审计的丢失/写失败/恢复上必须相等；另外校验 `total >= authenticated >= active`、
+    `/api/clients` 的条数等于 `connections.active`、`/api/proxies` 的条数等于
+    `proxies.registered`，以及两个端点读出的 uptime 相差不超过 1 秒。
+  - **握手前被拒的连接**：三个连上就关的 socket 必须计入 `connections.total`，但不能计入
+    `connections.authenticated`——这正是两个计数器存在的理由。
+  - **客户端在服务端重启后自己恢复**：起一对独立的服务端与客户端，先跑通一条流，给服务端
+    发停止信号，客户端察觉后服务端在原端口重启，客户端自己重连并重新发布代理，流再次可用，
+    审计里有 `control_accepted` 与 `proxy_registered`。
+  - **服务端按代理名的策略**（五项）：不符的注册被拒且审计里的原因写明服务端期望的端口；
+    策略描述的那个注册被发布并能跑通流；被拒注册要的端口没有监听；服务端名单拒绝客户端已
+    放行的来源；拒绝被记进审计并计数。这一项为此起了一台专属服务端与两个客户端。
+- 面板改动在真实浏览器里核对：24 项检查覆盖中英两种语言、1280×900 与 390×844 两种视口。
+  四个概览数字与同一时刻 `/api/status` 返回的一致，且 accepted 与 authenticated 的差值确实
+  出现（驱动先开两个只连不说话的 socket，再读面板）；配置页的「代理策略」与 `/api/config`
+  一致。把面板改成在那一格显示 `total` 后这组检查失败（4 vs 2），说明它不是照抄常量。
+- 移除服务端策略的两处判断后重跑运维脚本，三项检查按预期失败（不符的注册被接受、被策略
+  排除的访客拿到了数据、审计里没有这条拒绝），据此确认这几项检查真的在判断行为。
+
+### 修复
+
+- 修掉新检查自身的一处错误：`/metrics` 的行尾是 CRLF，正则的 `$` 锚点因此匹配不上，
+  第一次运行报"没有这个序列"。改为 `\r?$`。
+
+### 文档
+
+`docs/CONFIGURATION.md` 新增服务端 `[[proxies]]` 的键表与判定顺序，`docs/SECURITY.md`
+把服务端策略单列一行，`docs/ARCHITECTURE.md` 写明两层名单的执行位置与拒绝记录，
+`docs/MIGRATION.md` 给出升级检查清单，`server.toml.example` 补上带注释的策略示例。
+
+---
+
 ## [3.7.2] — 2026-09-21
 
 本版本补上四条"代码会写、但没有任何检查读过"的审计记录，把三处已经由 API 返回、面板却

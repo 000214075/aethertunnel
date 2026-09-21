@@ -379,14 +379,16 @@ func TestMultipathSpreadsDatagramsOverSeveralConnections(t *testing.T) {
 }
 
 func TestMultipathWarnsOnAByteStreamProxy(t *testing.T) {
+	// A client configuration: multipath is a property of the service a client
+	// publishes, and a server-side [[proxies]] entry is reported for having no
+	// effect rather than being judged on what spread it would use.
 	cfg := &config.Config{}
-	cfg.Server.BindAddr = "127.0.0.1"
-	cfg.Server.BindPort = freePort(t)
-	cfg.Server.AuthToken = testToken
+	cfg.Client.ServerAddr = "127.0.0.1:7001"
+	cfg.Client.AuthToken = testToken
 	cfg.Proxies = []config.ProxyConfig{{
 		Name: "stream", Type: config.ProxyTypeTCP, LocalPort: 1, RemotePort: 2, Multipath: 3,
 	}}
-	if err := cfg.Validate(config.RoleServer); err != nil {
+	if err := cfg.Validate(config.RoleClient); err != nil {
 		t.Fatalf("config: %v", err)
 	}
 

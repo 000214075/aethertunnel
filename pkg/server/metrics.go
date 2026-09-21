@@ -141,7 +141,7 @@ func (m *Metrics) Render() string {
 	}
 
 	gauge("aethertunnel_uptime_seconds", "Seconds since the process started.", int64(time.Since(m.startedAt).Seconds()))
-	counter("aethertunnel_control_connections_total", "Control connections accepted.", m.controlAccepted.Load())
+	counter("aethertunnel_control_connections_total", "Control connections that completed the handshake.", m.controlAccepted.Load())
 	counter("aethertunnel_control_rejected_total", "Control connections refused (capacity, ACL, rate limit or ban).", m.controlRejected.Load())
 	counter("aethertunnel_auth_failures_total", "Authentication attempts with an invalid token.", m.authFailures.Load())
 	counter("aethertunnel_connections_denied_by_acl_total", "Connections refused by allow/deny lists.", m.aclDenied.Load())

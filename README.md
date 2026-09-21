@@ -87,7 +87,7 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 | 通告签名 | ✅ 可用 | DHT 上任何节点都能写同一个键，所以服务端用 Ed25519 给每条通告签名；读取端 `require_signed` 拒绝无签名记录，`trusted_keys` 只认指定公钥。改一个字段或换一把key都会失败 |
 | 三层隧道 | ⚠️ 仅 Linux | `[vpn]`：客户端从服务端领取地址，IP 包经控制连接转发；服务端是共享一张网卡的路由器。Linux 上打开或创建 tun 设备；其它平台**明确拒绝启动**并说明缺少什么，不会静默降级。Linux 路径已在真实 tun 设备上跑通（`scripts/vpn-linux-test.sh`，两端放在不同网络命名空间里互相 ping），`GET /api/vpn` 与面板的"三层隧道"一栏显示接口、地址池与包计数 |
 | 流量混淆 | ✅ 可用 | `pad_to` 补齐帧长度、`jitter_millis` 加抖动；`disguise = "tls-record"` 把每个写入包进 TLS 1.2 应用数据记录 |
-| 访问控制 | ✅ 可用 | `allow_cidrs` / `deny_cidrs` 在握手前执行；无法解析的来源在存在规则时按拒绝处理。单个代理还能再限定自己的访客来源（`[[proxies]]` 的 `allow_cidrs` / `deny_cidrs`）。运维脚本用一台独立服务器把服务端级规则单独验了一遍：被拒来源在握手前断开、且不计入接入连接数 |
+| 访问控制 | ✅ 可用 | `allow_cidrs` / `deny_cidrs` 在握手前执行；无法解析的来源在存在规则时按拒绝处理。单个代理还能再限定自己的访客来源（`[[proxies]]` 的 `allow_cidrs` / `deny_cidrs`）。服务端配置里的 `[[proxies]]` 是**按代理名的策略**：限定该名字能以什么类型、哪个对外端口发布，以及哪些来源可以访问，客户端注册时对不上就被拒。运维脚本用一台独立服务器把服务端级规则单独验了一遍：被拒来源在握手前断开、且不计入接入连接数 |
 | 连接限流 | ✅ 可用 | 按来源地址的令牌桶，在握手前执行；空闲桶会被回收。运维脚本分别验了桶内请求被放行、超出后被拒并写进审计与日志 |
 | 自动封禁 | ✅ 可用 | 同一来源认证失败 `ban_after_failures` 次后，在握手前拒绝该来源 `ban_seconds` 秒，期间任何凭据都被拒；再次违规时长翻倍，上限 `ban_max_seconds`；`ban_ignore_cidrs` 排除负载均衡与监控地址 |
 | 审计日志 | ✅ 可用 | JSON Lines，记录接入/拒绝、认证失败、上下线、代理注册/移除与拒绝、面板断连、封禁与被封拒绝、按代理拒绝的访客、访客接受与拒绝、打洞结果（直连/中继/未知）、隧道地址分配；`max_bytes` 到量后按大小轮转，保留 `audit.keep` 代（默认 1，范围 1–100）。写不进去时重开文件并重试该条记录，仍然失败的计入 `aethertunnel_audit_records_lost_total`，`GET /api/status` 的 `audit` 段与面板会把它显示出来——审计日志停下来是没有别的痕迹的 |
@@ -98,7 +98,7 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 | 容器与编排 | ✅ 可用 | `Dockerfile`（多阶段 → distroless）与 `deploy/kubernetes/` 清单；凭据可用环境变量提供，不必写进 ConfigMap |
 | 多平台 | ✅ 可用 | linux/darwin/windows × amd64/arm64，`scripts/build-release.*` 一键出 12 个产物 + SHA256 |
 | 配置校验 | ✅ 可用 | 未知配置项会**报出来**而不是静默忽略；`--check` 只校验不启动 |
-| 单元 + 端到端测试 | ✅ 可用 | 含"访问者→隧道→本地服务"的真实回环测试，明文与加密两种模式；另有 89 项检查的运维脚本 `scripts/smoke-test.ps1`（CI 的 Windows 作业与发布流程都会跑它，发布前不通过就不出 Release；发布后还会把发布页上的二进制下载下来重跑一遍），以及真实 tun 设备上的 `scripts/vpn-linux-test.sh`（20 项）与发布后在真实内核上跑 `scripts/verify-release-linux.sh`（18 项） |
+| 单元 + 端到端测试 | ✅ 可用 | 含"访问者→隧道→本地服务"的真实回环测试，明文与加密两种模式；另有 101 项检查的运维脚本 `scripts/smoke-test.ps1`（CI 的 Windows 作业与发布流程都会跑它，发布前不通过就不出 Release；发布后还会把发布页上的二进制下载下来重跑一遍），以及真实 tun 设备上的 `scripts/vpn-linux-test.sh`（20 项）与发布后在真实内核上跑 `scripts/verify-release-linux.sh`（18 项） |
 
 ### 这一版没有什么
 

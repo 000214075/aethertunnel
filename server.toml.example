@@ -93,6 +93,24 @@ ban_max_seconds = 3600
 # address and not the client that failed.
 ban_ignore_cidrs = []
 
+# What may be published under a name, and to whom. Clients choose what they publish;
+# an entry here is this server's own rule for that name and is enforced whatever a
+# registering client asks for. A name with no entry is not governed by a policy.
+# The rules are applied in this order: the visitor source must pass this entry's
+# allow_cidrs/deny_cidrs, and then the client's own lists for the proxy.
+# [[proxies]]
+# name = "ssh"
+# Type the name may be published as. Absent accepts any type. One of:
+#   tcp udp http https stcp sudp xtcp socks5
+# type = "tcp"
+# The public port this name is published on. Absent (0) accepts whatever the client
+# asks for.
+# remote_port = 6022
+# Visitor sources that may use this name. Both default to empty, which refuses
+# nothing here and leaves the client's own lists in charge.
+# allow_cidrs = []
+# deny_cidrs = []
+
 [dashboard]
 enabled = true
 # Keep this on loopback unless you also set a token: the dashboard exposes client

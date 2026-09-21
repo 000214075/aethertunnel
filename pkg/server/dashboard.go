@@ -250,7 +250,13 @@ func (d *Dashboard) apiStatus(w http.ResponseWriter, r *http.Request) {
 		"connections": map[string]any{
 			"active": d.server.sessions.Count(),
 			"total":  d.server.totalConnections.Load(),
-			"max":    d.cfg.Server.MaxConnections,
+			// The two numbers differ and the difference matters: total counts every TCP
+			// socket the listener accepted, including the ones refused before the
+			// handshake, while authenticated counts the ones that got a session. It is
+			// the same number aethertunnel_control_connections_total reports, which is
+			// what makes the two endpoints comparable.
+			"authenticated": d.server.metrics.controlAccepted.Load(),
+			"max":           d.cfg.Server.MaxConnections,
 		},
 		"proxies": map[string]any{
 			"registered":     registered,
@@ -356,9 +362,12 @@ func (d *Dashboard) apiConfig(w http.ResponseWriter, r *http.Request) {
 			"enabled": d.cfg.Ledger.Enabled,
 			"path":    d.cfg.Ledger.Path,
 		},
-		"dht":                d.server.directory.summary(),
-		"vpn":                d.server.vpn.summary(),
-		"proxies_configured": len(d.cfg.Proxies),
+		"dht": d.server.directory.summary(),
+		"vpn": d.server.vpn.summary(),
+		// The number of names the server holds a policy for, which is the number of
+		// [[proxies]] entries in its configuration. It is read from the manager so
+		// the panel counts the same list the registration path enforces.
+		"proxies_configured": d.server.tunnels.policies.configured(),
 	})
 }
 

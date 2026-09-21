@@ -60,6 +60,12 @@ type ProxyGroup struct {
 	allowVisitor []*net.IPNet
 	denyVisitor  []*net.IPNet
 
+	// policyAllow and policyDeny are the lists the server enforces for this name,
+	// from [[proxies]] in the server configuration. A visitor passes both these and
+	// the proxy's own lists, so a client cannot widen what the operator allows.
+	policyAllow []*net.IPNet
+	policyDeny  []*net.IPNet
+
 	// endpointMu guards the published endpoint. It is separate from mu because the
 	// dashboard reads Addr while the control path may be binding or closing the
 	// endpoint, and neither should wait for the other's list snapshot.
@@ -139,6 +145,7 @@ func (t *Tunnel) Latency() time.Duration { return time.Duration(t.dialLatency.Lo
 // --- group lifecycle ----------------------------------------------------------
 
 func newProxyGroup(spec protocol.ProxySpec, manager *TunnelManager) *ProxyGroup {
+	policyAllow, policyDeny := manager.policies.visitorRules(spec.Name)
 	return &ProxyGroup{
 		Name:         spec.Name,
 		Type:         spec.Type,
@@ -151,6 +158,8 @@ func newProxyGroup(spec protocol.ProxySpec, manager *TunnelManager) *ProxyGroup 
 		Multipath:    spec.Multipath,
 		allowVisitor: compileCIDRs(spec.AllowCIDRs),
 		denyVisitor:  compileCIDRs(spec.DenyCIDRs),
+		policyAllow:  policyAllow,
+		policyDeny:   policyDeny,
 		manager:      manager,
 		logger:       manager.logger,
 		cipher:       manager.cipher,
@@ -455,36 +464,51 @@ func (g *ProxyGroup) bind() error {
 
 // --- per-proxy visitor access control ------------------------------------------
 
-// visitorAllowed reports whether a visitor source address may use this proxy.
+// visitorAllowed reports whether a visitor source address may use this proxy, and
+// why not when it may not.
 //
 // [server] allow_cidrs and deny_cidrs decide who may reach the server at all; the
 // lists on a proxy decide which of those visitors may use this particular tunnel,
 // so a server that publishes one proxy to the world can keep another to a single
-// network.
-func (g *ProxyGroup) visitorAllowed(remote net.Addr) bool {
-	if len(g.allowVisitor) == 0 && len(g.denyVisitor) == 0 {
-		return true
+// network. The server's own [[proxies]] policy is applied first: it is the
+// operator's rule, and it holds whatever the registering client asked for.
+func (g *ProxyGroup) visitorAllowed(remote net.Addr) (bool, string) {
+	if len(g.allowVisitor) == 0 && len(g.denyVisitor) == 0 && len(g.policyAllow) == 0 && len(g.policyDeny) == 0 {
+		return true, ""
 	}
 
 	ip := ipOfAddr(remote)
 	if ip == nil {
 		// A source that cannot be parsed is refused as soon as a rule exists.
-		return false
+		return false, "the source address cannot be parsed"
 	}
-	for _, network := range g.denyVisitor {
+
+	if allowed, reason := visitorRulesAllow(g.policyAllow, g.policyDeny, ip); !allowed {
+		return false, "source address rejected by the server's policy for " + g.Name + ": " + reason
+	}
+	if allowed, reason := visitorRulesAllow(g.allowVisitor, g.denyVisitor, ip); !allowed {
+		return false, "source address rejected by the proxy's allow/deny lists: " + reason
+	}
+	return true, ""
+}
+
+// visitorRulesAllow applies one pair of lists to an address. Deny wins over allow,
+// and an empty allow list admits everything the deny list does not name.
+func visitorRulesAllow(allow, deny []*net.IPNet, ip net.IP) (bool, string) {
+	for _, network := range deny {
 		if network.Contains(ip) {
-			return false
+			return false, "it is in the deny list"
 		}
 	}
-	if len(g.allowVisitor) == 0 {
-		return true
+	if len(allow) == 0 {
+		return true, ""
 	}
-	for _, network := range g.allowVisitor {
+	for _, network := range allow {
 		if network.Contains(ip) {
-			return true
+			return true, ""
 		}
 	}
-	return false
+	return false, "it is not in the allow list"
 }
 
 // refuseVisitor records and reports a visitor that the proxy's rules excluded.
@@ -643,8 +667,8 @@ func (g *ProxyGroup) serveVisit(public net.Conn) {
 	}
 	defer public.Close()
 
-	if !g.visitorAllowed(public.RemoteAddr()) {
-		g.refuseVisitor(public.RemoteAddr(), "source address rejected by the proxy's allow/deny lists")
+	if allowed, reason := g.visitorAllowed(public.RemoteAddr()); !allowed {
+		g.refuseVisitor(public.RemoteAddr(), reason)
 		return
 	}
 
@@ -702,8 +726,8 @@ func (g *ProxyGroup) serveVisit(public net.Conn) {
 // serveStream matches one public connection with a member, moving on to the next
 // member when one cannot provide a stream.
 func (g *ProxyGroup) serveStream(public net.Conn) {
-	if !g.visitorAllowed(public.RemoteAddr()) {
-		g.refuseVisitor(public.RemoteAddr(), "source address rejected by the proxy's allow/deny lists")
+	if allowed, reason := g.visitorAllowed(public.RemoteAddr()); !allowed {
+		g.refuseVisitor(public.RemoteAddr(), reason)
 		_ = public.Close()
 		return
 	}
@@ -805,8 +829,8 @@ func (g *ProxyGroup) startUDP() {
 		Socket: packet,
 		Paths:  paths,
 		Open: func(addr net.Addr) (*protocol.Framer, func(), error) {
-			if !g.visitorAllowed(addr) {
-				g.refuseVisitor(addr, "source address rejected by the proxy's allow/deny lists")
+			if allowed, reason := g.visitorAllowed(addr); !allowed {
+				g.refuseVisitor(addr, reason)
 				return nil, nil, errors.New("the visitor source is not allowed by this proxy")
 			}
 			member := g.pick()
@@ -896,10 +920,12 @@ func (g *ProxyGroup) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	remote, err := net.ResolveTCPAddr("tcp", r.RemoteAddr)
-	if err == nil && !g.visitorAllowed(remote) {
-		g.refuseVisitor(remote, "source address rejected by the proxy's allow/deny lists")
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
+	if err == nil {
+		if allowed, reason := g.visitorAllowed(remote); !allowed {
+			g.refuseVisitor(remote, reason)
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 	}
 
 	g.metrics.httpRequests.Add(1)

@@ -244,6 +244,37 @@ v3.6.0 的配置可以直接用。变的是审计日志写不进去时的行为�
   时报告为 `enabled: true` 且 `writable: false`，而不是 `enabled: false`——这两种情况对
   运维意味着完全不同的东西。
 
+## 4.7 从 v3.7.2 到 v3.7.3
+
+**配置与线协议都没有破坏性变化**：`ProtocolVersion` 仍是 4，没有删除任何键，v3.7.2 的配置
+可以直接用。变的是服务端配置里 `[[proxies]]` 的含义：
+
+- **服务端 `[[proxies]]` 从"解析并计数"变成"按代理名的策略"**。升级前写在服务端配置里的
+  条目会被校验、会出现在 `/api/config` 的 `proxies_configured` 里，但服务端对注册与访客
+  不做任何比对。现在：
+  - 条目里写了 `type` 或 `remote_port` 时，注册该名字的客户端必须一致，否则注册被拒
+    （`proxy_rejected`，客户端收到服务端期望的值）。此前写错的客户端能照常发布。
+  - 条目里写了 `allow_cidrs` / `deny_cidrs` 时，访客来源要先过这份名单，再过客户端为该
+    代理声明的名单。此前服务端名单不生效，只有客户端的名单生效。
+  - `type` 留空表示任意类型；服务端条目不再被默认成 `tcp`，因此只写 `name` 的条目仍然
+    接受任意类型、任意端口。
+- **服务端条目不再要求 `local_port`**。升级前，服务端配置里的一个 `[[proxies]]` 条目若没写
+  `local_port`（1–65535）会以 `local_port must be 1-65535` 报错；现在它是策略，不描述本地
+  服务，`local_ip`、`local_port`、`group`、`multipath`、`secret_key`、`auth_method`、
+  `allow_targets`、`domains` 都只是加载并给出 `--check` 警告。
+- **`GET /api/status` 新增 `connections.authenticated`**（完成握手的连接数），面板概览页
+  多一格；配置页那一行改名为「代理策略」，值仍是 `proxies_configured`。
+
+**升级检查清单**（只影响把 `[[proxies]]` 写在服务端配置里的部署）：
+
+1. 如果服务端配置里有 `[[proxies]]` 条目，确认它的 `type` 与 `remote_port` 就是客户端会
+   注册的值；写错会让该客户端注册失败，错误信息里给出服务端期望的值。
+2. 如果条目里写了 `allow_cidrs` / `deny_cidrs`，确认这些来源确实是你允许访问该代理的：
+   升级后它们开始生效，会把此前能访问的访客拒掉（审计记录 `proxy_visitor_denied`，
+   `detail` 指出是服务端策略拒绝的）。
+3. 用 `--check` 看一遍警告：服务端配置里描述客户端服务的键现在都会被逐条列出来。
+4. 不想要任何策略就把服务端配置里的 `[[proxies]]` 整段删掉：没有条目的名字不受约束。
+
 ## 4.6 从 v3.7.1 到 v3.7.2
 
 **配置与线协议都没有破坏性变化**：`ProtocolVersion` 仍是 4，没有删除任何键，v3.7.1 的配置
@@ -284,8 +315,9 @@ v3.6.0 的配置可以直接用。变的是审计日志写不进去时的行为�
    `server confirms N tunnel(s)`；面板 `/api/status` 的连接数与隧道数符合预期。
 6. 用真实客户端做一次访问（例如 `ssh -p <remote_port> ...`），确认数据真的通。
 7. 用到的新功能各自验证一次：`--dht-lookup`、`--verify-ledger`、`--discover`、`--dht-key`，
-   或直接跑 `scripts/smoke-test.ps1`（86 项检查，覆盖全部代理类型、签名通告、按代理 ACL、
-   服务端级拒绝与限流、审计轮转与保留代数、审计写不进去与恢复、空闲超时、自动封禁、
-   宽限期内的拒绝与探针、代理池、多路径与打洞结果）。Linux 上再用
+   或直接跑 `scripts/smoke-test.ps1`（101 项检查，覆盖全部代理类型、签名通告、按代理 ACL、
+   服务端按代理名的策略、服务端级拒绝与限流、审计轮转与保留代数、审计写不进去与恢复、
+   空闲超时、自动封禁、宽限期内的拒绝与探针、代理池、多路径与打洞结果、面板与指标的一致
+   性、客户端在服务端重启后的恢复）。Linux 上再用
    `sudo scripts/vpn-linux-test.sh bin/aethertunnel-server bin/aethertunnel-client`
    验一次三层隧道。

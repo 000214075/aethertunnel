@@ -210,6 +210,10 @@ type TunnelManager struct {
 	metrics  *Metrics
 	auditor  *Auditor
 
+	// policies holds the server's own rule per published name, from the
+	// [[proxies]] list of the server configuration.
+	policies *proxyPolicies
+
 	vhost     *vhostSet
 	p2p       *p2pRendezvous
 	directory *directory
@@ -224,6 +228,7 @@ func newTunnelManager(cfg *config.Config, logger *log.Logger, cipher *crypto.Cip
 		sessions: sessions,
 		metrics:  metrics,
 		auditor:  auditor,
+		policies: newProxyPolicies(cfg.Proxies),
 	}
 }
 
@@ -261,6 +266,12 @@ func (m *TunnelManager) Register(session *Session, spec protocol.ProxySpec) (*Tu
 		if _, _, err := net.ParseCIDR(strings.TrimSpace(cidr)); err != nil {
 			return nil, fmt.Errorf("visitor CIDR %q is not valid: %w", cidr, err)
 		}
+	}
+	// The server's own rule for this name comes before the type-specific checks: a
+	// registration the operator's policy refuses should not be told about anything
+	// else, and the refusal names what the server expects.
+	if err := m.policies.admits(spec.Name, spec.Type, spec.RemotePort); err != nil {
+		return nil, err
 	}
 	if config.IsPrivateProxyType(spec.Type) {
 		if spec.SecretKey == "" {
