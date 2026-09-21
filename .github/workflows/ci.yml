@@ -102,6 +102,15 @@ jobs:
       - name: the binaries report their version
         run: ./bin/aethertunnel-server${{ matrix.exe }} --version
 
+      # The end-to-end operations script starts a server, an owner client and visitor
+      # clients as real processes and drives every proxy type, the security layers,
+      # the probes, the metrics and the audit log. It is written for Windows, where
+      # the second loopback address and icacls-based failure injection it uses exist.
+      - name: the operations script passes end to end
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/smoke-test.ps1
+
   delivery:
     name: delivery (image and manifests)
     runs-on: ubuntu-latest

@@ -96,6 +96,97 @@ func TestAuditLogRotatesAtMaxBytes(t *testing.T) {
 	}
 }
 
+// TestAuditLogKeepsSeveralGenerations covers audit.keep: an incident is rarely in
+// the generation that was just rotated away, so an operator has to be able to ask
+// for more than one. The generations shift by one on every rotation and the one
+// older than the last kept generation is dropped, which is what bounds the disk.
+func TestAuditLogKeepsSeveralGenerations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+
+	const (
+		limit = 1024
+		keep  = 2
+	)
+	auditor, err := NewAuditorWithRetention(true, path, limit, keep, discardLogger())
+	if err != nil {
+		t.Fatalf("NewAuditorWithRetention: %v", err)
+	}
+	defer func() { _ = auditor.Close() }()
+
+	// One rotation per batch: each record is a few hundred bytes, so ten of them
+	// pass the limit once, and the marker in the detail says which batch a
+	// generation came from.
+	generations := []string{"first", "second", "third"}
+	for _, generation := range generations {
+		for i := 0; i < 10; i++ {
+			auditor.Record(AuditEvent{
+				Event:   EventACLDenied,
+				Remote:  "127.0.0.2:40000",
+				Detail:  "batch " + generation,
+				Outcome: "denied",
+			})
+		}
+	}
+
+	// The generation that was rotated away twice is gone, and the two kept ones are
+	// there: .1 holds the newest kept batch, .2 the one before it.
+	if _, err := os.Stat(path + ".3"); err == nil {
+		t.Errorf("%s exists although keep is %d", filepath.Base(path+".3"), keep)
+	}
+	first, err := readAuditEvents(t, path+".1")
+	if err != nil {
+		t.Fatalf("read the generation rotated away last: %v", err)
+	}
+	if len(first) == 0 {
+		t.Fatalf("the generation rotated away last is empty")
+	}
+	if !strings.Contains(first[0].Detail, "second") {
+		t.Errorf("the newest kept generation starts with %q, want the second batch", first[0].Detail)
+	}
+	second, err := readAuditEvents(t, path+".2")
+	if err != nil {
+		t.Fatalf("read the older generation: %v", err)
+	}
+	if len(second) == 0 {
+		t.Fatalf("the older kept generation is empty")
+	}
+	if !strings.Contains(second[0].Detail, "first") {
+		t.Errorf("the older generation starts with %q, want the first batch", second[0].Detail)
+	}
+	// Every generation holds whole records: a shift that copied a partial line would
+	// show up here as a parse failure.
+	live, err := readAuditEvents(t, path)
+	if err != nil {
+		t.Fatalf("read the live file: %v", err)
+	}
+	if len(live) == 0 {
+		t.Errorf("the live file holds no record after three batches")
+	}
+}
+
+// TestAuditLogKeepsOneGenerationByDefault pins the behaviour a configuration that
+// does not mention audit.keep gets: exactly one generation beside the live file.
+func TestAuditLogKeepsOneGenerationByDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+
+	auditor, err := NewAuditor(true, path, 512, discardLogger())
+	if err != nil {
+		t.Fatalf("NewAuditor: %v", err)
+	}
+	defer func() { _ = auditor.Close() }()
+
+	for i := 0; i < 30; i++ {
+		auditor.Record(AuditEvent{Event: EventACLDenied, Remote: "127.0.0.2:40000", Outcome: "denied"})
+	}
+
+	if _, err := os.Stat(path + ".1"); err != nil {
+		t.Fatalf("no generation was kept although the log rotated: %v", err)
+	}
+	if _, err := os.Stat(path + ".2"); err == nil {
+		t.Errorf("%s exists although only one generation is kept by default", filepath.Base(path+".2"))
+	}
+}
+
 // TestAuditLogRotationCanBeDisabled covers the other half of audit.max_bytes: zero
 // means one file that is never rotated, which is what a deployment that ships the
 // log elsewhere wants.

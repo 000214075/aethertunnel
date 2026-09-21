@@ -283,8 +283,7 @@ remote_port = 6022
 // TestAnHTTPProxyWithoutDomainsIsAcceptedWithAWarning covers the one way an http
 // proxy can be published without the client naming its hostname: the server
 // publishes it as <proxy-name>.<server.subdomain_host>. Only the server knows that
-// setting, so refusing the configuration here would make the setting unusable —
-// which is what used to happen.
+// setting, so refusing the configuration here would make the setting unusable 鈥?// which is what used to happen.
 func TestAnHTTPProxyWithoutDomainsIsAcceptedWithAWarning(t *testing.T) {
 	path := writeConfig(t, `
 [client]
@@ -331,6 +330,73 @@ enabled = true
 	}
 	if cfg.Ledger.SigningKey != "aethertunnel-ledger.key" {
 		t.Errorf("Ledger.SigningKey = %q, want the default key file", cfg.Ledger.SigningKey)
+	}
+}
+
+func TestAuditRetentionDefaultsAndValidation(t *testing.T) {
+	base := `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+`
+	cfg, err := LoadServer(writeConfig(t, base+`
+[audit]
+enabled = true
+`))
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if cfg.Audit.Keep != 1 {
+		t.Errorf("Audit.Keep = %d, want the default of one generation", cfg.Audit.Keep)
+	}
+
+	cfg, err = LoadServer(writeConfig(t, base+`
+[audit]
+enabled = true
+max_bytes = 4096
+keep = 5
+`))
+	if err != nil {
+		t.Fatalf("LoadServer with keep = 5: %v", err)
+	}
+	if cfg.Audit.Keep != 5 {
+		t.Errorf("Audit.Keep = %d, want 5", cfg.Audit.Keep)
+	}
+
+	// An explicit zero is the default like every other key with a non-zero default,
+	// and anything outside the documented range is refused rather than clamped: a
+	// typo must not turn into a silent retention of a hundred files.
+	cfg, err = LoadServer(writeConfig(t, base+`
+[audit]
+enabled = true
+keep = 0
+`))
+	if err != nil {
+		t.Fatalf("LoadServer with keep = 0: %v", err)
+	}
+	if cfg.Audit.Keep != 1 {
+		t.Errorf("Audit.Keep = %d after an explicit zero, want the default of one", cfg.Audit.Keep)
+	}
+
+	if _, err = LoadServer(writeConfig(t, base+`
+[audit]
+enabled = true
+keep = 101
+`)); err == nil {
+		t.Fatal("keep = 101 was accepted")
+	} else if !strings.Contains(err.Error(), "audit.keep must be 0-100") {
+		t.Errorf("the refusal does not name the key and its range: %v", err)
+	}
+
+	if _, err = LoadServer(writeConfig(t, base+`
+[audit]
+enabled = true
+keep = -1
+`)); err == nil {
+		t.Fatal("keep = -1 was accepted")
+	} else if !strings.Contains(err.Error(), "audit.keep must be 0-100") {
+		t.Errorf("the refusal does not name the key and its range: %v", err)
 	}
 }
 

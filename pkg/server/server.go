@@ -101,7 +101,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	auditor, err := NewAuditor(cfg.Audit.Enabled, cfg.Audit.Path, cfg.Audit.MaxBytes, logger)
+	auditor, err := NewAuditorWithRetention(cfg.Audit.Enabled, cfg.Audit.Path, cfg.Audit.MaxBytes, cfg.Audit.Keep, logger)
 	if err != nil {
 		return nil, fmt.Errorf("open audit log: %w", err)
 	}

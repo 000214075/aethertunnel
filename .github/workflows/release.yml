@@ -23,7 +23,28 @@ permissions:
   contents: write
 
 jobs:
+  # The end-to-end operations script runs against the tagged source before anything is
+  # published. It starts a server, an owner client and visitor clients as real
+  # processes, drives every proxy type and the optional security layers, and checks the
+  # operational surface a release is judged on: the probes, the metrics, the audit log
+  # and its failure handling. A failed run means no release is created.
+  operations:
+    name: operations (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: the operations script passes end to end
+        shell: pwsh
+        run: ./scripts/smoke-test.ps1
+
   release:
+    needs: operations
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

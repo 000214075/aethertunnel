@@ -109,11 +109,13 @@ enabled = true
 token = ""
 
 # Append-only JSONL record of accepted and refused connections, proxy registrations
-# and visitor exchanges. Rotates once the file exceeds max_bytes.
+# and visitor exchanges. Rotates once the file exceeds max_bytes, keeping `keep`
+# generations beside it: path.1 is the one just rotated away, path.2 the one before.
 [audit]
 enabled = false
 path = "aethertunnel-audit.jsonl"
 max_bytes = 33554432
+keep = 1
 
 # Signed, hash-chained record of the bandwidth each client used. The chain is
 # published on GET /api/ledger together with the public key an auditor needs; the

@@ -450,6 +450,7 @@ $banDashboardPort = Get-FreePort
 $banProxyPort = Get-FreePort
 $graceControlPort = Get-FreePort
 $graceProxyPort = Get-FreePort
+$graceDashboardPort = Get-FreePort
 
 $token = 'smoke-test-token-0123456789abcdef'
 $passphrase = 'smoke-test-passphrase'
@@ -834,6 +835,16 @@ bind_addr = "127.0.0.1"
 bind_port = $graceControlPort
 auth_token = "$token"
 graceful_shutdown_seconds = 4
+
+# The probes and the counters are read while this server is draining, so it needs a
+# dashboard and the metrics endpoint.
+[dashboard]
+enabled = true
+bind_addr = "127.0.0.1"
+port = $graceDashboardPort
+
+[metrics]
+enabled = true
 
 [audit]
 enabled = true
@@ -1805,6 +1816,51 @@ Test-Check 'graceful shutdown: the server keeps a stream alive while it winds do
     return $true
 }
 
+Test-Check 'graceful shutdown: a visitor that arrives while the server drains is refused and counted' {
+    # The published port still accepts connections while the server winds down: what
+    # stops working is opening a stream behind it. That refusal is the one the
+    # drain-refusal counter is for, and it was never observed moving.
+    $late = New-Object System.Net.Sockets.TcpClient
+    $late.ReceiveTimeout = 3000
+    $served = $false
+    try {
+        $late.Connect('127.0.0.1', $graceProxyPort)
+        $lateStream = $late.GetStream()
+        $bytes = [System.Text.Encoding]::ASCII.GetBytes('late-visitor')
+        $lateStream.Write($bytes, 0, $bytes.Length)
+        $lateStream.Flush()
+        $buffer = New-Object byte[] 64
+        $read = $lateStream.Read($buffer, 0, $buffer.Length)
+        $served = ($read -gt 0)
+    } catch {
+        $served = $false
+    } finally {
+        $late.Dispose()
+    }
+    if ($served) { throw "the visitor that arrived during the drain was served" }
+
+    $count = 0
+    $deadline = (Get-Date).AddSeconds(2)
+    while ((Get-Date) -lt $deadline) {
+        $count = Get-Metric 'aethertunnel_streams_refused_while_draining_total' -Port $graceDashboardPort
+        if ($count -ge 1) { break }
+        Start-Sleep -Milliseconds 100
+    }
+    if ($count -lt 1) { throw "the refusal was not counted: the drain counter is $count" }
+    return $true
+}
+
+Test-Check 'graceful shutdown: /readyz says 503 while the server drains and /healthz stays 200' {
+    # readyz is the one a load balancer reads: it has to stop routing here while the
+    # streams already running are still being carried, and healthz has to keep saying
+    # the process is alive, or a supervisor would restart it mid-drain.
+    $ready = Invoke-Curl @('-s', '-o', 'NUL', '-w', '%{http_code}', "http://127.0.0.1:$graceDashboardPort/readyz")
+    if ($ready -ne '503') { throw "/readyz answered $ready while the server was draining" }
+    $health = Invoke-Curl @('-s', '-o', 'NUL', '-w', '%{http_code}', "http://127.0.0.1:$graceDashboardPort/healthz")
+    if ($health -ne '200') { throw "/healthz answered $health while the server was draining" }
+    return $true
+}
+
 Test-Check 'graceful shutdown: the server stops as soon as the last stream ends' {
     $held.Client.Dispose()
     $deadline = (Get-Date).AddSeconds(4)
@@ -2077,6 +2133,7 @@ deny_cidrs = ["127.0.0.1/32"]
 enabled = true
 path = "$RootFwd/rotate-audit.jsonl"
 max_bytes = 1024
+keep = 2
 "@ | Set-Content -Path $rotateToml -Encoding UTF8
 
 $rotateLog = Join-Path $Root 'rotate.log'
@@ -2131,6 +2188,55 @@ Test-Check 'the rotated generation holds the records written before it' {
     $records = @(Get-Content $rotated | Where-Object { $_ -match '"event":"acl_denied"' })
     if ($records.Count -lt 1) { throw "the rotated generation holds no acl_denied record" }
     if ($records[0] -notmatch '127\.0\.0\.1') { throw "the rotated record does not name the source: $($records[0])" }
+    return $true
+}
+
+Test-Check 'audit.keep decides how many generations survive a rotation' {
+    # This server keeps two, so a second rotation has to leave two generations
+    # beside the live file and drop the one that is now older than both. Before
+    # this check existed the setting was applied but nothing ever observed the
+    # shift, and a bug that overwrote .1 every time would have looked the same.
+    for ($attempt = 0; $attempt -lt 30; $attempt++) {
+        Attempt-ControlConnection -Port $rotateControlPort | Out-Null
+    }
+    $second = "$rotateAudit.2"
+    $deadline = (Get-Date).AddSeconds(10)
+    while (((-not (Test-Path $second)) -or (-not (Test-Path "$rotateAudit.1"))) -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 200
+    }
+    if (-not (Test-Path $second)) {
+        $live = 0
+        if (Test-Path $rotateAudit) { $live = (Get-Item $rotateAudit).Length }
+        throw "thirty more refused connections left the live log at $live bytes with no second generation, although audit.keep is 2"
+    }
+    if (Test-Path "$rotateAudit.3") {
+        throw "a third generation exists although audit.keep is 2"
+    }
+
+    # Both generations hold whole records, and .2 holds the ones written earlier.
+    # A read can catch a generation while the server rotates it, so each one is
+    # read again rather than failing the check on a rename in flight.
+    $newest = $null
+    $older = $null
+    foreach ($pair in @(@("$rotateAudit.2", 'older'), @("$rotateAudit.1", 'newest'))) {
+        $lines = $null
+        for ($try = 0; $try -lt 5 -and $null -eq $lines; $try++) {
+            try { $lines = @(Get-Content $pair[0] -ErrorAction Stop | Where-Object { $_ -ne '' }) }
+            catch { $lines = $null; Start-Sleep -Milliseconds 200 }
+        }
+        if ($null -eq $lines) { throw "$($pair[0]) could not be read" }
+        if ($lines.Count -lt 1) { throw "$($pair[0]) holds no record" }
+        foreach ($line in $lines) {
+            try { $null = $line | ConvertFrom-Json } catch {
+                throw "$($pair[0]) holds a line that does not parse: $line"
+            }
+        }
+        $first = $lines[0] | ConvertFrom-Json
+        if ($pair[1] -eq 'older') { $older = $first.Time } else { $newest = $first.Time }
+    }
+    if ([datetime]$newest -lt [datetime]$older) {
+        throw "the newest kept generation starts at $newest, before the older one at $older"
+    }
     return $true
 }
 

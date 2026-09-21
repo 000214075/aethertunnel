@@ -236,7 +236,7 @@ web/dashboard           面板单页（内嵌进二进制）
 deploy/kubernetes        Namespace、ConfigMap、Secret 示例、Deployment、Service、kustomization
 Dockerfile              多阶段构建 → distroless
 scripts/build-release.* 跨平台构建与校验和
-scripts/smoke-test.ps1  端到端运维脚本（83 项检查）
+scripts/smoke-test.ps1  端到端运维脚本（86 项检查）
 scripts/vpn-linux-test.sh  真实 tun 设备上的三层隧道检查（两端各在一个网络命名空间）
 ```
 

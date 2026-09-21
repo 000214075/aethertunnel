@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -77,6 +78,7 @@ type Auditor struct {
 	fileInfo   os.FileInfo
 	path       string
 	maxBytes   int64
+	keep       int
 	written    int64
 	encoder    *json.Encoder
 	logger     *log.Logger
@@ -93,10 +95,20 @@ type Auditor struct {
 
 // NewAuditor opens the audit log. A disabled configuration returns an auditor
 // that writes nowhere. logger may be nil; the auditor then reports failures only
-// through its counters.
+// through its counters. One rotated generation is kept beside the live log.
 func NewAuditor(enabled bool, path string, maxBytes int64, logger *log.Logger) (*Auditor, error) {
+	return NewAuditorWithRetention(enabled, path, maxBytes, 1, logger)
+}
+
+// NewAuditorWithRetention opens the audit log and keeps up to keep rotated
+// generations beside it, so an operator has more than the last one to look at
+// after an incident. A keep below one means the default of one.
+func NewAuditorWithRetention(enabled bool, path string, maxBytes int64, keep int, logger *log.Logger) (*Auditor, error) {
 	if !enabled {
 		return &Auditor{}, nil
+	}
+	if keep < 1 {
+		keep = 1
 	}
 
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
@@ -121,6 +133,7 @@ func NewAuditor(enabled bool, path string, maxBytes int64, logger *log.Logger) (
 		fileInfo:   info,
 		path:       path,
 		maxBytes:   maxBytes,
+		keep:       keep,
 		written:    info.Size(),
 		encoder:    json.NewEncoder(file),
 		logger:     logger,
@@ -350,12 +363,24 @@ func (a *Auditor) clearFailure() {
 	a.lastError = ""
 }
 
-// rotate moves the current file aside, keeping one previous generation.
+// rotate moves the current file aside and lets the generations shift by one, so
+// path.1 is the generation that was just rotated away, path.2 the one before it,
+// and the one older than the last kept generation is dropped.
 func (a *Auditor) rotate() {
 	if a.file == nil {
 		return
 	}
+	keep := a.keep
+	if keep < 1 {
+		keep = 1
+	}
 	_ = a.file.Close()
+	// Each rename replaces its destination, so the shift leaves no moment where a
+	// kept generation is missing and the oldest one falls off the end by being
+	// overwritten on the way.
+	for generation := keep - 1; generation >= 1; generation-- {
+		_ = os.Rename(fmt.Sprintf("%s.%d", a.path, generation), fmt.Sprintf("%s.%d", a.path, generation+1))
+	}
 	if err := os.Rename(a.path, a.path+".1"); err != nil {
 		// If the rename fails (for example the file is open elsewhere on
 		// Windows), truncate instead so the log keeps growing from zero.

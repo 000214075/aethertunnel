@@ -310,6 +310,10 @@ type AuditConfig struct {
 	Path    string `toml:"path"`
 	// MaxBytes rotates the file once it exceeds this size. Zero disables rotation.
 	MaxBytes int64 `toml:"max_bytes"`
+	// Keep is how many rotated generations are kept beside the live log: path.1 is
+	// the one that was just rotated away, path.2 the one before it. Zero means the
+	// default of one.
+	Keep int `toml:"keep"`
 }
 
 // LedgerConfig is the [ledger] section: a signed, hash-chained record of the
@@ -533,6 +537,11 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Audit.MaxBytes == 0 {
 		c.Audit.MaxBytes = 32 << 20
+	}
+	// Like the other keys with a non-zero default, an absent or zero value means the
+	// default of one generation.
+	if c.Audit.Keep == 0 {
+		c.Audit.Keep = 1
 	}
 	if c.Ledger.Enabled {
 		if c.Ledger.Path == "" {
@@ -931,6 +940,16 @@ func (c *Config) Validate(role string) error {
 	}
 	if c.Server.GracefulShutdownSecs < 0 {
 		problems = append(problems, "server.graceful_shutdown_seconds cannot be negative")
+	}
+	// An upper bound keeps a typo from making the server rename files in a loop and
+	// from filling a directory with generations nobody asked for. Zero is the
+	// default of one, like the other keys here.
+	if c.Audit.Keep < 0 || c.Audit.Keep > 100 {
+		problems = append(problems, fmt.Sprintf(
+			"audit.keep must be 0-100 (0 means the default of one generation), got %d", c.Audit.Keep))
+	}
+	if c.Audit.MaxBytes < 0 {
+		problems = append(problems, "audit.max_bytes cannot be negative")
 	}
 	switch c.Server.LoadBalance {
 	case LoadBalanceRoundRobin, LoadBalanceRandom, LoadBalanceLatency, LoadBalanceFailover, LoadBalanceAdaptive:

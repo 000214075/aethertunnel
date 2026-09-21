@@ -117,7 +117,7 @@ Schnorr 证明在 NIST P-256 上，用 Fiat-Shamir 去交互；上下文含服�
 | 连接限流 | `[server] rate_limit_per_second` / `rate_limit_burst` | 按来源地址的令牌桶，在握手前执行；空闲桶会被回收 |
 | 自动封禁 | `[server] ban_after_failures` / `ban_seconds` / `ban_max_seconds` / `ban_ignore_cidrs` | 同一来源认证失败达到次数后，在握手前拒绝该来源；每次封禁时长翻倍，直到上限 |
 | 按代理的访客 ACL | `[[proxies]] allow_cidrs` / `deny_cidrs` | 服务器整体接受之后、建立隧道之前，再按该代理自己的名单判断 |
-| 审计日志 | `[audit]` | JSON Lines，超过 `max_bytes` 轮转为 `<path>.1`；写不进去的记录会重开文件重试，仍然失败的计入 `aethertunnel_audit_records_lost_total` 并出现在 `GET /api/status` 的 `audit` 段与面板上 |
+| 审计日志 | `[audit]` | JSON Lines，超过 `max_bytes` 后按 `keep` 代轮转（`<path>.1` … `<path>.<keep>`，默认保留一代）；写不进去的记录会重开文件重试，仍然失败的计入 `aethertunnel_audit_records_lost_total` 并出现在 `GET /api/status` 的 `audit` 段与面板上 |
 
 规则在握手**之前**执行，被拒绝的连接不会消耗会话槽位，也不会读取任何帧。白名单或黑名单
 非空时，来源地址无法解析的连接按拒绝处理。
