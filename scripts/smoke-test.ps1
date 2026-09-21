@@ -210,6 +210,22 @@ function Invoke-UdpEcho {
     }
 }
 
+# Windows and Linux answer on every address in 127.0.0.0/8, so 127.0.0.2 can be used
+# as a second visitor source. macOS assigns only 127.0.0.1 to lo0, and binding
+# another address in the range fails, so a check that needs two source addresses asks
+# first and says when it cannot run.
+function Test-SecondLoopback {
+    $probe = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Parse('127.0.0.2'), 0)
+    try {
+        $probe.Start()
+        return $true
+    } catch {
+        return $false
+    } finally {
+        try { $probe.Stop() } catch { }
+    }
+}
+
 function Invoke-Curl {
     param([string[]]$Arguments)
 
@@ -962,6 +978,11 @@ Test-Check 'per-proxy acl: the refusal is recorded with the proxy name' {
 }
 
 Test-Check 'per-proxy acl: a visitor inside allow_cidrs is served' {
+    if (-not (Test-SecondLoopback)) {
+        # The proxy allows 127.0.0.2 only, so the accept path needs that address.
+        Write-Host "   skipped: this platform answers only on 127.0.0.1, so a second visitor address is not available"
+        return $true
+    }
     # The second loopback address is the one the proxy allows.
     $reply = Invoke-TcpEcho -Port $aclProxyPort -Payload 'acl-allowed' -LocalAddress '127.0.0.2'
     if ($reply -ne 'acl-allowed') { throw "echo returned '$reply'" }

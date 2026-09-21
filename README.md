@@ -90,7 +90,7 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 | 访问控制 | ✅ 可用 | `allow_cidrs` / `deny_cidrs` 在握手前执行；无法解析的来源在存在规则时按拒绝处理。单个代理还能再限定自己的访客来源（`[[proxies]]` 的 `allow_cidrs` / `deny_cidrs`） |
 | 连接限流 | ✅ 可用 | 按来源地址的令牌桶，在握手前执行；空闲桶会被回收 |
 | 自动封禁 | ✅ 可用 | 同一来源认证失败 `ban_after_failures` 次后，在握手前拒绝该来源 `ban_seconds` 秒，期间任何凭据都被拒；再次违规时长翻倍，上限 `ban_max_seconds`；`ban_ignore_cidrs` 排除负载均衡与监控地址 |
-| 审计日志 | ✅ 可用 | JSON Lines，记录接入/拒绝、认证失败、上下线、代理注册与拒绝、访客接受与拒绝、打洞结果、隧道地址分配；按大小轮转 |
+| 审计日志 | ✅ 可用 | JSON Lines，记录接入/拒绝、认证失败、上下线、代理注册与拒绝、封禁与被封拒绝、按代理拒绝的访客、访客接受与拒绝、打洞结果、隧道地址分配；按大小轮转 |
 | Prometheus 指标 | ✅ 可用 | `GET /metrics`（文本格式 0.0.4），含连接、认证失败、拒绝、封禁、按代理拒绝的访客、socks5 请求数、流、双向字节与按隧道的序列 |
 | 健康探针 | ✅ 可用 | `GET /healthz` 恒 200；`GET /readyz` 在监听器未就绪或正在关闭时返回 503 |
 | Web 面板 | ✅ 可用 | 单页、自带资源（编译进二进制）、中英双语、手机可用；含 `/api/ledger` 与 `/api/dht`，代理池的成员数与可用数在代理表格中显示 |
@@ -222,7 +222,10 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke-test.ps1
   `[obfuscation] disguise` 只改变外观、不提供任何机密性。
 - 面板 API 只有 Bearer token 一种保护，没有登录会话、没有多用户。
 - 私有隧道（stcp/sudp/xtcp）的 secret_key 用 `auth_method = "nizk"` 时不会出现在线上，
-  但代理的元数据（名字、类型、地址）会出现在 DHT 里，除非把 `[dht]` 关掉。
+  但代理的元数据（名字、类型、地址）会出现在 DHT 里，除非把 `[dht]` 关掉；
+  启用 `[dht] signing_key_file` 后这些记录带签名，读取端可以据此拒绝改写的记录。
+- 自动封禁按**来源地址**记账：部署在负载均衡、反向代理或监控系统后面时，那些地址必须写进
+  `ban_ignore_cidrs`，否则它们会与攻击者共享同一个来源地址并被一起拒绝。
 
 详见 [`docs/SECURITY.md`](docs/SECURITY.md)。
 
@@ -436,6 +439,11 @@ has been rewritten around what is implemented, and the old keys `bind_addr`, `po
 - The dashboard has a single Bearer token: no user accounts, no sessions.
 - A private tunnel's `secret_key` is not sent on the wire when `auth_method = "nizk"`, but the
   proxy's metadata (name, type, address) is published to the DHT unless `[dht]` is disabled.
+  With `[dht] signing_key_file` those records carry a signature, which a reader uses to refuse
+  a rewritten one.
+- The automatic ban counts by **source address**: behind a load balancer, a reverse proxy or a
+  monitoring host, those addresses belong in `ban_ignore_cidrs`, or they share the source
+  address of an attacker and are refused along with it.
 
 See [`docs/SECURITY.md`](docs/SECURITY.md) for the full list, including what an attacker on
 the path can still learn.

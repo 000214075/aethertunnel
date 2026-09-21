@@ -46,10 +46,25 @@ func waitForAuditEvents(t *testing.T, path string, n int) []AuditEvent {
 	}
 }
 
-// strangerAddress is a second loopback address. It makes "a source that is not
-// the client" testable on one machine: 127.0.0.1 stays the trusted client while
-// 127.0.0.2 plays the visitor that a rule is meant to exclude.
-const strangerAddress = "127.0.0.2"
+// secondLoopback returns a second loopback address this machine can bind, or an
+// empty string when it has only one.
+//
+// Linux and Windows answer on every address in 127.0.0.0/8, so 127.0.0.2 is local
+// and can be used as a second source. macOS assigns only 127.0.0.1 to lo0, and
+// binding another address in the range fails with "can't assign requested
+// address". A test that needs two distinct source addresses calls this and skips
+// when it comes back empty; the allow/deny rules are covered on every platform by
+// the tests that use one address with ranges that do or do not contain it.
+func secondLoopback(t *testing.T) string {
+	t.Helper()
+
+	probe, err := net.Listen("tcp", "127.0.0.2:0")
+	if err != nil {
+		return ""
+	}
+	_ = probe.Close()
+	return "127.0.0.2"
+}
 
 // dialFrom opens a TCP connection whose source address is from.
 func dialFrom(t *testing.T, from, target string) (net.Conn, error) {
@@ -80,9 +95,9 @@ func TestRepeatedAuthFailuresBanTheSource(t *testing.T) {
 	}
 	rs := startServer(t, cfg)
 
-	// Two failures with the wrong token, from the stranger address.
+	// Two failures with the wrong token, from the address the default dialer uses.
 	for attempt := 1; attempt <= 2; attempt++ {
-		conn, err := dialFrom(t, strangerAddress, rs.addr)
+		conn, err := net.DialTimeout("tcp", rs.addr, 5*time.Second)
 		if err != nil {
 			t.Fatalf("attempt %d: %v", attempt, err)
 		}
@@ -103,7 +118,7 @@ func TestRepeatedAuthFailuresBanTheSource(t *testing.T) {
 
 	// The next connection from that address is refused before the handshake, so
 	// even a correct token gets nothing.
-	conn, err := dialFrom(t, strangerAddress, rs.addr)
+	conn, err := net.DialTimeout("tcp", rs.addr, 5*time.Second)
 	if err != nil {
 		t.Fatalf("banned attempt: %v", err)
 	}
@@ -119,14 +134,48 @@ func TestRepeatedAuthFailuresBanTheSource(t *testing.T) {
 	if err := framer.ReadJSON(protocol.TypeAuthResponse, &response); err == nil && response.OK {
 		t.Fatal("a banned source authenticated")
 	}
+}
 
-	// A different source is unaffected, which is the point of banning per address.
-	other, err := newTestClient(t, rs.addr, false)
+// TestABanDoesNotAffectAnotherSource is the half of the ban that only a second
+// source address can show: the entry names one address and leaves the rest alone.
+func TestABanDoesNotAffectAnotherSource(t *testing.T) {
+	other := secondLoopback(t)
+	if other == "" {
+		t.Skip("this platform answers only on 127.0.0.1, so two source addresses cannot be told apart; " +
+			"TestRepeatedAuthFailuresBanTheSource covers the ban itself")
+	}
+
+	cfg := testConfig(t, false)
+	cfg.Server.BanAfterFailures = 1
+	cfg.Server.BanSeconds = 60
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	rs := startServer(t, cfg)
+
+	conn, err := dialFrom(t, other, rs.addr)
+	if err != nil {
+		t.Fatalf("dial from %s: %v", other, err)
+	}
+	framer := protocol.NewFramer(conn, nil, 0)
+	_ = framer.WriteJSON(protocol.TypeAuthRequest, protocol.AuthRequest{
+		Token: "wrong", ClientVersion: "ban-test", Protocol: protocol.ProtocolVersion,
+	})
+	var response protocol.AuthResponse
+	_ = framer.ReadJSON(protocol.TypeAuthResponse, &response)
+	conn.Close()
+
+	if banned := rs.server.bans.banned(); banned != 1 {
+		t.Fatalf("the list reports %d banned sources, want 1", banned)
+	}
+
+	// The address that never failed still authenticates.
+	client, err := newTestClient(t, rs.addr, false)
 	if err != nil {
 		t.Fatalf("another source: %v", err)
 	}
-	defer other.close()
-	if _, err := other.authenticate("still-welcome", testToken); err != nil {
+	defer client.close()
+	if _, err := client.authenticate("still-welcome", testToken); err != nil {
 		t.Fatalf("a source that never failed was refused: %v", err)
 	}
 }
@@ -145,7 +194,7 @@ func TestABanIsRecordedInTheAuditLog(t *testing.T) {
 	}
 	rs := startServer(t, cfg)
 
-	conn, err := dialFrom(t, strangerAddress, rs.addr)
+	conn, err := net.DialTimeout("tcp", rs.addr, 5*time.Second)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -181,7 +230,7 @@ func TestASuccessfulLoginClearsTheFailureCount(t *testing.T) {
 
 	// One failure, then a success from the same address, then one failure: the
 	// counter was cleared, so nothing is banned.
-	conn, err := dialFrom(t, strangerAddress, rs.addr)
+	conn, err := net.DialTimeout("tcp", rs.addr, 5*time.Second)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -193,7 +242,7 @@ func TestASuccessfulLoginClearsTheFailureCount(t *testing.T) {
 	_ = framer.ReadJSON(protocol.TypeAuthResponse, &failed)
 	conn.Close()
 
-	good, err := dialFrom(t, strangerAddress, rs.addr)
+	good, err := net.DialTimeout("tcp", rs.addr, 5*time.Second)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -209,7 +258,7 @@ func TestASuccessfulLoginClearsTheFailureCount(t *testing.T) {
 	}
 	good.Close()
 
-	again, err := dialFrom(t, strangerAddress, rs.addr)
+	again, err := net.DialTimeout("tcp", rs.addr, 5*time.Second)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -230,14 +279,14 @@ func TestBanIgnoreCIDRsKeepsChosenSourcesConnected(t *testing.T) {
 	cfg := testConfig(t, false)
 	cfg.Server.BanAfterFailures = 1
 	cfg.Server.BanSeconds = 60
-	cfg.Server.BanIgnoreCIDRs = []string{strangerAddress + "/32"}
+	cfg.Server.BanIgnoreCIDRs = []string{"127.0.0.1/32"}
 	if err := cfg.Validate(config.RoleServer); err != nil {
 		t.Fatalf("config: %v", err)
 	}
 	rs := startServer(t, cfg)
 
 	for attempt := 0; attempt < 3; attempt++ {
-		conn, err := dialFrom(t, strangerAddress, rs.addr)
+		conn, err := net.DialTimeout("tcp", rs.addr, 5*time.Second)
 		if err != nil {
 			t.Fatalf("attempt %d: %v", attempt, err)
 		}
@@ -256,11 +305,61 @@ func TestBanIgnoreCIDRsKeepsChosenSourcesConnected(t *testing.T) {
 	if banned := rs.server.bans.banned(); banned != 0 {
 		t.Errorf("%d source(s) were banned although ban_ignore_cidrs names them", banned)
 	}
+
+	// The address is still usable with the right token, which is what an ignored
+	// source in front of a health checker needs.
+	client, err := newTestClient(t, rs.addr, false)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.close()
+	if _, err := client.authenticate("health-checker", testToken); err != nil {
+		t.Fatalf("an ignored source was refused: %v", err)
+	}
 }
 
 // --- per-proxy visitor access control ------------------------------------------
 
 func TestAProxyRefusesAVisitorOutsideItsAllowList(t *testing.T) {
+	echo := startEcho(t)
+	cfg := testConfig(t, false)
+	rs := startServer(t, cfg)
+
+	publicPort := freePort(t)
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"guarded": streamHandler(echo)})
+	// The list names a range the loopback visitor is not in, so the visitor that
+	// does connect falls outside it.
+	agent.register(protocol.ProxySpec{
+		Name: "guarded", Type: protocol.ProxyTypeTCP, LocalAddr: echo,
+		RemotePort: publicPort, AllowCIDRs: []string{"10.0.0.0/8"},
+	})
+	waitForListener(t, rs.server, "guarded")
+
+	visitor, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", publicPort), 5*time.Second)
+	if err != nil {
+		t.Fatalf("visitor: %v", err)
+	}
+	defer visitor.Close()
+	_ = visitor.SetDeadline(time.Now().Add(3 * time.Second))
+	_, _ = visitor.Write([]byte("not welcome"))
+	if n, err := visitor.Read(make([]byte, 64)); err == nil {
+		t.Fatalf("the excluded visitor received %d byte(s)", n)
+	}
+
+	if denied := rs.server.metrics.visitorDenied.Load(); denied != 1 {
+		t.Errorf("the metric reports %d refused visitors, want 1", denied)
+	}
+}
+
+// TestAProxyAdmitsOneVisitorAddressAndRefusesAnother is the half of the check that
+// needs two source addresses, so it skips where the platform has only one.
+func TestAProxyAdmitsOneVisitorAddressAndRefusesAnother(t *testing.T) {
+	other := secondLoopback(t)
+	if other == "" {
+		t.Skip("this platform answers only on 127.0.0.1, so two visitor addresses cannot be told apart; " +
+			"TestAProxyRefusesAVisitorOutsideItsAllowList and TestAProxyDenyListWinsOverItsAllowList cover the rules")
+	}
+
 	echo := startEcho(t)
 	cfg := testConfig(t, false)
 	rs := startServer(t, cfg)
@@ -292,7 +391,7 @@ func TestAProxyRefusesAVisitorOutsideItsAllowList(t *testing.T) {
 	}
 
 	// The visitor from another address is dropped without being served.
-	stranger, err := dialFrom(t, strangerAddress, fmt.Sprintf("127.0.0.1:%d", publicPort))
+	stranger, err := dialFrom(t, other, fmt.Sprintf("127.0.0.1:%d", publicPort))
 	if err != nil {
 		t.Fatalf("stranger: %v", err)
 	}
@@ -314,34 +413,45 @@ func TestAProxyDenyListWinsOverItsAllowList(t *testing.T) {
 	rs := startServer(t, cfg)
 
 	publicPort := freePort(t)
-	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"guarded": streamHandler(echo)})
+	closedPort := freePort(t)
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{
+		"guarded": streamHandler(echo),
+		"open":    streamHandler(echo),
+	})
+	// Both lists contain the loopback visitor, and deny decides.
 	agent.register(protocol.ProxySpec{
 		Name: "guarded", Type: protocol.ProxyTypeTCP, LocalAddr: echo,
 		RemotePort: publicPort,
 		AllowCIDRs: []string{"127.0.0.0/8"},
-		DenyCIDRs:  []string{strangerAddress + "/32"},
+		DenyCIDRs:  []string{"127.0.0.1/32"},
+	})
+	// The same allow list without the deny entry serves the same visitor.
+	agent.register(protocol.ProxySpec{
+		Name: "open", Type: protocol.ProxyTypeTCP, LocalAddr: echo,
+		RemotePort: closedPort, AllowCIDRs: []string{"127.0.0.0/8"},
 	})
 	waitForListener(t, rs.server, "guarded")
+	waitForListener(t, rs.server, "open")
 
-	stranger, err := dialFrom(t, strangerAddress, fmt.Sprintf("127.0.0.1:%d", publicPort))
+	denied, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", publicPort), 5*time.Second)
 	if err != nil {
-		t.Fatalf("stranger: %v", err)
+		t.Fatalf("denied visitor: %v", err)
 	}
-	defer stranger.Close()
-	_ = stranger.SetDeadline(time.Now().Add(3 * time.Second))
-	if n, err := stranger.Read(make([]byte, 64)); err == nil {
+	defer denied.Close()
+	_ = denied.SetDeadline(time.Now().Add(3 * time.Second))
+	if n, err := denied.Read(make([]byte, 64)); err == nil {
 		t.Fatalf("a deny-listed visitor received %d byte(s)", n)
 	}
 
-	allowed, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", publicPort), 5*time.Second)
+	served, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", closedPort), 5*time.Second)
 	if err != nil {
 		t.Fatalf("allowed visitor: %v", err)
 	}
-	defer allowed.Close()
-	_ = allowed.SetDeadline(time.Now().Add(5 * time.Second))
-	_, _ = allowed.Write([]byte("still welcome"))
+	defer served.Close()
+	_ = served.SetDeadline(time.Now().Add(5 * time.Second))
+	_, _ = served.Write([]byte("still welcome"))
 	got := make([]byte, len("still welcome"))
-	if _, err := io.ReadFull(allowed, got); err != nil {
+	if _, err := io.ReadFull(served, got); err != nil {
 		t.Fatalf("the allowed visitor was not served: %v", err)
 	}
 }
@@ -534,22 +644,23 @@ func TestSocks5EndpointRefusesAVisitorOutsideItsAllowList(t *testing.T) {
 	agent.register(protocol.ProxySpec{
 		Name: "exit", Type: protocol.ProxyTypeSOCKS, RemotePort: publicPort,
 		AllowTargets: []string{"127.0.0.0/8"},
-		AllowCIDRs:   []string{"127.0.0.1/32"},
+		// The visitor range excludes the address that connects.
+		AllowCIDRs: []string{"10.0.0.0/8"},
 	})
 	waitForListener(t, rs.server, "exit")
 
-	stranger, err := dialFrom(t, strangerAddress, fmt.Sprintf("127.0.0.1:%d", publicPort))
+	visitor, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", publicPort), 5*time.Second)
 	if err != nil {
-		t.Fatalf("stranger: %v", err)
+		t.Fatalf("visitor: %v", err)
 	}
-	defer stranger.Close()
-	_ = stranger.SetDeadline(time.Now().Add(3 * time.Second))
+	defer visitor.Close()
+	_ = visitor.SetDeadline(time.Now().Add(3 * time.Second))
 
 	// The endpoint drops the connection without answering the greeting.
-	if _, err := stranger.Write([]byte{socks.Version, 1, socks.MethodNoReq}); err != nil {
+	if _, err := visitor.Write([]byte{socks.Version, 1, socks.MethodNoReq}); err != nil {
 		t.Fatalf("greeting: %v", err)
 	}
-	if n, err := stranger.Read(make([]byte, 2)); err == nil {
+	if n, err := visitor.Read(make([]byte, 2)); err == nil {
 		t.Fatalf("the excluded visitor received %d byte(s)", n)
 	}
 }
