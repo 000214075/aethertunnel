@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -166,15 +167,22 @@ func TestAuditLogKeepsSeveralGenerations(t *testing.T) {
 
 // TestAuditLogNeverDropsRecordsWhenItCannotRotate holds the live file open from
 // outside, which is what a scanner, a shipper or an operator reading it does. On
-// Windows that stops the rename, so the rotation has to be postponed rather than
-// cutting the file short: every record written has to be readable afterwards,
-// in the live file or in a generation, whichever way the rotation went.
+// Windows that stops the rename of the live file, so the rotation has to be
+// postponed rather than cutting the file short: the records that were written are
+// still there afterwards.
+//
+// The retention limit is a separate matter and is not what this covers: the
+// generation count here is far larger than the number of rotations the records
+// cause, so nothing is expected to fall off the end on either platform.
 func TestAuditLogNeverDropsRecordsWhenItCannotRotate(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "audit.jsonl")
 
-	const limit = 512
-	auditor, err := NewAuditorWithRetention(true, path, limit, 2, discardLogger())
+	const (
+		limit = 512
+		keep  = 10
+	)
+	auditor, err := NewAuditorWithRetention(true, path, limit, keep, discardLogger())
 	if err != nil {
 		t.Fatalf("NewAuditorWithRetention: %v", err)
 	}
@@ -199,7 +207,7 @@ func TestAuditLogNeverDropsRecordsWhenItCannotRotate(t *testing.T) {
 
 	// Every record written is somewhere, and nothing half-written is anywhere.
 	total := 0
-	for _, candidate := range []string{path, path + ".1", path + ".2"} {
+	for _, candidate := range append([]string{path}, generationPaths(path, keep)...) {
 		if _, err := os.Stat(candidate); err != nil {
 			continue
 		}
@@ -210,11 +218,20 @@ func TestAuditLogNeverDropsRecordsWhenItCannotRotate(t *testing.T) {
 		total += len(records)
 	}
 	if total != 18 {
-		t.Errorf("%d of the 18 records written are readable afterwards", total)
+		t.Errorf("%d of the 18 records written are still readable, and with keep = %d nothing should have fallen off the end", total, keep)
 	}
 	if got := auditor.Lost(); got != 0 {
 		t.Errorf("%d records were reported lost although nothing was dropped", got)
 	}
+}
+
+// generationPaths lists path.1 .. path.keep.
+func generationPaths(path string, keep int) []string {
+	paths := make([]string, 0, keep)
+	for generation := 1; generation <= keep; generation++ {
+		paths = append(paths, fmt.Sprintf("%s.%d", path, generation))
+	}
+	return paths
 }
 
 // TestAuditLogKeepsOneGenerationByDefault pins the behaviour a configuration that
