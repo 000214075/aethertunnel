@@ -280,6 +280,36 @@ remote_port = 6022
 	}
 }
 
+// TestAnHTTPProxyWithoutDomainsIsAcceptedWithAWarning covers the one way an http
+// proxy can be published without the client naming its hostname: the server
+// publishes it as <proxy-name>.<server.subdomain_host>. Only the server knows that
+// setting, so refusing the configuration here would make the setting unusable —
+// which is what used to happen.
+func TestAnHTTPProxyWithoutDomainsIsAcceptedWithAWarning(t *testing.T) {
+	path := writeConfig(t, `
+[client]
+server_addr = "example.com:7001"
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[[proxies]]
+name = "web"
+type = "http"
+local_port = 8080
+`)
+	cfg, err := LoadClient(path)
+	if err != nil {
+		t.Fatalf("a domain-less http proxy must load: %v", err)
+	}
+	if len(cfg.Proxies) != 1 || len(cfg.Proxies[0].Domains) != 0 {
+		t.Fatalf("the proxy was parsed into %+v", cfg.Proxies)
+	}
+
+	warnings := strings.Join(cfg.Warnings, "\n")
+	if !strings.Contains(warnings, "subdomain_host") {
+		t.Fatalf("no warning about how the proxy will be reached: %v", cfg.Warnings)
+	}
+}
+
 // --- bandwidth ledger ---------------------------------------------------------
 
 func TestLedgerDefaultsAreApplied(t *testing.T) {

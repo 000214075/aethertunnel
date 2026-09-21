@@ -70,7 +70,7 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 
 | 能力 | 状态 | 说明 |
 |---|---|---|
-| 代理类型 | ✅ 可用 | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`；http/https 走服务器的共享监听并按 Host 头选择隧道，stcp/sudp/xtcp 为私有隧道，socks5 是出口代理（访客指定目标，客户端拨号，`allow_targets` 限定可达范围） |
+| 代理类型 | ✅ 可用 | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`；http/https 走服务器的共享监听并按 Host 头选择隧道（精确域名、`*.通配`，或服务端 `subdomain_host` 拼出的 `<代理名>.<该值>`），stcp/sudp/xtcp 为私有隧道，socks5 是出口代理（访客指定目标，客户端拨号，`allow_targets` 限定可达范围） |
 | XTCP 直连 | ✅ 可用 | 自研 UDP 打洞（HMAC-SHA256 同时打开 + 可靠有序字节流），打洞失败自动回退到服务器中继；访客把实际走通的路径回报给服务器（`ATP3` 数据报），因此指标与审计记录的是真实结果而不是猜测 |
 | TCP/UDP 转发 | ✅ 可用 | 访问者 → 服务器端口 → 客户端 → 本地服务；TCP 保留半关闭，UDP 按来源地址分会话 |
 | 负载均衡 | ✅ 可用 | 同名代理可由多个客户端组成代理池，策略：`round-robin` `random` `latency` `failover` `adaptive`；`scripts/smoke-test.ps1` 用两个真实客户端验到池成员都被分流、掉一个成员后仍继续服务 |
@@ -87,10 +87,10 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 | 通告签名 | ✅ 可用 | DHT 上任何节点都能写同一个键，所以服务端用 Ed25519 给每条通告签名；读取端 `require_signed` 拒绝无签名记录，`trusted_keys` 只认指定公钥。改一个字段或换一把key都会失败 |
 | 三层隧道 | ⚠️ 仅 Linux | `[vpn]`：客户端从服务端领取地址，IP 包经控制连接转发；服务端是共享一张网卡的路由器。Linux 上打开或创建 tun 设备；其它平台**明确拒绝启动**并说明缺少什么，不会静默降级。Linux 路径已在真实 tun 设备上跑通（`scripts/vpn-linux-test.sh`，两端放在不同网络命名空间里互相 ping），`GET /api/vpn` 与面板的"三层隧道"一栏显示接口、地址池与包计数 |
 | 流量混淆 | ✅ 可用 | `pad_to` 补齐帧长度、`jitter_millis` 加抖动；`disguise = "tls-record"` 把每个写入包进 TLS 1.2 应用数据记录 |
-| 访问控制 | ✅ 可用 | `allow_cidrs` / `deny_cidrs` 在握手前执行；无法解析的来源在存在规则时按拒绝处理。单个代理还能再限定自己的访客来源（`[[proxies]]` 的 `allow_cidrs` / `deny_cidrs`） |
-| 连接限流 | ✅ 可用 | 按来源地址的令牌桶，在握手前执行；空闲桶会被回收 |
+| 访问控制 | ✅ 可用 | `allow_cidrs` / `deny_cidrs` 在握手前执行；无法解析的来源在存在规则时按拒绝处理。单个代理还能再限定自己的访客来源（`[[proxies]]` 的 `allow_cidrs` / `deny_cidrs`）。运维脚本用一台独立服务器把服务端级规则单独验了一遍：被拒来源在握手前断开、且不计入接入连接数 |
+| 连接限流 | ✅ 可用 | 按来源地址的令牌桶，在握手前执行；空闲桶会被回收。运维脚本分别验了桶内请求被放行、超出后被拒并写进审计与日志 |
 | 自动封禁 | ✅ 可用 | 同一来源认证失败 `ban_after_failures` 次后，在握手前拒绝该来源 `ban_seconds` 秒，期间任何凭据都被拒；再次违规时长翻倍，上限 `ban_max_seconds`；`ban_ignore_cidrs` 排除负载均衡与监控地址 |
-| 审计日志 | ✅ 可用 | JSON Lines，记录接入/拒绝、认证失败、上下线、代理注册/移除与拒绝、面板断连、封禁与被封拒绝、按代理拒绝的访客、访客接受与拒绝、打洞结果（直连/中继/未知）、隧道地址分配；按大小轮转 |
+| 审计日志 | ✅ 可用 | JSON Lines，记录接入/拒绝、认证失败、上下线、代理注册/移除与拒绝、面板断连、封禁与被封拒绝、按代理拒绝的访客、访客接受与拒绝、打洞结果（直连/中继/未知）、隧道地址分配；`max_bytes` 到量后按大小轮转，保留上一代 |
 | Prometheus 指标 | ✅ 可用 | `GET /metrics`（文本格式 0.0.4），含连接、认证失败、拒绝、封禁、按代理拒绝的访客、socks5 请求数、因关闭被拒的流、流、双向字节、打洞结果与按隧道的序列；每个数字都读自运行中的计数器 |
 | 优雅关闭 | ✅ 可用 | 收到停止信号后停止接受新连接，给正在传输的流最多 `server.graceful_shutdown_seconds`（默认 5）秒完成再断开客户端；期间到达的访客被立即拒绝并计入指标；没有流在传时立刻退出，不会空等 |
 | 健康探针 | ✅ 可用 | `GET /healthz` 恒 200；`GET /readyz` 在监听器未就绪或正在关闭时返回 503 |
@@ -98,7 +98,7 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 | 容器与编排 | ✅ 可用 | `Dockerfile`（多阶段 → distroless）与 `deploy/kubernetes/` 清单；凭据可用环境变量提供，不必写进 ConfigMap |
 | 多平台 | ✅ 可用 | linux/darwin/windows × amd64/arm64，`scripts/build-release.*` 一键出 12 个产物 + SHA256 |
 | 配置校验 | ✅ 可用 | 未知配置项会**报出来**而不是静默忽略；`--check` 只校验不启动 |
-| 单元 + 端到端测试 | ✅ 可用 | 含"访问者→隧道→本地服务"的真实回环测试，明文与加密两种模式；另有 66 项检查的运维脚本 `scripts/smoke-test.ps1` 与真实 tun 设备上的 `scripts/vpn-linux-test.sh` |
+| 单元 + 端到端测试 | ✅ 可用 | 含"访问者→隧道→本地服务"的真实回环测试，明文与加密两种模式；另有 75 项检查的运维脚本 `scripts/smoke-test.ps1` 与真实 tun 设备上的 `scripts/vpn-linux-test.sh` |
 
 ### 这一版没有什么
 
@@ -201,6 +201,16 @@ Windows 上发信号用不带 `/F` 的 `taskkill`，Linux 与 macOS 上等价于
 真的开了 3 条数据连接。打洞一项把服务器上的 `aethertunnel_p2p_direct_total` /
 `aethertunnel_p2p_relayed_total` 与访客自己日志里报的路径对照，两边必须一致。
 
+`idle_timeout_seconds` 一项把访客客户端的空闲上限设成 2 秒：先做一次回显确认会话可用，
+然后一个字都不发，连接必须在几秒内自己结束；紧跟的第二项在同一段时间里持续来回发字节，
+连接必须活着。两项一起把"超时针对静默、而不是针对连接时长"钉住。
+
+最后两节各起一台独立服务器，把与来源地址有关、在主服务器上会互相干扰的规则单独跑一遍。
+一节是服务端级的 `deny_cidrs` 与令牌桶限流：被拒来源在握手前断开、不计入
+`aethertunnel_control_connections_total`，两种拒绝分别出现在 `/metrics`、审计与日志里。
+另一节把 `[audit] max_bytes` 设成 1024 并制造足够多的拒绝记录，核对轮转真的发生：
+上一代文件存在且每一行都能被 JSON 解析，当前文件已经重新从小尺寸开始增长。
+
 ```bash
 # 手工做一次同样的验证：起服务、保持一条流、发信号、看日志
 taskkill /PID <服务器PID>            # Windows，不带 /F
@@ -233,7 +243,7 @@ make check          # 校验示例配置
 Windows 无 make 时：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 -Version v3.4.0
+powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 -Version v3.6.0
 powershell -ExecutionPolicy Bypass -File scripts\smoke-test.ps1
 ```
 
@@ -348,7 +358,7 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 | Containers and orchestration | ✅ works | a multi-stage `Dockerfile` ending in distroless, and manifests under `deploy/kubernetes/`; credentials can come from environment variables instead of the ConfigMap |
 | Platforms | ✅ works | linux/darwin/windows × amd64/arm64; `scripts/build-release.*` produces 12 binaries + SHA256 |
 | Config validation | ✅ works | unknown keys are **reported**, not ignored; `--check` validates without starting |
-| Tests | ✅ works | unit tests, a real end-to-end tunnel test in cleartext and encrypted modes, a 66-check operations script `scripts/smoke-test.ps1`, and a layer-3 run on real tun devices in `scripts/vpn-linux-test.sh` |
+| Tests | ✅ works | unit tests, a real end-to-end tunnel test in cleartext and encrypted modes, a 75-check operations script `scripts/smoke-test.ps1`, and a layer-3 run on real tun devices in `scripts/vpn-linux-test.sh` |
 
 ### What this release does not do
 

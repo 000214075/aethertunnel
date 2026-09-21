@@ -1,9 +1,12 @@
 package server
 
 import (
+	"context"
 	"crypto/ed25519"
 	"errors"
+	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -550,5 +553,95 @@ func TestAServerWithNoSigningKeyPublishesUnsignedRecords(t *testing.T) {
 	}
 	if record.PublicKey != "" || record.Signature != "" {
 		t.Errorf("an unsigned deployment signed its record with %q", record.PublicKey)
+	}
+}
+
+// --- record lifetime ----------------------------------------------------------
+
+// TestADHTRecordLapsesAfterTheConfiguredTTL drives dht.ttl_seconds, which bounds
+// how long any node keeps a record. It is what stops the name of a server that has
+// disappeared from resolving forever, because the DHT has no remote delete: copies
+// of an announcement sit on every node that stored one until they lapse.
+//
+// The configuration is written as TOML and loaded, so the key is proven to reach
+// the DHT rather than only the Go field. config validation requires the storage TTL
+// to be at least the announcement TTL, so the two are set to the same short value,
+// which is the shortest pair the validator accepts. That makes the error the
+// discriminator: once the storage has dropped the record the lookup reports
+// dht.ErrNotFound, whereas a record that is still stored but no longer announced
+// reports discovery.ErrStale.
+func TestADHTRecordLapsesAfterTheConfiguredTTL(t *testing.T) {
+	const ttlSeconds = 2
+
+	path := filepath.Join(t.TempDir(), "ttl.toml")
+	body := fmt.Sprintf(`
+[server]
+bind_addr = "127.0.0.1"
+bind_port = %d
+auth_token = "%s"
+
+[dht]
+enabled = true
+listen_addr = "127.0.0.1:%d"
+advertise_host = "127.0.0.1"
+ttl_seconds = %d
+announce_ttl_seconds = %d
+`, freePort(t), testToken, freeUDPPort(t), ttlSeconds, ttlSeconds)
+
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write the configuration: %v", err)
+	}
+	cfg, err := config.Load(path, config.ValidateOptions{Role: config.RoleServer})
+	if err != nil {
+		t.Fatalf("load the configuration: %v", err)
+	}
+	if cfg.DHT.TTLSeconds != ttlSeconds {
+		t.Fatalf("dht.ttl_seconds loaded as %d, want %d", cfg.DHT.TTLSeconds, ttlSeconds)
+	}
+
+	node, err := discovery.Start(cfg.DHTSettings(discardLogger()))
+	if err != nil {
+		t.Fatalf("start the node: %v", err)
+	}
+	defer node.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := node.Publish(ctx, discovery.Record{
+		Name: "ssh", Type: "tcp", Server: "127.0.0.1:2022",
+	}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	published := time.Now()
+
+	// Inside the lifetime the name resolves, which is what makes the expiry below
+	// an expiry rather than a record that never worked.
+	record, err := node.Resolve("ssh")
+	if err != nil {
+		t.Fatalf("resolve inside the lifetime: %v", err)
+	}
+	if record.Server != "127.0.0.1:2022" {
+		t.Fatalf("resolved %q, want the published address", record.Server)
+	}
+
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		_, err := node.Resolve("ssh")
+		if errors.Is(err, dht.ErrNotFound) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the record still resolved %v after it was published with a %d-second dht.ttl_seconds: %v",
+				time.Since(published), ttlSeconds, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	lapsed := time.Since(published)
+	if lapsed < time.Duration(ttlSeconds)*time.Second {
+		t.Errorf("the record lapsed after %v, before the %d-second dht.ttl_seconds", lapsed, ttlSeconds)
+	}
+	if lapsed > 10*time.Second {
+		t.Errorf("the record lapsed after %v, far past the %d-second dht.ttl_seconds", lapsed, ttlSeconds)
 	}
 }

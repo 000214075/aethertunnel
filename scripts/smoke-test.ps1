@@ -265,14 +265,37 @@ function Invoke-Curl {
 
 # Get-Metric reads one series out of /metrics. The whole body is one string, so the
 # line is matched with the multiline flag; a plain match would only ever look at the
-# first line.
+# first line. Port defaults to the main server's dashboard.
 function Get-Metric {
-    param([string]$Name)
+    param([string]$Name, [int]$Port = 0)
 
-    $body = Invoke-Curl @('-s', "http://127.0.0.1:$dashboardPort/metrics")
+    if ($Port -eq 0) { $Port = $dashboardPort }
+    $body = Invoke-Curl @('-s', "http://127.0.0.1:$Port/metrics")
     $match = [regex]::Match($body, '(?m)^' + [regex]::Escape($Name) + ' (-?\d+)')
     if (-not $match.Success) { throw "the metrics output has no $Name" }
     return [int]$match.Groups[1].Value
+}
+
+# Attempt-ControlConnection opens one TCP connection to a control port from the given
+# source address and closes it at once. Nothing is sent: the decisions under test are
+# made before the handshake, so what the server does with the socket is the whole
+# answer.
+function Attempt-ControlConnection {
+    param([int]$Port, [string]$From = '')
+
+    $client = New-Object System.Net.Sockets.TcpClient
+    try {
+        if ($From) {
+            $client.Client.Bind((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($From), 0)))
+        }
+        $client.Connect('127.0.0.1', $Port)
+        $client.Close()
+        return $true
+    } catch {
+        return $false
+    } finally {
+        $client.Dispose()
+    }
 }
 
 # Invoke-CurlExit reports what a request did as well as what it said, which is what
@@ -444,11 +467,14 @@ enable_tls = true
 "@
 
 # Every TCP connection in this run is wrapped, so the disguise is exercised by the
-# control connection, every data connection and every visitor connection.
+# control connection, every data connection and every visitor connection. The jitter
+# is on for the same reason: it delays every write by a random amount, and the rest
+# of the script is what proves the protocol still works with that delay in the way.
 $commonObfuscation = @"
 [obfuscation]
 enabled = true
 pad_to = 256
+jitter_millis = 3
 disguise = "tls-record"
 "@
 
@@ -496,6 +522,15 @@ local_ip = "127.0.0.1"
 local_port = $httpEchoPort
 domains = ["secure.smoke.test"]
 
+# No domains: this one is reached as subdomain-web.smoke.test, the server's
+# subdomain_host convention. The client is not told the server's setting, so it can
+# only warn about it.
+[[proxies]]
+name = "subdomain-web"
+type = "http"
+local_ip = "127.0.0.1"
+local_port = $httpEchoPort
+
 [[proxies]]
 name = "private"
 type = "stcp"
@@ -541,6 +576,9 @@ allow_cidrs = ["127.0.0.2/32"]
 [client]
 server_addr = "127.0.0.1:$controlPort"
 auth_token = "$token"
+# Short enough that a check can watch it happen: a visiting connection that goes
+# silent for this long is dropped, while one that keeps carrying bytes is not.
+idle_timeout_seconds = 2
 
 $commonSecurity
 ca_file = ""
@@ -622,6 +660,8 @@ https_port = $httpsPort
 https_cert_file = "$certFile"
 https_key_file = "$keyFile"
 p2p_port = $p2pPort
+# Lets a proxy that declares no domains be reached at <proxy-name>.<this value>.
+subdomain_host = "smoke.test"
 
 $commonSecurity
 cert_file = "$certFile"
@@ -934,6 +974,24 @@ Test-Check 'https: virtual hosting over TLS' {
     return $true
 }
 
+Test-Check 'an http proxy without domains is reachable through subdomain_host' {
+    # The proxy named subdomain-web declares no domains, so the only way to reach it
+    # is <proxy-name>.<server.subdomain_host>. The client that published it cannot
+    # check this itself: subdomain_host belongs to the server.
+    $body = Invoke-Curl @('-s', '-H', 'Host: subdomain-web.smoke.test', "http://127.0.0.1:$httpPort/by-subdomain")
+    if ($body -notmatch 'host=subdomain-web\.smoke\.test') { throw "unexpected body: $body" }
+    if ($body -notmatch 'path=/by-subdomain') { throw "the request did not reach the local service: $body" }
+    return $true
+}
+
+Test-Check 'a subdomain that was never published is refused' {
+    $status = Invoke-Curl @('-s', '-o', 'NUL', '-w', '%{http_code}', '-H', 'Host: nobody.smoke.test', "http://127.0.0.1:$httpPort/")
+    if ($status -ne '404') { throw "an unknown subdomain answered $status" }
+    $status = Invoke-Curl @('-s', '-o', 'NUL', '-w', '%{http_code}', '-H', 'Host: subdomain-web.other.test', "http://127.0.0.1:$httpPort/")
+    if ($status -ne '404') { throw "a name outside the subdomain host answered $status" }
+    return $true
+}
+
 Test-Check 'the proxy list is reported to the client' {
     $body = Invoke-Curl @('-s', "http://127.0.0.1:$dashboardPort/api/proxies")
     if ($body -notmatch '"tcp-echo"') { throw "the dashboard does not list tcp-echo: $body" }
@@ -988,6 +1046,72 @@ Test-Check 'xtcp: the owner reported the punch outcome' {
     if ($log -notmatch 'punch for "direct" succeeded|the visitor will use the relay') {
         throw "the owner did not report a punch outcome"
     }
+    return $true
+}
+
+Test-Check 'idle_timeout_seconds: a silent visiting connection is dropped' {
+    # The visitor client is configured with idle_timeout_seconds = 2. One echo round
+    # trip proves the session works, and then nothing is sent: the connection has to
+    # end on its own, which is the difference between a timeout and a connection that
+    # merely failed to open.
+    $probe = New-Object System.Net.Sockets.TcpClient('127.0.0.1', $stcpVisitorPort)
+    try {
+        $stream = $probe.GetStream()
+        $bytes = [System.Text.Encoding]::ASCII.GetBytes('before-going-idle')
+        $stream.Write($bytes, 0, $bytes.Length)
+        $buffer = New-Object byte[] 64
+        $read = $stream.Read($buffer, 0, $buffer.Length)
+        $answer = [System.Text.Encoding]::ASCII.GetString($buffer, 0, $read)
+        if ($answer -ne 'before-going-idle') { throw "the session answered '$answer' before going idle" }
+
+        # A read that times out raises; a read that returns zero means the far end
+        # closed. Either way what matters is when the wait ended.
+        $stream.ReadTimeout = 8000
+        $silentSince = Get-Date
+        try {
+            $read = $stream.Read($buffer, 0, $buffer.Length)
+            if ($read -ne 0) { throw "the idle session carried $read byte(s) of its own" }
+        } catch {
+            if ($_.Exception.Message -like '*of its own*') { throw }
+        }
+        $took = ((Get-Date) - $silentSince).TotalSeconds
+    } finally {
+        $probe.Dispose()
+    }
+    if ($took -gt 6) {
+        throw "the session was still open $([math]::Round($took, 1))s into the silence, although idle_timeout_seconds is 2"
+    }
+    if ($took -lt 1) {
+        throw "the session ended $([math]::Round($took, 1))s into the silence, too soon to be the 2 second idle timeout"
+    }
+    return $true
+}
+
+Test-Check 'idle_timeout_seconds: a busy visiting connection is kept' {
+    # The check above would also pass if the session were capped at two seconds
+    # outright. Keeping bytes moving across that boundary is what makes the setting a
+    # timeout on silence rather than on age.
+    $probe = New-Object System.Net.Sockets.TcpClient('127.0.0.1', $stcpVisitorPort)
+    try {
+        $stream = $probe.GetStream()
+        $stream.ReadTimeout = 5000
+        $buffer = New-Object byte[] 64
+        $started = Get-Date
+        $rounds = 0
+        while (((Get-Date) - $started).TotalSeconds -lt 5) {
+            $text = "round-$rounds"
+            $bytes = [System.Text.Encoding]::ASCII.GetBytes($text)
+            $stream.Write($bytes, 0, $bytes.Length)
+            $read = $stream.Read($buffer, 0, $buffer.Length)
+            $answer = [System.Text.Encoding]::ASCII.GetString($buffer, 0, $read)
+            if ($answer -ne $text) { throw "round $rounds answered '$answer'" }
+            $rounds++
+        }
+    } finally {
+        $probe.Dispose()
+    }
+    $kept = ((Get-Date) - $started).TotalSeconds
+    if ($rounds -lt 3) { throw "only $rounds round trip(s) got through in $([math]::Round($kept, 1))s" }
     return $true
 }
 
@@ -1714,6 +1838,180 @@ Test-Check 'the ban lapses after ban_seconds' {
 
 if ($banOkClient -and -not $banOkClient.HasExited) { Stop-Process -Id $banOkClient.Id -Force -ErrorAction SilentlyContinue }
 if ($banServer -and -not $banServer.HasExited) { Stop-Process -Id $banServer.Id -Force -ErrorAction SilentlyContinue }
+
+Write-Step "checking the server-wide access controls"
+
+# A server of its own, because both of these rules are decided before any client is
+# allowed in and would otherwise interfere with the checks above: deny_cidrs refuses
+# a source outright, and the rate limit starves it for as long as it keeps
+# connecting.
+$guardControlPort = Get-FreePort
+$guardDashboardPort = Get-FreePort
+$guardAudit = Join-Path $Root 'guard-audit.jsonl'
+$guardToml = Join-Path $Root 'guard.toml'
+@"
+[server]
+bind_addr = "127.0.0.1"
+bind_port = $guardControlPort
+auth_token = "$token"
+deny_cidrs = ["127.0.0.2/32"]
+rate_limit_per_second = 1
+rate_limit_burst = 2
+
+[dashboard]
+enabled = true
+bind_addr = "127.0.0.1"
+port = $guardDashboardPort
+
+[metrics]
+enabled = true
+
+[audit]
+enabled = true
+path = "$RootFwd/guard-audit.jsonl"
+"@ | Set-Content -Path $guardToml -Encoding UTF8
+
+$guardLog = Join-Path $Root 'guard.log'
+$guard = Start-Background -FilePath $serverExe -Arguments @('-config', $guardToml) -LogPath $guardLog -WorkingDirectory $Root
+Wait-ForPort -Port $guardControlPort | Out-Null
+Start-Sleep -Seconds 1
+
+Test-Check 'a denied source is refused before the handshake' {
+    if (-not (Test-SecondLoopback)) {
+        Write-Host "   skipped: this platform answers only on 127.0.0.1, so a denied second source is not available"
+        return $true
+    }
+    for ($attempt = 0; $attempt -lt 3; $attempt++) {
+        Attempt-ControlConnection -Port $guardControlPort -From '127.0.0.2' | Out-Null
+    }
+    $deadline = (Get-Date).AddSeconds(10)
+    while ($true) {
+        $denied = Get-Metric 'aethertunnel_connections_denied_by_acl_total' -Port $guardDashboardPort
+        if ($denied -ge 3) { break }
+        if ((Get-Date) -gt $deadline) { throw "three connections from a denied source produced $denied acl refusals" }
+        Start-Sleep -Milliseconds 200
+    }
+    if ((Get-Metric 'aethertunnel_control_connections_total' -Port $guardDashboardPort) -ne 0) {
+        throw "a denied source was counted as an accepted control connection"
+    }
+    $audit = Get-Content -Raw $guardAudit
+    if ($audit -notmatch '"event":"acl_denied"') { throw "the refusal was not audited" }
+    return $true
+}
+
+Test-Check 'a source inside the burst is served and then rate limited' {
+    # burst is 2 and the rate is one connection per second, so the first two
+    # attempts are let through to the handshake and the rest are refused.
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        Attempt-ControlConnection -Port $guardControlPort | Out-Null
+    }
+    Start-Sleep -Milliseconds 300
+    if ((Get-Metric 'aethertunnel_connections_rate_limited_total' -Port $guardDashboardPort) -ne 0) {
+        throw "a connection inside the burst was rate limited"
+    }
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        Attempt-ControlConnection -Port $guardControlPort | Out-Null
+    }
+    $deadline = (Get-Date).AddSeconds(10)
+    while ($true) {
+        $limited = Get-Metric 'aethertunnel_connections_rate_limited_total' -Port $guardDashboardPort
+        if ($limited -ge 3) { break }
+        if ((Get-Date) -gt $deadline) { throw "three attempts past the burst produced $limited rate-limit refusals" }
+        Start-Sleep -Milliseconds 200
+    }
+    $audit = Get-Content -Raw $guardAudit
+    if ($audit -notmatch '"event":"rate_limited"') { throw "the rate limit refusal was not audited" }
+    if ((Read-Log $guardLog) -notmatch 'denied by rate limit') { throw "the server did not log the refusal" }
+    return $true
+}
+
+Test-Check 'the audit log names the source that was refused' {
+    $events = @(Get-Content $guardAudit | Where-Object { $_ -match '"event":"acl_denied"' })
+    if ($events.Count -lt 1) { throw "no acl_denied record" }
+    if ($events[0] -notmatch '127\.0\.0\.2') { throw "the record does not name the source: $($events[0])" }
+    return $true
+}
+
+if ($guard -and -not $guard.HasExited) { Stop-Process -Id $guard.Id -Force -ErrorAction SilentlyContinue }
+
+Write-Step "checking the rotation of the audit log"
+
+# A server of its own with a small audit.max_bytes, so the log rotates while the
+# checks run instead of staying one file that grows without bound. Every attempt from
+# a denied source writes exactly one record, which is the cheapest way to produce
+# enough of them, and denying the loopback address needs no second source address.
+$rotateControlPort = Get-FreePort
+$rotateAudit = Join-Path $Root 'rotate-audit.jsonl'
+$rotateToml = Join-Path $Root 'rotate.toml'
+@"
+[server]
+bind_addr = "127.0.0.1"
+bind_port = $rotateControlPort
+auth_token = "$token"
+deny_cidrs = ["127.0.0.1/32"]
+
+[audit]
+enabled = true
+path = "$RootFwd/rotate-audit.jsonl"
+max_bytes = 1024
+"@ | Set-Content -Path $rotateToml -Encoding UTF8
+
+$rotateLog = Join-Path $Root 'rotate.log'
+$rotate = Start-Background -FilePath $serverExe -Arguments @('-config', $rotateToml) -LogPath $rotateLog -WorkingDirectory $Root
+Wait-ForPort -Port $rotateControlPort | Out-Null
+Start-Sleep -Seconds 1
+
+Test-Check 'the audit log rotates once it reaches audit.max_bytes' {
+    # One refused connection is one record of a few hundred bytes, so thirty attempts
+    # cross a one kilobyte limit several times over.
+    for ($attempt = 0; $attempt -lt 30; $attempt++) {
+        Attempt-ControlConnection -Port $rotateControlPort | Out-Null
+    }
+
+    $rotated = "$rotateAudit.1"
+    $deadline = (Get-Date).AddSeconds(10)
+    while (-not (Test-Path $rotated) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
+    if (-not (Test-Path $rotated)) {
+        $size = 0
+        if (Test-Path $rotateAudit) { $size = (Get-Item $rotateAudit).Length }
+        throw "thirty refused connections left the audit log at $size bytes with no previous generation beside it, although max_bytes is 1024"
+    }
+
+    $rotatedSize = (Get-Item $rotated).Length
+    if ($rotatedSize -le 0) { throw "the rotated generation is empty" }
+    # The size is checked as a record is about to be written, so a generation reaches
+    # the limit and then holds at most one record more than it.
+    if ($rotatedSize -gt 2048) { throw "the rotated generation is $rotatedSize bytes, more than one record past the 1024 limit" }
+
+    # A generation that ends mid-record is not something an operator can read, so
+    # every line has to parse.
+    $parsed = 0
+    $malformed = 0
+    foreach ($line in (Get-Content $rotated)) {
+        if ($line -eq '') { continue }
+        try { $null = $line | ConvertFrom-Json; $parsed++ } catch { $malformed++ }
+    }
+    if ($malformed -ne 0) { throw "$malformed of the $($parsed + $malformed) lines in the rotated generation do not parse" }
+    if ($parsed -lt 1) { throw "the rotated generation holds no record" }
+
+    $live = 0
+    if (Test-Path $rotateAudit) { $live = (Get-Item $rotateAudit).Length }
+    if ($live -ge $rotatedSize) {
+        throw "the live log is $live bytes and the rotated one ${rotatedSize}: the log did not restart from a smaller size"
+    }
+    return $true
+}
+
+Test-Check 'the rotated generation holds the records written before it' {
+    $rotated = "$rotateAudit.1"
+    if (-not (Test-Path $rotated)) { throw "the audit log never rotated, so there is no previous generation to read" }
+    $records = @(Get-Content $rotated | Where-Object { $_ -match '"event":"acl_denied"' })
+    if ($records.Count -lt 1) { throw "the rotated generation holds no acl_denied record" }
+    if ($records[0] -notmatch '127\.0\.0\.1') { throw "the rotated record does not name the source: $($records[0])" }
+    return $true
+}
+
+if ($rotate -and -not $rotate.HasExited) { Stop-Process -Id $rotate.Id -Force -ErrorAction SilentlyContinue }
 
 Write-Step "summary"
 Write-Host ""

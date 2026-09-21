@@ -195,6 +195,24 @@ aethertunnel-server v3.2.0 (protocol 4, built 2026-09-20T07:12:44Z, commit 12345
 - **新增只读接口 `GET /api/vpn`**，并把它并入 `GET /api/config` 的 `vpn` 段；
   面板的"三层隧道"一栏读的就是它。之前 `[vpn]` 的运行时状态在面板上完全看不到。
 
+## 4.3 从 v3.5.0 到 v3.6.0
+
+**配置与线协议都没有破坏性变化**：`ProtocolVersion` 仍是 4，没有删除任何键，
+v3.5.0 的配置可以直接用。变的是两件事：
+
+- **不带 `domains` 的 `http`/`https` 代理现在能加载了。** 之前客户端把它当作配置错误
+  直接拒绝（`a http tunnel needs at least one entry in domains`），因此服务端的
+  `subdomain_host` 约定虽然写在文档与配置示例里，却没有任何配置能触发它，服务端那段
+  注册逻辑不可达。现在客户端只给出一条警告，注册时由服务端决定：`server.subdomain_host`
+  有值就按 `<代理名>.<该值>` 发布，为空则拒绝这个代理并在错误里点出该设置。
+  如果你之前为了让配置通过校验而随手填了一个占位域名，现在可以删掉它并改用
+  `subdomain_host`；已经填了真实域名的配置行为完全不变。
+- **`idle_timeout_seconds`、`audit.max_bytes`、`dht.ttl_seconds` 三个键的语义没有变化，
+  但它们此前从未被任何测试或脚本设置过**（一直是默认值在生效），现在都补上了真实验证，
+  细节见 CHANGELOG。使用上的两点提醒：`dht.ttl_seconds` 必须不小于
+  `dht.announce_ttl_seconds`，否则配置校验直接报错；`audit.max_bytes` 的大小是在写入
+  下一条记录之前检查的，因此上一代文件最多比该值多一条记录。
+
 ## 5. 升级检查清单
 
 1. 两端一起换成 v3.2.0 的二进制。
@@ -206,7 +224,8 @@ aethertunnel-server v3.2.0 (protocol 4, built 2026-09-20T07:12:44Z, commit 12345
    `server confirms N tunnel(s)`；面板 `/api/status` 的连接数与隧道数符合预期。
 6. 用真实客户端做一次访问（例如 `ssh -p <remote_port> ...`），确认数据真的通。
 7. 用到的新功能各自验证一次：`--dht-lookup`、`--verify-ledger`、`--discover`、`--dht-key`，
-   或直接跑 `scripts/smoke-test.ps1`（66 项检查，覆盖全部代理类型、签名通告、按代理 ACL、
-   自动封禁、优雅关闭、代理池、多路径与打洞结果）。Linux 上再用
+   或直接跑 `scripts/smoke-test.ps1`（75 项检查，覆盖全部代理类型、签名通告、按代理 ACL、
+   服务端级拒绝与限流、审计轮转、空闲超时、自动封禁、优雅关闭、代理池、多路径与打洞结果）。
+   Linux 上再用
    `sudo scripts/vpn-linux-test.sh bin/aethertunnel-server bin/aethertunnel-client`
    验一次三层隧道。

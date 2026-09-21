@@ -38,7 +38,7 @@ aethertunnel-client --config client.toml --check
 | `https_port` | int | 0 | `https` 代理的共享监听端口；非 0 时下面两项必须同时设置 |
 | `https_cert_file` | string | 空 | 共享 HTTPS 监听的证书 |
 | `https_key_file` | string | 空 | 共享 HTTPS 监听的私钥 |
-| `subdomain_host` | string | 空 | 设置后，没有显式 `domains` 的 `http` 代理可用 `<代理名>.<该值>` 访问 |
+| `subdomain_host` | string | 空 | 设置后，没有显式 `domains` 的 `http`/`https` 代理以 `<代理名>.<该值>` 注册；为空时这类代理在注册阶段被服务端拒绝 |
 | `p2p_port` | int | 0 | `xtcp` 打洞的 UDP 会合端口，0 表示不支持打洞（xtcp 走中继） |
 | `load_balance` | string | `round-robin` | 代理池策略：`round-robin` `random` `latency` `failover` `adaptive`。只对声明了 `group` 的代理有影响 |
 
@@ -52,7 +52,7 @@ aethertunnel-client --config client.toml --check
 | `max_reconnect_seconds` | int | 60 | 退避上限；退避带 ±20% 抖动 |
 | `heartbeat_seconds` | int | 30 | 心跳间隔 |
 | `dial_timeout_seconds` | int | 10 | 连接服务端、等待 `DataOpenAck`、连接本地服务的超时 |
-| `idle_timeout_seconds` | int | 300 | 单条隧道流的空闲上限 |
+| `idle_timeout_seconds` | int | 300 | 单条隧道流的空闲上限：超过这段时间没有字节流动就断开。适用于服务端转发的流、访客的本地监听连接，以及打洞后的直连路径 |
 
 ## `[[proxies]]`（客户端，可重复）
 
@@ -63,7 +63,7 @@ aethertunnel-client --config client.toml --check
 | `local_ip` | string | `127.0.0.1` | 本地服务地址 |
 | `local_port` | int | 必填 | 本地服务端口（1–65535） |
 | `remote_port` | int | 0 | 服务器上对外开放的端口。`tcp`/`udp` 用它；`http`/`https` 与私有类型必须为 0 |
-| `domains` | []string | 空 | `http`/`https` 必填。精确域名、`*.通配` 或配合 `subdomain_host` 的后缀 |
+| `domains` | []string | 空 | `http`/`https` 的访问域名：精确域名、`*.通配`，或留空后由服务端 `subdomain_host` 拼出 `<代理名>.<该值>`。留空时客户端只给出警告，因为该设置属于服务端 |
 | `secret_key` | string | 空 | 私有类型必填，也是访客侧的凭据 |
 | `auth_method` | string | `secret` | `secret` 直接比对；`nizk` 用 Schnorr 证明，secret 不出现在线上 |
 | `group` | string | 空 | 填入同一名字的多个客户端组成代理池 |

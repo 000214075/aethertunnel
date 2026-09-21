@@ -10,6 +10,73 @@
 
 ---
 
+## [3.6.0] — 2026-09-21
+
+本版本修好一个"文档里写了、实际用不了"的服务端设置，并把三个从未被任何测试或脚本
+驱动过的配置键补上真实验证。配置键与线协议都没有破坏性变化，两端的旧配置可以直接用。
+
+### 修复
+
+- **`server.subdomain_host` 之前完全用不了。** 客户端在加载配置时就要求 `http`/`https`
+  代理至少写一个 `domains`，因此不带域名的代理过不了校验，服务端里"把没有域名的代理按
+  `<代理名>.<subdomain_host>` 注册"的那段代码不可能被触达，文档描述的访问方式因此是死的。
+  这个设置属于服务端，客户端无从知道它，所以现在客户端只给出一条警告，说明该代理会以
+  `<代理名>.<server.subdomain_host>` 发布、以及服务端在没有这个设置时会拒绝注册，
+  真正的决定留给服务端。实测（修复前）：客户端直接以
+  `invalid configuration: - proxy "web": a http tunnel needs at least one entry in domains`
+  退出。修复后同一份配置启动成功，`Host: web.tunnel.test` 得到 200。
+
+### 变更
+
+- 配置加载的警告增加了这一条。它出现在客户端启动日志与 `--check` 的输出里，
+  与既有的"未知键""弱 auth_token"等警告走同一条路径。
+
+### 测试
+
+- `pkg/server/vhost_subdomain_test.go`：`TestASubdomainHostPublishesAProxyWithoutDomains`
+  覆盖 `web.tunnel.example` 命中、大小写不同的形式同样命中、`other.tunnel.example`、
+  `web.other.example` 与裸 `tunnel.example` 都是 404；
+  `TestAProxyWithoutDomainsIsRefusedWithoutASubdomainHost` 断言拒绝信息里点出
+  `subdomain_host`，让人知道该开哪个键。
+- `pkg/config/config_test.go`：`TestAnHTTPProxyWithoutDomainsIsAcceptedWithAWarning`。
+  把这条校验改回硬错误，它立刻失败。
+- `pkg/server/audit_test.go`：`TestAuditLogRotatesAtMaxBytes` 核对上一代文件存在、
+  大小落在限制附近（大小是在写入前检查的，所以一代最多比限制多一条记录）、
+  每一行都是完整记录、当前文件重新从小尺寸增长、轮转之后还能继续写；
+  `TestAuditLogRotationCanBeDisabled` 核对 `max_bytes = 0` 时四十条记录都留在同一个文件里。
+  把轮转的判定改成永假，前者失败并报出实际字节数。
+- `pkg/server/dht_test.go`：`TestADHTRecordLapsesAfterTheConfiguredTTL`。配置文件以 TOML
+  写盘再加载，`ttl_seconds` 与 `announce_ttl_seconds` 都设成 2（校验要求存储时长不短于
+  通告时长，这是最短的合规组合）；记录在寿命内能解析，之后必须以 `dht.ErrNotFound` 结束
+  ——存储层已经丢掉它——而不是 `ErrStale`（存储层还留着、只是通告过期）。这个差别正是
+  该键的作用。让存储层忽略 TTL，测试在二十秒后以 `ErrStale` 失败。
+
+### 运维测试
+
+`scripts/smoke-test.ps1` 从 71 项扩到 75 项：
+
+- **`idle_timeout_seconds` 两项。** 访客客户端的空闲上限设为 2 秒：一次回显之后停止发送，
+  连接必须在几秒内自行结束；同一段时间里另一条持续来回的会话必须活着。两项一起把
+  "超时针对静默、而不是连接有时长上限"钉住。
+- **审计轮转两项。** 一台 `max_bytes = 1024` 的独立服务器，用 30 次被拒连接制造记录，
+  核对上一代文件存在、每一行都能被 JSON 解析、当前文件重新从小尺寸增长，并且上一代里
+  记着被拒来源。之前这个键从来没有被任何测试或脚本设置过。
+- **服务端级访问控制三项**（同一轮早先补上）：一台独立服务器用 `deny_cidrs` 与令牌桶
+  限流验证被拒来源在握手前断开、不计入 `aethertunnel_control_connections_total`，
+  两种拒绝分别出现在 `/metrics`、审计与日志里。
+- **`subdomain_host` 两项**：不带域名的 `http` 代理通过 `<代理名>.<subdomain_host>` 可达，
+  没发布过的名字仍然 404。
+
+`[obfuscation] jitter_millis` 之前只在单元测试里出现，现在整轮脚本都开着它：控制连接、
+每条数据连接与每个访客连接的每一次写入都被随机延迟，脚本其余部分就是它与协议共存的证据。
+
+### 文档
+
+`docs/CONFIGURATION.md`（`domains` 与 `subdomain_host` 的关系、`idle_timeout_seconds`
+的适用范围）、README（能力表、运维一节）、`docs/MIGRATION.md`（新增 v3.5.0 → v3.6.0）。
+
+---
+
 ## [3.5.0] — 2026-09-21
 
 本版本把三层隧道放到真实 tun 设备上跑，修掉了它和客户端退出路径上的两个缺陷，

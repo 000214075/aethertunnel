@@ -1153,8 +1153,15 @@ func (c *Config) Validate(role string) error {
 					p.Name, p.Type))
 			}
 			if len(p.Domains) == 0 {
-				problems = append(problems, fmt.Sprintf(
-					"proxy %q: a %s tunnel needs at least one entry in domains", p.Name, p.Type))
+				// Only the server knows its subdomain_host, so this side cannot
+				// decide whether the proxy is reachable: a name-less proxy is
+				// published as <proxy-name>.<server.subdomain_host>, and the server
+				// refuses it when that setting is empty. Refusing the
+				// configuration here would make the setting unusable.
+				c.Warnings = append(c.Warnings, fmt.Sprintf(
+					"proxy %q: a %s tunnel without domains is published as <proxy-name>.<server.subdomain_host>; "+
+						"the server refuses it when server.subdomain_host is not set",
+					p.Name, p.Type))
 			}
 		case ProxyTypeSTCP, ProxyTypeSUDP, ProxyTypeXTCP:
 			if p.RemotePort != 0 {
