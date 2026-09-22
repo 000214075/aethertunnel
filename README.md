@@ -89,7 +89,7 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 | 主机身份 | ✅ 可用 | Ed25519 身份签名，服务端可用 `allowed_keys` 白名单与 `require_identity` 强制；对访客连接同样生效 |
 | 抗量子密钥协商 | ✅ 可用 | `encryption.post_quantum`：X25519 与 ML-KEM-768 混合（HKDF 同时纳入两者），每条数据连接单独派生密钥 |
 | 零知识证明 | ✅ 可用 | `auth_method = "nizk"`：访客用 P-256 上的 Schnorr 证明自己知道 secret_key，过程中不发送该值 |
-| 带宽账本 | ✅ 可用 | Ed25519 签名、哈希链式追加的用量记录（JSONL），`GET /api/ledger` 发布公钥与条目，`--verify-ledger` 可离线校验；改一个字节或换一串公钥都会失败 |
+| 带宽账本 | ✅ 可用 | Ed25519 签名、哈希链式追加的用量记录（JSONL），`GET /api/ledger` 发布公钥、链头与条目，`--verify-ledger` 可离线校验，`--ledger-proof <文件> --proof-index <n>` 导出到第 n 条为止的前缀（只凭公钥即可校验，不必交出整条链）；改一个字节、换一串公钥、调换条目顺序或用别条的签名都会失败 |
 | 去中心化目录 | ✅ 可用 | 基于 Kademlia 的 DHT（160 位、k 桶、迭代查找）；服务端把已发布的代理写成记录，客户端可用 `dht.discover` 按名字找服务器，运维可用 `--dht-lookup` / `--discover` / `--dht-key` |
 | 通告签名 | ✅ 可用 | DHT 上任何节点都能写同一个键，所以服务端用 Ed25519 给每条通告签名；读取端 `require_signed` 拒绝无签名记录，`trusted_keys` 只认指定公钥。改一个字段或换一把key都会失败 |
 | 三层隧道 | ⚠️ 仅 Linux | `[vpn]`：客户端从服务端领取地址，IP 包经控制连接转发；服务端是共享一张网卡的路由器。Linux 上打开或创建 tun 设备；其它平台**明确拒绝启动**并说明缺少什么，不会静默降级。Linux 路径已在真实 tun 设备上跑通（`scripts/vpn-linux-test.sh`，两端放在不同网络命名空间里互相 ping），`GET /api/vpn` 与面板的"三层隧道"一栏显示接口、地址池与包计数 |
@@ -187,6 +187,9 @@ curl --socks5-hostname 服务器IP:6100 http://10.0.0.5:8080/
 
 # 离线核对带宽账本，只需要公钥
 ./aethertunnel-server --verify-ledger ledger.jsonl --ledger-key <64 位十六进制公钥>
+
+# 导出到第 41 条为止的账本前缀：给审计方这一段用量，不必交出整条链
+./aethertunnel-server --ledger-proof ledger.jsonl --proof-index 41 > proof.jsonl
 ```
 
 封禁与按代理 ACL 都不需要额外命令，但它们留下的痕迹可以这样看：
@@ -352,7 +355,7 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 | Host identity | ✅ works | Ed25519 assertions, with `allowed_keys` and `require_identity` on the server, checked on data connections from visitors as well |
 | Post-quantum key agreement | ✅ works | `encryption.post_quantum`: X25519 together with ML-KEM-768, both folded into one HKDF, and a separate key per data connection |
 | Proof of token knowledge | ✅ works | `auth_method = "nizk"` proves knowledge of `secret_key` with a Schnorr proof over P-256; the secret itself is never sent |
-| Bandwidth ledger | ✅ works | Ed25519-signed, hash-chained usage records (JSONL); `GET /api/ledger` publishes the public key and the entries, and `--verify-ledger` checks them offline; one altered byte or a different key fails |
+| Bandwidth ledger | ✅ works | Ed25519-signed, hash-chained usage records (JSONL); `GET /api/ledger` publishes the public key, the chain head and the entries, `--verify-ledger` checks them offline, and `--ledger-proof <file> --proof-index <n>` writes the prefix up to entry n, which verifies on its own so one period's usage can be shown without handing over the rest of the chain; one altered byte, a different key, two entries swapped or another entry's signature all fail |
 | Decentralised directory | ✅ works | a Kademlia DHT (160-bit, k-buckets, iterative lookup); the server publishes one record per proxy, a client resolves a name with `dht.discover`, and operators use `--dht-lookup`, `--discover` or `--dht-key` |
 | Signed announcements | ✅ works | any node can write to a proxy's key, so the server signs every record with Ed25519; a reader sets `require_signed` to refuse unsigned records and `trusted_keys` to believe named keys only. One altered field or a different key fails |
 | Layer-3 tunnel | ⚠️ Linux only | `[vpn]`: a client is given an address and its IP packets travel on the control connection; the server is a router over one shared interface. Linux opens or creates a tun device; every other platform **refuses to start** and says what is missing instead of degrading silently. The Linux path runs on a real tun device in `scripts/vpn-linux-test.sh`, with the two ends in separate network namespaces, and `GET /api/vpn` plus the dashboard's layer-3 panel report the interface, the pool and the packet counters |
@@ -455,6 +458,9 @@ say they are empty.
 
 # check a bandwidth ledger offline; only the public key is needed
 ./aethertunnel-server --verify-ledger ledger.jsonl --ledger-key <64 hex characters>
+
+# write the ledger prefix up to entry 41: hand an auditor that period only
+./aethertunnel-server --ledger-proof ledger.jsonl --proof-index 41 > proof.jsonl
 ```
 
 `scripts/smoke-test.ps1` builds both binaries, starts a set of local services (TCP, UDP and

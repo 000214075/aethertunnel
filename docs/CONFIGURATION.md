@@ -264,6 +264,11 @@ inode，不重建的话路径到重启为止都是空的。仍然写不下去的
 `GET /api/ledger` 发布公钥、链头、最近条目与按客户端汇总。
 `aethertunnel-server --verify-ledger <文件> --ledger-key <公钥或私钥文件>` 可以离线校验，
 校验只需要公钥。
+`aethertunnel-server --ledger-proof <文件> --proof-index <n>` 把到第 n 条为止的前缀按同样的
+JSONL 格式写到标准输出（索引从 0 开始，越界或缺失时报错）：这段前缀用 `--verify-ledger`
+单独可校验，链头就是整条链在第 n 条的哈希，因此可以把某一段用量交给审计方而不交出整条链。
+截断不会被链本身发现（后面的条目没了，前面的仍然自洽），**要发现截断必须把链头另外发布并在
+校验时比对**，`GET /api/ledger` 与 `--ledger-proof` 的输出都会给出链头。
 
 ## `[dht]`（两端）
 

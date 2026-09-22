@@ -3,7 +3,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -15,6 +18,7 @@ import (
 	"time"
 
 	"github.com/aethertunnel/aethertunnel/pkg/config"
+	"github.com/aethertunnel/aethertunnel/pkg/ledger"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
 	"github.com/aethertunnel/aethertunnel/pkg/server"
 )
@@ -38,6 +42,8 @@ func main() {
 		checkConfig = flag.Bool("check", false, "validate the configuration and exit")
 		verifyPath  = flag.String("verify-ledger", "", "verify a bandwidth ledger file against a public key and exit")
 		verifyKey   = flag.String("ledger-key", "", "verification key for -verify-ledger: a hex Ed25519 public key or a signing key file")
+		proofPath   = flag.String("ledger-proof", "", "write the ledger entries up to -proof-index to stdout and exit")
+		proofIndex  = flag.Int("proof-index", -1, "entry index for -ledger-proof: the proof covers entries 0 through this index")
 		dhtLookup   = flag.String("dht-lookup", "", "resolve a proxy name through the [dht] network and exit")
 		dhtKey      = flag.Bool("dht-key", false, "print the [dht] announcement signing key and exit")
 	)
@@ -49,6 +55,7 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "\nExamples:\n")
 		fmt.Fprintf(flag.CommandLine.Output(), "  %s -config server.toml\n", os.Args[0])
 		fmt.Fprintf(flag.CommandLine.Output(), "  %s -verify-ledger aethertunnel-ledger.jsonl -ledger-key 3b1f...\n", os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "  %s -ledger-proof aethertunnel-ledger.jsonl -proof-index 41 > proof.jsonl\n", os.Args[0])
 		fmt.Fprintf(flag.CommandLine.Output(), "  %s -dht-lookup ssh -config server.toml\n", os.Args[0])
 		fmt.Fprintf(flag.CommandLine.Output(), "  %s -dht-key -config server.toml\n", os.Args[0])
 	}
@@ -63,6 +70,14 @@ func main() {
 	if *verifyPath != "" {
 		if err := verifyLedger(*verifyPath, *verifyKey); err != nil {
 			fmt.Fprintf(os.Stderr, "ledger verification failed: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *proofPath != "" {
+		if err := writeLedgerProof(*proofPath, *proofIndex); err != nil {
+			fmt.Fprintf(os.Stderr, "ledger proof failed: %v\n", err)
 			os.Exit(1)
 		}
 		return
@@ -160,6 +175,44 @@ func main() {
 		dashboard.Stop()
 	}
 	logger.Printf("AetherTunnel server %s stopped", version)
+}
+
+// writeLedgerProof writes the ledger prefix that proves one entry's inclusion.
+//
+// The whole file has to be read to reach an entry, but what comes out is only entries
+// 0 through index. A holder of the public key can verify that prefix on its own, so an
+// operator can show one period's usage, or prove that a published head belongs to a
+// chain, without handing over the rest of the ledger.
+func writeLedgerProof(path string, index int) error {
+	if index < 0 {
+		return errors.New("-ledger-proof needs -proof-index (0 is the first entry)")
+	}
+	chain, err := ledger.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if len(chain) == 0 {
+		return fmt.Errorf("%s has no entries", path)
+	}
+	if index >= len(chain) {
+		return fmt.Errorf("%s has %d entries, so index %d does not exist", path, len(chain), index)
+	}
+	// The proof is written one JSON object per line, exactly as the ledger file is, so
+	// the result verifies with -verify-ledger as it stands.
+	var out bytes.Buffer
+	for _, entry := range chain[:index+1] {
+		line, err := json.Marshal(entry)
+		if err != nil {
+			return fmt.Errorf("encode entry %d: %w", entry.Index, err)
+		}
+		out.Write(line)
+		out.WriteByte('\n')
+	}
+	if _, err := os.Stdout.Write(out.Bytes()); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "proof of %d entries, head %s\n", index+1, chain[index].Hash)
+	return nil
 }
 
 // verifyLedger checks a ledger file end to end and prints the per-client totals.

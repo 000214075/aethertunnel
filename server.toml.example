@@ -8,6 +8,7 @@
 # Validate:    aethertunnel-server --config server.toml --check
 # Look up a published proxy:  aethertunnel-server --config server.toml --dht-lookup ssh
 # Verify a bandwidth ledger:  aethertunnel-server --verify-ledger ledger.jsonl --ledger-key <hex>
+# Prove one entry's inclusion:  aethertunnel-server --ledger-proof ledger.jsonl --proof-index 41
 #
 # The credentials below may also come from the environment, which is how a container
 # deployment keeps them out of a ConfigMap:
