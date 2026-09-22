@@ -691,8 +691,13 @@ func TestTunnelDropsPacketsThatAreNotValidIP(t *testing.T) {
 	if got := receivePacket(t, transport.out); len(got) != len(good) {
 		t.Fatalf("the forwarded packet is %d bytes, want %d", len(got), len(good))
 	}
-	waitFor(t, func() bool { return tunnel.Stats().Snapshot().Dropped == 3 },
-		"the three invalid packets were not all counted as dropped")
+	// Dropped is counted by the loop that reads the device and FromDevice by the path
+	// that hands a valid packet to the peer, so waiting for one and asserting on the other
+	// made this test depend on scheduling. Wait for both.
+	waitFor(t, func() bool {
+		s := tunnel.Stats().Snapshot()
+		return s.Dropped == 3 && s.FromDevice == 1
+	}, "the three invalid packets were not all dropped and the valid one not accounted for")
 
 	cancel()
 	if err := <-done; err != nil {

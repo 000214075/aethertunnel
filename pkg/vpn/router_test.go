@@ -252,8 +252,13 @@ func TestRouterWritesPeerTrafficToTheDevice(t *testing.T) {
 	if !Source(got).Equal(net.ParseIP("10.7.0.2")) {
 		t.Fatalf("the device saw a packet from %s, want 10.7.0.2", Source(got))
 	}
-	waitFor(t, func() bool { return fixture.router.Stats().ToDevice == 1 },
-		"the packet was not counted as written to the device")
+	// Two counters, two goroutines: the router counts the write and the peer counts the
+	// packet it delivered, and one can lag the other. Wait for both before asserting, or
+	// the check depends on which goroutine the scheduler ran first — which is how this
+	// test failed under -race on a busy CI runner while passing here.
+	waitFor(t, func() bool {
+		return fixture.router.Stats().ToDevice == 1 && fixture.leftPeer.Stats().ToDevice == 1
+	}, "the packet was not written to the device and counted by the peer")
 	if got := fixture.leftPeer.Stats(); got.ToDevice != 1 {
 		t.Errorf("the peer counted %d packets to the device, want 1", got.ToDevice)
 	}
