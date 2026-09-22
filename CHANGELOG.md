@@ -45,6 +45,11 @@
     （qemu 跑 ARM64 用户态 + ARM64 版 Wine）也被试过并记录为不可行：Wine 加载 PE 时要再 exec
     自己的 loader，而在 qemu 用户态下 `/proc/self/exe` 指向 qemu；让该 exec 透明的唯一办法是
     注册 binfmt_misc，可非特权用户命名空间里的注册会被内核拒绝。
+- **CI 增加 arm64 作业**（`test-arm64`，`ubuntu-24.04-arm`）：在那之前每个发布目标都只是在
+  amd64 运行器上交叉编译，"能编译"不等于"能跑"。新作业在真实 arm64 硬件上做 vet、单测、
+  构建、示例配置校验、版本输出，并**真的传一次数据**（起 helper 与两端，从公网端口读回自己
+  发的字节）。
+
 
 - **`--ledger-proof <文件> --proof-index <n>`：导出到第 n 条为止的账本前缀**。账本里早就有
   `ledger.Proof`（带单元测试），但没有任何接口能产出这样的证明，于是"只需证明某一条的
@@ -132,6 +137,18 @@
   点明"检查两端的 `[obfuscation]` 与 `[transport]` 是否一致"。
 
 ### 运维测试
+
+- **修掉运维脚本里一项计时敏感的检查**，它会让 Windows 作业随机变红：`scripts/smoke-test.ps1`
+  的"a source inside the burst is served and then rate limited"让突发额度通过后连发三次并等待
+  三次限流，而限流速率是 **1 次/秒**——在忙碌的 CI 运行器上这三次连接可能各慢过一秒，每次都能
+  拿到补发的令牌，于是 10 秒内凑不满三次拒绝。实测：2026-09-22 的 `c89ae98` 那次 Windows 作业
+  就是这样失败的（100 项通过、这一项失败），而同一版本此前多次通过。
+  现在该 guard 服务器的 `rate_limit_per_second` 改为 **0.01**（`rate_limit_burst` 仍是 2）：
+  检查窗口内不可能补发令牌，于是结论不再取决于尝试发得多快。断言本身没有放宽。
+  验证方式：本机用同一组配置（0.01/2）跑等价探测，并且**故意把三次尝试间隔 1.2 秒**——正是
+  CI 上失败的条件——四次检查全过（突发内通过、突发外每次都被拒、审计写 `rate_limited`、
+  服务端日志说明原因）。PowerShell 脚本本身无法在本机执行，仍需在 Windows 上跑一遍。
+
 
 - **新增 Go 测试 `TestAPooledMemberIsToldThePoolsPort`**：两个成员请求不同的公网端口，
   第二个成员从 `TypeProxyList` 里读到的必须是池的端口而不是它自己请求的那个；不在池里的

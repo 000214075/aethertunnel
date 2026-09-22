@@ -2584,7 +2584,12 @@ bind_addr = "127.0.0.1"
 bind_port = $guardControlPort
 auth_token = "$token"
 deny_cidrs = ["127.0.0.2/32"]
-rate_limit_per_second = 1
+# Deliberately far below one token per second: the check below lets the burst through and
+# then expects every further attempt to be refused, and with a rate of 1/s three slow
+# attempts can each find a refilled token on a loaded machine. At 0.01/s no refill can
+# happen inside the check, so the outcome does not depend on how fast the attempts are
+# issued — which is what made this check fail on a busy CI runner.
+rate_limit_per_second = 0.01
 rate_limit_burst = 2
 
 [dashboard]
@@ -2634,8 +2639,9 @@ Test-Check 'a denied source is refused before the handshake' {
 }
 
 Test-Check 'a source inside the burst is served and then rate limited' {
-    # burst is 2 and the rate is one connection per second, so the first two
-    # attempts are let through to the handshake and the rest are refused.
+    # burst is 2 and the rate is 0.01 connections per second, so the first two attempts
+    # are let through to the handshake and every later one is refused however much time
+    # passes between them.
     for ($attempt = 1; $attempt -le 2; $attempt++) {
         Attempt-ControlConnection -Port $guardControlPort | Out-Null
     }
