@@ -157,6 +157,83 @@ func TestPooledProxiesShareOnePublishedPort(t *testing.T) {
 	}
 }
 
+// A pool owns one endpoint, so a member that asks for a different public port is
+// pooled anyway and that request is not honoured. The server has to tell the member
+// the port its name is actually reachable on: reporting the requested one would send
+// an operator to a port nothing is listening on.
+func TestAPooledMemberIsToldThePoolsPort(t *testing.T) {
+	cfg := loadBalancedConfig(t, config.LoadBalanceRoundRobin)
+	rs := startServer(t, cfg)
+
+	poolPort := freePort(t)
+	joinPool(t, rs, "pooled", countingEcho(t, "primary"), "pool", "", poolPort)
+
+	requested := freePort(t)
+	second, err := newTestClient(t, rs.addr, false)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(second.close)
+	if _, err := second.authenticate("pool-second", testToken); err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	if err := second.register(protocol.ProxySpec{
+		Name: "pooled", Type: protocol.ProxyTypeTCP, LocalAddr: countingEcho(t, "secondary"),
+		RemotePort: requested, Group: "pool",
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	msg, err := second.framer.ReadFrame()
+	if err != nil {
+		t.Fatalf("proxy list: %v", err)
+	}
+	if msg.Type != protocol.TypeProxyList {
+		var payload protocol.ErrorPayload
+		_ = json.Unmarshal(msg.Payload, &payload)
+		t.Fatalf("the pooled member was refused: %s", payload.Error)
+	}
+	var statuses []protocol.ProxyStatus
+	if err := json.Unmarshal(msg.Payload, &statuses); err != nil {
+		t.Fatalf("decode proxy list: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("the member was told about %d proxies, want its own", len(statuses))
+	}
+	if got := statuses[0].RemotePort; got != poolPort {
+		t.Fatalf("the member was told port %d, want the pool's %d (it asked for %d)",
+			got, poolPort, requested)
+	}
+
+	// A proxy outside a pool is still reported on the port it asked for.
+	soloPort := freePort(t)
+	solo, err := newTestClient(t, rs.addr, false)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(solo.close)
+	if _, err := solo.authenticate("solo", testToken); err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	if err := solo.register(protocol.ProxySpec{
+		Name: "solo", Type: protocol.ProxyTypeTCP, LocalAddr: countingEcho(t, "solo"),
+		RemotePort: soloPort,
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	soloMsg, err := solo.framer.ReadFrame()
+	if err != nil {
+		t.Fatalf("proxy list: %v", err)
+	}
+	var soloStatuses []protocol.ProxyStatus
+	if err := json.Unmarshal(soloMsg.Payload, &soloStatuses); err != nil {
+		t.Fatalf("decode proxy list: %v", err)
+	}
+	if len(soloStatuses) != 1 || soloStatuses[0].RemotePort != soloPort {
+		t.Fatalf("an unpooled proxy reported %+v, want port %d", soloStatuses, soloPort)
+	}
+}
+
 func TestPoolRefusesAMemberWithoutTheGroup(t *testing.T) {
 	cfg := loadBalancedConfig(t, config.LoadBalanceRoundRobin)
 	rs := startServer(t, cfg)

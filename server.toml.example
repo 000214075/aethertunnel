@@ -1,4 +1,4 @@
-# AetherTunnel server configuration — v3.3.0
+# AetherTunnel server configuration — v3.7.4
 #
 # Every key in this file is understood by this version. Unknown keys are reported
 # on startup instead of being silently ignored, so a typo or a setting carried over

@@ -1,4 +1,4 @@
-# AetherTunnel client configuration — v3.3.0
+# AetherTunnel client configuration — v3.7.4
 #
 # Start with:  aethertunnel-client --config client.toml
 # Validate:    aethertunnel-client --config client.toml --check

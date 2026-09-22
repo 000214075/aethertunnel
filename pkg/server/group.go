@@ -142,6 +142,20 @@ func (t *Tunnel) Addr() string {
 // Latency reports the member's observed response time.
 func (t *Tunnel) Latency() time.Duration { return time.Duration(t.dialLatency.Load()) }
 
+// PublicPort is the port this member's name is actually reachable on.
+//
+// A group owns one endpoint, taken from its first member: a later member that asks
+// for a different port is still pooled, and its own request is not honoured. The
+// port to report is therefore the group's, not the one this member asked for —
+// otherwise the client would be told a port nothing is listening on. A proxy
+// outside a group is reachable on the port it asked for.
+func (t *Tunnel) PublicPort() int {
+	if t.group != nil {
+		return t.group.RemotePort
+	}
+	return t.RemotePort
+}
+
 // --- group lifecycle ----------------------------------------------------------
 
 func newProxyGroup(spec protocol.ProxySpec, manager *TunnelManager) *ProxyGroup {

@@ -117,6 +117,47 @@ func TestBanListForgetsFailuresWhenTheWindowPasses(t *testing.T) {
 	}
 }
 
+// A source that serves its ban and comes back has to be banned for longer, which is
+// the documented escalation. The path matters: the server checks blocked() when the
+// connection arrives, before it ever reaches fail(), and that check is what decides
+// whether the source's history is still there. A test that only calls fail() never
+// sees it.
+func TestBanListRemembersARepentantSourceThroughBlocked(t *testing.T) {
+	list, advance := newTestBanList(t, 1, time.Minute, 8*time.Minute)
+	ip := net.ParseIP("192.0.2.70")
+
+	if imposed, _ := list.fail(ip); !imposed {
+		t.Fatal("the first failure did not ban the source")
+	}
+	_, first := list.blocked(ip)
+	if first > time.Minute || first <= 0 {
+		t.Fatalf("the first ban lasts %s, want about a minute", first)
+	}
+
+	// Sit the ban out, as a repeat offender does, then come back and fail again.
+	advance(time.Minute + time.Second)
+	if banned, _ := list.blocked(ip); banned {
+		t.Fatal("the source is still banned after its ban expired")
+	}
+	if imposed, bans := list.fail(ip); !imposed || bans != 2 {
+		t.Fatalf("the second failure imposed=%v ban number %d, want ban number 2", imposed, bans)
+	}
+	_, second := list.blocked(ip)
+	if second < 2*time.Minute-time.Second {
+		t.Fatalf("the second ban lasts %s, want about twice the first", second)
+	}
+
+	// The memory is bounded: once a window has passed since the ban ended, the
+	// source is forgotten and starts over.
+	advance(2*time.Minute + banWindow + time.Second)
+	if banned, _ := list.blocked(ip); banned {
+		t.Fatal("the source is still banned")
+	}
+	if imposed, bans := list.fail(ip); !imposed || bans != 1 {
+		t.Fatalf("after the memory window the count is %d, want a fresh ban number 1", bans)
+	}
+}
+
 func TestBanListSuccessClearsTheFailures(t *testing.T) {
 	list, _ := newTestBanList(t, 3, time.Minute, time.Hour)
 	ip := net.ParseIP("192.0.2.40")

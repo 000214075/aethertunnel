@@ -73,7 +73,7 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 | 代理类型 | ✅ 可用 | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`；http/https 走服务器的共享监听并按 Host 头选择隧道（精确域名、`*.通配`，或服务端 `subdomain_host` 拼出的 `<代理名>.<该值>`），stcp/sudp/xtcp 为私有隧道，socks5 是出口代理（访客指定目标，客户端拨号，`allow_targets` 限定可达范围） |
 | XTCP 直连 | ✅ 可用 | 自研 UDP 打洞（HMAC-SHA256 同时打开 + 可靠有序字节流），打洞失败自动回退到服务器中继；访客把实际走通的路径回报给服务器（`ATP3` 数据报），因此指标与审计记录的是真实结果而不是猜测 |
 | TCP/UDP 转发 | ✅ 可用 | 访问者 → 服务器端口 → 客户端 → 本地服务；TCP 保留半关闭，UDP 按来源地址分会话 |
-| 负载均衡 | ✅ 可用 | 同名代理可由多个客户端组成代理池，策略：`round-robin` `random` `latency` `failover` `adaptive`；`scripts/smoke-test.ps1` 用两个真实客户端验到池成员都被分流、掉一个成员后仍继续服务 |
+| 负载均衡 | ✅ 可用 | 同名代理可由多个客户端组成代理池，策略：`round-robin` `random` `latency` `failover` `adaptive`。池只拥有一个端点（取第一个成员的端口），后到的成员即使请求了别的端口也不会另开一个，服务端会把**实际生效的端口**回给客户端，客户端日志按它显示；`scripts/smoke-test.ps1` 用两个真实客户端验到池成员都被分流、掉一个成员后仍继续服务 |
 | 多路径 | ✅ 可用 | 数据报代理可把流量分散到最多 8 条数据连接（`multipath`），单条故障不影响整体；运维脚本用一次数据报会话验到确实开了 3 条数据连接 |
 | 控制连接与会话 | ✅ 可用 | 认证、心跳、断线自动重连（指数退避 + 抖动）、连接数上限 |
 | 可选的数据包加密 | ✅ 可用 | XChaCha20-Poly1305 或 AES-256-GCM，默认**关闭**；控制消息与隧道字节都加密 |
@@ -94,7 +94,7 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 | Prometheus 指标 | ✅ 可用 | `GET /metrics`（文本格式 0.0.4），含连接、认证失败、拒绝、封禁、按代理拒绝的访客、socks5 请求数、因关闭被拒的流、流、双向字节、打洞结果与按隧道的序列；每个数字都读自运行中的计数器 |
 | 优雅关闭 | ✅ 可用 | 收到停止信号后停止接受新连接，给正在传输的流最多 `server.graceful_shutdown_seconds`（默认 5）秒完成再断开客户端；期间到达的访客被立即拒绝并计入指标；没有流在传时立刻退出，不会空等 |
 | 健康探针 | ✅ 可用 | `GET /healthz` 恒 200；`GET /readyz` 在监听器未就绪或正在关闭时返回 503 |
-| Web 面板 | ✅ 可用 | 单页、自带资源（编译进二进制）、中英双语、手机可用；含 `/api/ledger`、`/api/dht` 与 `/api/vpn`，代理池的成员数与可用数在代理表格中显示 |
+| Web 面板 | ✅ 可用 | 单页、自带资源（编译进二进制）、中英双语、手机可用；含 `/api/ledger`、`/api/dht` 与 `/api/vpn`；代理池在代理表格里逐成员列出，每行是该客户端测得的延迟与连续失败次数（尚未应答过的成员延迟显示 `—`）——`latency`、`failover`、`adaptive` 三种策略依据的就是这两个数 |
 | 容器与编排 | ✅ 可用 | `Dockerfile`（多阶段 → distroless）与 `deploy/kubernetes/` 清单；凭据可用环境变量提供，不必写进 ConfigMap |
 | 多平台 | ✅ 可用 | linux/darwin/windows × amd64/arm64，`scripts/build-release.*` 一键出 12 个产物 + SHA256 |
 | 配置校验 | ✅ 可用 | 未知配置项会**报出来**而不是静默忽略；`--check` 只校验不启动 |
@@ -336,7 +336,7 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 | Proxy types | ✅ works | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`; http and https use one shared listener and are selected by the Host header; stcp, sudp and xtcp are private; socks5 is an exit, where the visitor names the target and `allow_targets` bounds what may be reached |
 | XTCP direct path | ✅ works | its own UDP hole punching (HMAC-SHA256 simultaneous open over a reliable ordered byte stream) with an automatic fall back to the server's relay; the visitor reports the path it actually took with an `ATP3` datagram, so the metrics and the audit log record the outcome rather than a guess |
 | TCP and UDP forwarding | ✅ works | visitor → server port → client → local service; TCP preserves half-close, UDP keeps one session per source address |
-| Load balancing | ✅ works | several clients may publish one name as a pool; strategies `round-robin`, `random`, `latency`, `failover`, `adaptive`. `scripts/smoke-test.ps1` runs two real clients and checks that both members serve, and that the pool keeps serving after one of them leaves |
+| Load balancing | ✅ works | several clients may publish one name as a pool; strategies `round-robin`, `random`, `latency`, `failover`, `adaptive`. A pool owns one endpoint (the first member's port), so a member that arrives later and asks for another port does not get a second one; the server reports the port that is actually in effect and the client's log shows that one. `scripts/smoke-test.ps1` runs two real clients and checks that both members serve, and that the pool keeps serving after one of them leaves |
 | Multipath | ✅ works | a datagram proxy spreads traffic over up to 8 data connections (`multipath`), and the loss of one does not stop the rest; the operations script checks that one datagram session really opens three connections |
 | Control session | ✅ works | auth, heartbeat, exponential-backoff reconnect with jitter, connection limit |
 | Optional packet encryption | ✅ works | XChaCha20-Poly1305 or AES-256-GCM, **off** by default, covers control frames and tunnelled bytes |
@@ -357,7 +357,7 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 | Prometheus metrics | ✅ works | `GET /metrics` in the text format 0.0.4: connections, authentication failures, refusals, bans, per-proxy visitor refusals, socks5 requests, streams refused while shutting down, streams, bytes both ways and per-tunnel series; every number is read from a live counter |
 | Graceful shutdown | ✅ works | on a stop signal the server stops accepting, gives the streams already running up to `server.graceful_shutdown_seconds` (5 by default) to finish, and only then disconnects the clients; a visitor that arrives meanwhile is refused and counted, and an idle server exits at once instead of sitting out the grace period |
 | Health probes | ✅ works | `GET /healthz` is always 200; `GET /readyz` is 503 before the listener is up and while shutting down |
-| Web dashboard | ✅ works | one self-contained embedded page, English + 简体中文, usable on a phone, including `/api/ledger` and `/api/dht`; the proxies table shows how many members a pool has and how many are healthy |
+| Web dashboard | ✅ works | one self-contained embedded page, English + 简体中文, usable on a phone, including `/api/ledger` and `/api/dht`; a pool is listed member by member in the proxies table, each line carrying the latency that client measured and its consecutive failures (a member that has not answered yet shows `—` for latency) — the two numbers `latency`, `failover` and `adaptive` act on |
 | Containers and orchestration | ✅ works | a multi-stage `Dockerfile` ending in distroless, and manifests under `deploy/kubernetes/`; credentials can come from environment variables instead of the ConfigMap |
 | Platforms | ✅ works | linux/darwin/windows × amd64/arm64; `scripts/build-release.*` produces 12 binaries + SHA256 |
 | Config validation | ✅ works | unknown keys are **reported**, not ignored; `--check` validates without starting |

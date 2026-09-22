@@ -838,7 +838,7 @@ func (s *Server) sendProxyList(session *Session) {
 			Name:        tunnel.Name,
 			Type:        tunnel.Spec.Type,
 			LocalAddr:   tunnel.Spec.LocalAddr,
-			RemotePort:  tunnel.RemotePort,
+			RemotePort:  tunnel.PublicPort(),
 			Domains:     tunnel.Spec.Domains,
 			ClientID:    session.ID,
 			Active:      tunnel.Active.Load(),

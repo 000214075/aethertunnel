@@ -17,4 +17,4 @@ resources:
 
 images:
   - name: ghcr.io/aethertunnel/aethertunnel
-    newTag: v3.2.0
+    newTag: v3.7.4

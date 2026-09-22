@@ -249,6 +249,17 @@ a { color: var(--accent); }
 .table .num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
 .table .id { font-family: var(--mono); }
 .table .wrap { white-space: normal; overflow-wrap: anywhere; }
+/* A pool's cell holds a list of backends, so it reads left to right instead of
+   right-aligned like a single number; the member lines sit one step down. keep-all
+   stops a CJK unit such as 毫秒 from being split between its two characters, and
+   break-word still lets an over-long identifier wrap. The wrapper keeps the whole
+   cell as one flex item on a narrow screen, where the cell itself is a flex row. */
+.table .member-body { flex: 1 1 auto; min-width: 0; }
+.table .member-pool { text-align: left; }
+.table .member-line {
+  font-size: 12px; color: var(--dim);
+  word-break: keep-all; overflow-wrap: break-word;
+}
 
 .empty {
   color: var(--dim); font-size: 13px; font-style: normal;
@@ -662,6 +673,8 @@ a { color: var(--accent); }
       'proxies.col.strategy': 'Load balancing',
       'proxies.membersOne': '1 member ({healthy} healthy)',
       'proxies.members': '{n} members ({healthy} healthy)',
+      'proxies.latencyMs': '{n}\u00a0ms',
+      'proxies.memberLine': '{client} — {latency}, {failures} failures in a row',
       'proxies.col.activeConns': 'Active conns',
       'proxies.col.totalConns': 'Total conns',
       'proxies.col.bytesIn': 'Bytes in',
@@ -795,6 +808,8 @@ a { color: var(--accent); }
       'proxies.col.strategy': '负载均衡',
       'proxies.membersOne': '1 个成员（{healthy} 个可用）',
       'proxies.members': '{n} 个成员（{healthy} 个可用）',
+      'proxies.latencyMs': '{n}\u00a0毫秒',
+      'proxies.memberLine': '{client} — {latency}，连续失败 {failures} 次',
       'proxies.col.activeConns': '活动连接',
       'proxies.col.totalConns': '累计连接',
       'proxies.col.bytesIn': '入站字节',
@@ -947,6 +962,72 @@ a { color: var(--accent); }
     return total === 1
       ? t('proxies.membersOne', { healthy: fmtInt(healthy) })
       : t('proxies.members', { n: fmtInt(total), healthy: fmtInt(healthy) });
+  }
+
+  // membersCell is the pool column. Its first line is the aggregate label; a pool
+  // of more than one member gets one line per member below it, carrying the two
+  // numbers [server].load_balance acts on. Without them the choice of "latency",
+  // "failover" or "adaptive" cannot be read off the table: a member that was
+  // passed over looks the same as one that was never measured.
+  function membersCell(proxy) {
+    var td = document.createElement('td');
+    td.className = 'num wrap';
+    td.setAttribute('data-label', t('proxies.col.members'));
+
+    // One wrapper holds the whole cell: on a narrow screen the cell lays its
+    // children out as flex items, so without it the aggregate line and the member
+    // lines would sit side by side instead of stacked.
+    var body = document.createElement('div');
+    body.className = 'member-body';
+
+    var aggregate = document.createElement('div');
+    aggregate.className = 'member-total';
+    aggregate.textContent = membersLabel(proxy);
+    body.appendChild(aggregate);
+
+    var members = (proxy && proxy.members) ? proxy.members : [];
+    if (members.length < 2) {
+      td.appendChild(body);
+      return td;
+    }
+
+    td.classList.add('member-pool');
+    members.forEach(function (member) {
+      var line = document.createElement('div');
+      line.className = 'member-line';
+      line.textContent = memberLine(proxy, member);
+      body.appendChild(line);
+    });
+    td.appendChild(body);
+    return td;
+  }
+
+  // memberLine is one pool member: which client publishes it, how long it took last
+  // time, and how many connections it has failed in a row. The client is the
+  // identifier because a pool's members usually forward to the same local address;
+  // the address is shown only when it differs from the one in the row's own column.
+  function memberLine(proxy, member) {
+    var m = member || {};
+    var who = (m.client_id === null || m.client_id === undefined || m.client_id === '')
+      ? t('common.na') : String(m.client_id);
+    var addr = (m.local_addr === null || m.local_addr === undefined) ? '' : String(m.local_addr);
+    if (addr && addr !== ((proxy && proxy.local_addr) || '')) who += ' (' + addr + ')';
+
+    // The server leaves latency_ms at zero until the member has answered once, so a
+    // zero means "not measured" rather than an instant reply: printing "0.0 ms"
+    // would claim a measurement that never happened.
+    var latency = Number(m.latency_ms) > 0 ? fmtMillis(m.latency_ms) : t('common.na');
+    return t('proxies.memberLine', {
+      client: who,
+      latency: latency,
+      failures: fmtInt(m.consecutive_failures)
+    });
+  }
+
+  function fmtMillis(v) {
+    if (v === null || v === undefined || v === '' || isNaN(Number(v))) return t('common.na');
+    var n = Number(v);
+    return t('proxies.latencyMs', { n: n < 10 ? n.toFixed(1) : String(Math.round(n)) });
   }
 
   function fmtDuration(seconds) {
@@ -1314,7 +1395,7 @@ a { color: var(--accent); }
       tr.appendChild(makeCell(proxy.local_addr, 'proxies.col.localAddr', 'id'));
       tr.appendChild(makeCell(proxy.remote_port, 'proxies.col.remotePort', 'num'));
       tr.appendChild(makeCell(proxy.client_id, 'proxies.col.client', 'id'));
-      tr.appendChild(makeCell(membersLabel(proxy), 'proxies.col.members', 'num'));
+      tr.appendChild(membersCell(proxy));
       tr.appendChild(makeCell(proxy.load_balance || proxy.group, 'proxies.col.strategy', 'id'));
       tr.appendChild(makeCell(fmtInt(proxy.active_connections), 'proxies.col.activeConns', 'num'));
       tr.appendChild(makeCell(fmtInt(proxy.total_connections), 'proxies.col.totalConns', 'num'));

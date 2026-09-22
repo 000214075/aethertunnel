@@ -189,6 +189,15 @@ func (b *banList) obsolete(entry *banEntry, now time.Time) bool {
 	if entry.bannedUntil.After(now) {
 		return false
 	}
+	// A source that has been banned keeps its entry for one window after the ban
+	// ends, because that record is what makes the next ban twice as long. A banned
+	// source cannot accumulate failures — its connections are refused before the
+	// handshake — so dropping the entry the moment the ban expires would reset the
+	// count, and a source that simply waited out its ban would get the first ban's
+	// duration again for ever.
+	if entry.bans > 0 {
+		return now.Sub(entry.bannedUntil) > b.window
+	}
 	if entry.failures == 0 {
 		return true
 	}

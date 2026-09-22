@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -636,7 +637,21 @@ func (c *client) logProxyList(payload []byte) {
 	c.mu.Lock()
 	c.registeredNames = names
 	c.mu.Unlock()
-	c.logger.Printf("server confirms %d tunnel(s): %v", len(names), names)
+
+	// Name the port the server says the proxy is reachable on, not the one this
+	// client asked for. The two differ when the proxy joined a pool that was already
+	// published on another port: a pool owns one endpoint, so a later member's own
+	// request is not honoured, and repeating it here would send an operator to a
+	// port nothing is listening on.
+	parts := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		if status.RemotePort != 0 {
+			parts = append(parts, fmt.Sprintf("%s on port %d", status.Name, status.RemotePort))
+			continue
+		}
+		parts = append(parts, status.Name)
+	}
+	c.logger.Printf("server confirms %d tunnel(s): %s", len(parts), strings.Join(parts, ", "))
 }
 
 // framerOptions maps the client's [obfuscation] section onto frame padding and
