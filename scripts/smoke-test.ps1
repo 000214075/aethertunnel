@@ -2607,7 +2607,11 @@ path = "$RootFwd/guard-audit.jsonl"
 
 $guardLog = Join-Path $Root 'guard.log'
 $guard = Start-Background -FilePath $serverExe -Arguments @('-config', $guardToml) -LogPath $guardLog -WorkingDirectory $Root
-Wait-ForPort -Port $guardControlPort | Out-Null
+# Wait on the dashboard, not on the control port: Wait-ForPort detects readiness by
+# connecting, and every connection to this server spends a token from the burst that the
+# rate-limit check below is about to measure. The dashboard is a separate listener and is
+# not rate limited.
+Wait-ForPort -Port $guardDashboardPort | Out-Null
 Start-Sleep -Seconds 1
 
 Test-Check 'a denied source is refused before the handshake' {
@@ -2639,15 +2643,18 @@ Test-Check 'a denied source is refused before the handshake' {
 }
 
 Test-Check 'a source inside the burst is served and then rate limited' {
-    # burst is 2 and the rate is 0.01 connections per second, so the first two attempts
-    # are let through to the handshake and every later one is refused however much time
-    # passes between them.
+    # burst is 2 and the rate is 0.01 connections per second, so no token is refilled
+    # inside this check: the first two attempts are let through to the handshake and every
+    # later one is refused however much time passes between them. The counters are read as
+    # a delta because the metric is cumulative for the life of the server.
+    $baseline = Get-Metric 'aethertunnel_connections_rate_limited_total' -Port $guardDashboardPort
     for ($attempt = 1; $attempt -le 2; $attempt++) {
         Attempt-ControlConnection -Port $guardControlPort | Out-Null
     }
     Start-Sleep -Milliseconds 300
-    if ((Get-Metric 'aethertunnel_connections_rate_limited_total' -Port $guardDashboardPort) -ne 0) {
-        throw "a connection inside the burst was rate limited"
+    $afterBurst = Get-Metric 'aethertunnel_connections_rate_limited_total' -Port $guardDashboardPort
+    if ($afterBurst -ne $baseline) {
+        throw "a connection inside the burst was rate limited ($baseline -> $afterBurst)"
     }
     for ($attempt = 1; $attempt -le 3; $attempt++) {
         Attempt-ControlConnection -Port $guardControlPort | Out-Null
@@ -2655,8 +2662,8 @@ Test-Check 'a source inside the burst is served and then rate limited' {
     $deadline = (Get-Date).AddSeconds(10)
     while ($true) {
         $limited = Get-Metric 'aethertunnel_connections_rate_limited_total' -Port $guardDashboardPort
-        if ($limited -ge 3) { break }
-        if ((Get-Date) -gt $deadline) { throw "three attempts past the burst produced $limited rate-limit refusals" }
+        if ($limited -ge ($baseline + 3)) { break }
+        if ((Get-Date) -gt $deadline) { throw "three attempts past the burst produced $($limited - $baseline) rate-limit refusals" }
         Start-Sleep -Milliseconds 200
     }
     $audit = Get-Content -Raw $guardAudit
