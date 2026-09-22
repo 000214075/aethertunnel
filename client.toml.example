@@ -21,9 +21,13 @@ auth_token = "CHANGE-ME-use-at-least-16-random-characters"
 reconnect_seconds = 3
 max_reconnect_seconds = 60
 
-# Seconds between heartbeats, and how long to wait for the server to answer a
-# data-stream request.
+# How often to heartbeat. The server states its own interval when the session starts
+# and the client follows it, because the server is what drops a connection that has
+# been quiet for three intervals; this value is the fallback for a server that does
+# not state one. A value that differs from the server's is reported at connect time.
 heartbeat_seconds = 30
+# How long to wait for the server to answer a data-stream request before giving up on
+# a visiting connection.
 dial_timeout_seconds = 10
 
 # Drop a tunnelled stream that has been idle for this many seconds.

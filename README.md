@@ -4,6 +4,13 @@
 服务端 + 客户端 + 内置 Web 面板，纯 Go，无 CGO，六个平台开箱可用。
 Server, client and a built-in web panel. Pure Go, no CGO, cross-compiled for six platforms.
 
+八种代理类型（`tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`）、代理池与负载均衡、
+可选的后量子加密、Prometheus 指标与 JSONL 审计日志；三层隧道**只在 Linux 上实现**，其他平台
+启动 `vpn.enabled = true` 会明确报错退出。
+Eight proxy types (`tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`), pooling with load
+balancing, optional post-quantum encryption, Prometheus metrics and a JSONL audit log; the
+layer-3 tunnel is **Linux only** and every other platform refuses to start with it enabled.
+
 [![CI](https://github.com/000214075/aethertunnel/actions/workflows/ci.yml/badge.svg)](https://github.com/000214075/aethertunnel/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/tag/000214075/aethertunnel?label=release)](https://github.com/000214075/aethertunnel/releases)
 [![License](https://img.shields.io/github/license/000214075/aethertunnel?label=license)](LICENSE)

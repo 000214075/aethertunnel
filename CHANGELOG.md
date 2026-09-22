@@ -17,7 +17,8 @@
 "几个成员、几个可用"，于是 `latency`、`failover`、`adaptive` 三种策略为什么把流量给了
 这个成员、绕开了那个成员，在界面上看不出来。现在成员数大于 1 的池会逐成员列出这两个数。
 另外让服务端把池里**实际生效**的端口回给客户端（此前客户端日志写的是它请求的端口，
-服务端却在另一个端口上监听），修掉自动封禁里一段**永远不会发生**的"时长翻倍"，
+服务端却在另一个端口上监听），修掉自动封禁里一段**永远不会发生**的"时长翻倍"、让
+`[client].heartbeat_seconds` 从装饰变成真正的回退值、修掉一个会让门禁时绿时红的不稳定测试，
 并修正三个随版本发布的文件里的过时版本号。配置与线协议没有变化，v3.7.3 的配置与二进制
 可以直接升级。
 
@@ -38,6 +39,14 @@
   名字实际可达的端口（池成员报池的端口，不在池里的代理报自己的），客户端日志相应写成
   `server confirms 2 tunnel(s): pooled on port 6022`。**线上的字段与取值方式没有变化**：
   只是服务端填这个字段时改用了实际端口。
+- **`[client].heartbeat_seconds` 从"写了不生效"变成真正的回退值**。心跳间隔一直由服务端在
+  会话建立时下发（`AuthResponse.heartbeat_seconds`），客户端按它发心跳——这是对的，因为
+  "连续三次收不到就断开"的是服务端。但客户端此前**完全忽略**自己的配置项，服务端没下发时
+  回退到硬编码的 30 秒，于是这个键只是装饰：`docs/CONFIGURATION.md` 把它写作"心跳间隔"，
+  改它没有任何效果。现在服务端没下发时用配置值，与下发的值不同时客户端会明确报告
+  （`the server asks for a heartbeat every 2s, so client.heartbeat_seconds (1m0s) has no effect
+  on this session`）。同时删掉 `Config.ServerHeartbeatInterval`——它全仓库无人调用，
+  注释还写着旧名字。
 - **`server.toml.example` 与 `client.toml.example` 的首行版本号从 `v3.3.0` 改为当前版本**。
   这两个文件随每个 Release 一起发布，此前四个版本没有更新过首行，读者会以为它们描述的是
   v3.3.0 的配置。`deploy/kubernetes/kustomization.yaml` 的 `newTag` 同样从 `v3.2.0` 更新。
@@ -58,6 +67,13 @@
   - 一直没被发现的原因值得记下来：`TestBanListDoublesEachBanAndStopsAtTheMaximum` 存在且
     一直通过，但它直接调用 `fail()`，**从不经过 `blocked()`**，而删条目的正是服务端每接受
     一条连接都会先走的 `blocked()`。测试绕开了真实路径，于是断言了一个服务端做不到的行为。
+- **`TestDatagramPumpAccountsForEverySession` 是个不稳定测试，已修**。数据泵在两个方向上
+  都是"先把数据交给对端、紧跟着计数"，于是一个已经收到回显的客户端可能赶在计数之前调到
+  `Shutdown()`，让会话报出的总字节数少一半。单独跑 60 次不复现，六个并行跑（各 `-count=10`）
+  就有一次报 `only 9 bytes were accounted for`——而"门禁全绿才发布"的前提是门禁本身可靠。
+  现在测试通过 `OnDatagram`（紧跟在计数之后触发）等到两个方向都到账再关闭；同样八路并行
+  跑 80 次全绿。产品侧的语义没有动：计数仍然只在成功转发之后加，把写失败的字节算作已发送
+  才是错的。
 
 ### 运维测试
 
@@ -95,6 +111,20 @@
   - `ban_ignore_cidrs` 里的来源失败次数照常计入 `aethertunnel_auth_failures_total`，
     但**永远不会被封**，审计里没有 `source_banned`。
   撤掉 `obsolete` 的保留逻辑后，其中 8 项按预期失败（每轮都是 `ban number 1`、都是 2 秒）。
+- **新增 `client` 包的单元测试（4 项）——这个包此前一个测试都没有**：心跳间隔由服务端定的
+  时候采用它并报告配置值不生效；服务端没下发时用配置值（负值同没下发）；两边都没有时落到
+  30 秒；两边一致时不输出任何东西。把回退逻辑改回硬编码 30 秒，其中一项按预期失败
+  （`interval is 30s, want the configured 45s`）。
+- **新增超时与上限探测脚本（18 项）**：`max_connections`、`handshake_timeout_seconds`、
+  `heartbeat_seconds`、`dial_timeout_seconds`、`read_timeout_seconds` 这五个键此前没有任何
+  测试或脚本设置过，脚本用最小协议客户端（自造帧：6 字节头 + JSON）逐一驱动它们：
+  - 超过 `max_connections` 的会话被明确拒绝，已在线的两个不受影响；
+  - 连上但不发第一帧的连接在 `handshake_timeout_seconds` 左右被断开，按时发出的被保留；
+  - 停止心跳的客户端在**三倍心跳间隔**左右被断开，持续心跳的保持连接；
+  - 客户端一直不回拨数据连接时，访客不会挂在那里，在 `dial_timeout_seconds` 左右被断开；
+  - 空闲的隧道流在 `read_timeout_seconds` 左右被关闭。
+  另外核实客户端会采用服务端下发的间隔：服务端要 2 秒、客户端配 60 秒时，客户端在服务端
+  6 秒的期限之后仍能正常转发，并在日志里说明配置值不生效。
 - **Windows 侧的 `.uitest/panel-columns-check.js`（24 项）需要重跑**：它用的两个客户端组成
   代理池，而池的「成员」一格现在多出逐成员的行，凡是把这格文字当成一个整体来比对的断言都要
   相应放宽或改成按成员比对。上面那 30 项是在 Linux 上另跑的一套，不能替代它。

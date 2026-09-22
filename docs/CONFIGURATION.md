@@ -50,7 +50,7 @@ aethertunnel-client --config client.toml --check
 | `auth_token` | string | 必填 | 与服务端一致 |
 | `reconnect_seconds` | int | 3 | 重连退避的起始值 |
 | `max_reconnect_seconds` | int | 60 | 退避上限；退避带 ±20% 抖动 |
-| `heartbeat_seconds` | int | 30 | 心跳间隔 |
+| `heartbeat_seconds` | int | 30 | 心跳间隔的**回退值**：服务端在会话建立时把自己的 `[server].heartbeat_seconds` 下发下来，客户端按它发心跳（服务端才是"连续 3 次未收到即断开"的一方），因此正常会话里本项不生效；服务端没有下发时（旧版或第三方服务端）才用它。与下发的值不同时会在连接时报告一行 |
 | `dial_timeout_seconds` | int | 10 | 连接服务端、等待 `DataOpenAck`、连接本地服务的超时 |
 | `idle_timeout_seconds` | int | 300 | 单条隧道流的空闲上限：超过这段时间没有字节流动就断开。适用于服务端转发的流、访客的本地监听连接，以及打洞后的直连路径 |
 

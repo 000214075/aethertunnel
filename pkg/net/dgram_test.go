@@ -206,6 +206,8 @@ func TestDatagramPumpAccountsForEverySession(t *testing.T) {
 		opened   int
 		closed   int
 		reported int64
+		seenUp   int64
+		seenDown int64
 	)
 
 	pump, _ := newEchoPumpWith(t, 2*time.Second, func(p *DatagramPump) {
@@ -216,6 +218,17 @@ func TestDatagramPumpAccountsForEverySession(t *testing.T) {
 				opened++
 			} else {
 				closed++
+			}
+		}
+		// OnDatagram fires right after the byte counters are updated, so waiting on it
+		// is what makes the totals below independent of how the pump is scheduled.
+		p.OnDatagram = func(toPeer bool, n int) {
+			mu.Lock()
+			defer mu.Unlock()
+			if toPeer {
+				seenUp += int64(n)
+			} else {
+				seenDown += int64(n)
 			}
 		}
 		p.Close = func(addr net.Addr, toPeer, fromPeer int64) {
@@ -234,6 +247,23 @@ func TestDatagramPumpAccountsForEverySession(t *testing.T) {
 	const payload = "accounted"
 	if got := sendAndReceive(t, socket, pump.Socket.LocalAddr(), payload); got != payload {
 		t.Fatalf("received %q", got)
+	}
+
+	// A client can see the echoed datagram before the pump has counted it: the reply is
+	// written to the socket first and the counter is updated immediately after. Wait
+	// for both directions to be accounted for instead of racing the pump, so the totals
+	// the shutdown reports are complete. Without this the test fails when the machine is
+	// loaded, which makes the whole suite unreliable.
+	want := int64(len(payload))
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		mu.Lock()
+		settled := seenUp >= want && seenDown >= want
+		mu.Unlock()
+		if settled || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 
 	pump.Shutdown()

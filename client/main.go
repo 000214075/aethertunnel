@@ -470,7 +470,7 @@ func (c *client) runSession(ctx context.Context) error {
 	}
 
 	heartbeatDone := make(chan struct{})
-	go c.heartbeatLoop(heartbeatDone, framer, response.HeartbeatSecs)
+	go c.heartbeatLoop(heartbeatDone, framer, c.heartbeatInterval(response.HeartbeatSecs))
 
 	defer close(heartbeatDone)
 
@@ -665,13 +665,34 @@ func (c *client) framerOptions() protocol.FramerOptions {
 	}
 }
 
+// heartbeatInterval decides how often to send a heartbeat.
+//
+// The server dictates the interval and the client follows it, because the server is
+// what drops a connection that has been quiet for three intervals. The configured
+// [client].heartbeat_seconds is the fallback for a server that does not state one, so
+// it is a real setting rather than a value that silently does nothing.
+func (c *client) heartbeatInterval(serverSeconds int) time.Duration {
+	if serverSeconds > 0 {
+		fromServer := time.Duration(serverSeconds) * time.Second
+		if configured := c.cfg.ClientHeartbeatInterval(); configured != fromServer {
+			c.logger.Printf("the server asks for a heartbeat every %ds, so client.heartbeat_seconds (%s) has no effect on this session",
+				serverSeconds, configured)
+		}
+		return fromServer
+	}
+	if configured := c.cfg.ClientHeartbeatInterval(); configured > 0 {
+		return configured
+	}
+	return 30 * time.Second
+}
+
 // heartbeatLoop sends heartbeats until done is closed. It only writes, so it does
 // not race with the session's reader.
-func (c *client) heartbeatLoop(done <-chan struct{}, framer *protocol.Framer, seconds int) {
-	if seconds <= 0 {
-		seconds = 30
+func (c *client) heartbeatLoop(done <-chan struct{}, framer *protocol.Framer, interval time.Duration) {
+	if interval <= 0 {
+		interval = 30 * time.Second
 	}
-	ticker := time.NewTicker(time.Duration(seconds) * time.Second)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {

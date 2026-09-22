@@ -1469,12 +1469,9 @@ func LoadClient(filename string) (*Config, error) {
 	return Load(filename, ValidateOptions{Role: RoleClient})
 }
 
-// HeartbeatInterval returns the configured heartbeat period as a duration.
-func (c *Config) ServerHeartbeatInterval() time.Duration {
-	return time.Duration(c.Server.HeartbeatSeconds) * time.Second
-}
-
-// ClientHeartbeatInterval returns the configured client heartbeat period.
+// ClientHeartbeatInterval returns the configured client heartbeat period. It is the
+// fallback for a server that does not state an interval of its own: a server that does
+// state one governs, because it is what drops a client that goes quiet.
 func (c *Config) ClientHeartbeatInterval() time.Duration {
 	return time.Duration(c.Client.HeartbeatSeconds) * time.Second
 }
