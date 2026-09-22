@@ -284,7 +284,7 @@ JSONL 格式写到标准输出（索引从 0 开始，越界或缺失时报错�
 | `republish_seconds` | int | `announce_ttl_seconds / 3` | 两端 | 重新发布已有通告的间隔，必须短于 `announce_ttl_seconds` |
 | `lookup_timeout_seconds` | int | 5 | 两端 | 单次解析的时限 |
 | `advertise_host` | string | 空 | 服务端 | 通告里写给客户端的主机名，**不含端口**（端口按代理类型取）。留空取 `server.bind_addr`，广播地址会**警告** |
-| `discover` | string | 空 | 客户端 | `client.server_addr` 为空时要解析的代理名 |
+| `discover` | string | 空 | 客户端 | `client.server_addr` 为空时要解析的代理名。**要用来找服务器地址时，这个名字必须是私有代理**（`stcp`/`sudp`/`xtcp`）：只有私有代理的记录写的是控制端口；`tcp`/`udp` 的记录写的是该代理的公网端口，`http`/`https` 是共享监听端口，那些是访问者到达代理的地方。客户端解析到公网类型的记录会给出警告 |
 | `signing_key_file` | string | 空 | 服务端 | 通告签名用的 Ed25519 种子，首次使用时生成。留空则发布未签名通告并**警告** |
 | `require_signed` | bool | false | 客户端 / 查询端 | 拒绝任何没有签名的通告 |
 | `trusted_keys` | []string | 空 | 客户端 / 查询端 | 只接受这些公钥（十六进制）签发的通告；非空时未签名的通告同样被拒绝 |

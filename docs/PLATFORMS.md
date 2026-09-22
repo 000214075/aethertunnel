@@ -7,14 +7,14 @@
 
 | 发布目标 | 本机（Linux 工作站） | CI | 功能检查 |
 |---|---|---|---|
-| linux/amd64 | 原生执行 | `ubuntu-latest`：gofmt、vet、单测、`-race`、真实 tun 设备的三层隧道、构建、示例配置、版本 | **38/38** |
-| linux/arm64 | qemu-aarch64（arm64 指令集） | 只做交叉编译（CI 里还没有 arm64 的执行作业） | **38/38** |
-| windows/amd64 | Wine 10.0 执行真实 PE | `windows-latest`：vet、单测、构建、示例配置、版本、`scripts/smoke-test.ps1`（101 项） | **37/37** |
+| linux/amd64 | 原生执行 | `ubuntu-latest`：gofmt、vet、单测、`-race`、真实 tun 设备的三层隧道、构建、示例配置、版本 | **46/46** |
+| linux/arm64 | qemu-aarch64（arm64 指令集） | 只做交叉编译（CI 里还没有 arm64 的执行作业） | **46/46** |
+| windows/amd64 | Wine 10.0 执行真实 PE | `windows-latest`：vet、单测、构建、示例配置、版本、`scripts/smoke-test.ps1`（101 项） | **45/45** |
 | darwin/arm64 | **无法执行** | `macos-latest`（arm64）：vet、单测、构建、示例配置、版本 | 仅 CI |
 | darwin/amd64 | **无法执行** | 仅交叉编译（`macos-latest` 是 arm64 运行器） | 仅静态核对 |
 | windows/arm64 | **无法执行** | 仅交叉编译 | 仅静态核对 |
 
-功能检查是同一套 38 项，分三组，都在每个平台上真跑：
+功能检查是同一套 46 项，分四组，都在每个平台上真跑：
 
 **隧道（22 项）**：八种代理类型（`tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`）、
 共享 http/https 监听（含 TLS 与未知主机拒绝）、socks5 越界目标被拒、三个访问者
@@ -24,6 +24,11 @@
 **命令行（7 项）**：服务端与客户端的 `--version`（含协议版本）、两个二进制分别对随版本发布的
 `server.toml.example` 与 `client.toml.example` 做 `--check`、以及客户端 `--identity`
 （生成密钥文件并打印公钥，且不打印任何其它内容）。
+
+**发现与私有认证（8 项）**：DHT 名称解析（`--dht-lookup` 把 `tcp` 名解析到它的公网端口、
+`--discover` 把私有名解析到控制端口）、一个 `server_addr` 留空的客户端靠 `[dht] discover` 解析出
+服务器并真实转发一次数据、把公网类型的名字当作服务器地址会被报告为错误、nizk 访问者（知道密钥
+的能过、密钥错误的被拒）、以及没有 `domains` 的 http 代理以 `<名字>.<subdomain_host>` 可达。
 
 **四层安全栈（8 项）**：加密（`xchacha20-poly1305` 与 `post_quantum = true`）、TLS 控制口、
 `disguise = "tls-record"` 伪装、Ed25519 身份认证（服务端只允许客户端的那个公钥）同时打开，

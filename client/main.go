@@ -37,6 +37,15 @@ var (
 	gitCommit = "unknown"
 )
 
+const (
+	// A client that resolves its server by name may start before the server has announced
+	// the record, or before its own DHT node has heard from a bootstrap peer. Both are
+	// normal startup order rather than a wrong name, so the first resolution is retried
+	// for this long before the client gives up.
+	dhtStartupGrace = 30 * time.Second
+	dhtStartupRetry = 3 * time.Second
+)
+
 type client struct {
 	cfg       *config.Config
 	cipher    *crypto.Cipher
@@ -84,6 +93,20 @@ func (c *client) serverAddr() string {
 	return c.target
 }
 
+// namesAControlPort reports whether a record of this type carries the address of the
+// server's control port. A private proxy is reached by name through the control port, so
+// its record does; a tcp or udp proxy's record names its own public port, and an http or
+// https proxy's names the shared listener — those are where visitors go, not where a
+// client connects.
+func namesAControlPort(proxyType string) bool {
+	switch proxyType {
+	case config.ProxyTypeSTCP, config.ProxyTypeSUDP, config.ProxyTypeXTCP:
+		return true
+	default:
+		return false
+	}
+}
+
 // refreshTarget re-resolves [dht].discover, so a proxy that moved to another server
 // is picked up on the next reconnect instead of requiring a restart.
 //
@@ -105,6 +128,14 @@ func (c *client) refreshTarget() {
 	c.mu.Lock()
 	c.target = record.Server
 	c.mu.Unlock()
+	if !namesAControlPort(record.Type) {
+		// The record names where *visitors* reach that proxy: its public port for tcp and
+		// udp, the shared listener for http and https. Only a private proxy's record names
+		// the control port, so this address can only serve as one by coincidence.
+		c.logger.Printf("warning: the record for %q is a %s proxy, so %s is where visitors reach it, "+
+			"not a control port; to resolve a server address, name a private proxy (stcp, sudp or xtcp)",
+			record.Name, record.Type, record.Server)
+	}
 	if record.Verified {
 		c.logger.Printf("dht: %q resolves to %s (type %s), signed by %s",
 			record.Name, record.Server, record.Type, record.PublicKey)
@@ -225,10 +256,27 @@ func main() {
 			}
 		}()
 		logger.Printf("dht: node %s on %s, resolving %q", resolver.Self(), resolver.Addr(), cfg.DHT.Discover)
-		c.refreshTarget()
-		if c.target == "" {
-			logger.Fatalf("dht: %q did not resolve and client.server_addr is empty, so there is nothing to connect to",
-				cfg.DHT.Discover)
+
+		// Seed the routing table before the first lookup. A node that has not spoken to a
+		// bootstrap peer has nobody to ask, so the lookup fails with "key not found" even
+		// when the record is published — which is what a client used to do here, and then
+		// exit as if the name did not exist.
+		for _, failure := range resolver.Bootstrap(resolver.Context()) {
+			logger.Printf("dht: bootstrap %v", failure)
+		}
+		// A server that has not announced yet is also normal startup order, so keep asking
+		// for a while before deciding the name really is unknown.
+		deadline := time.Now().Add(dhtStartupGrace)
+		for {
+			c.refreshTarget()
+			if c.target != "" {
+				break
+			}
+			if time.Now().After(deadline) {
+				logger.Fatalf("dht: %q did not resolve within %s and client.server_addr is empty, so there is nothing to connect to",
+					cfg.DHT.Discover, dhtStartupGrace)
+			}
+			time.Sleep(dhtStartupRetry)
 		}
 	}
 

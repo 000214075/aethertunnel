@@ -72,3 +72,20 @@ func TestHeartbeatIntervalIsSilentWhenBothAgree(t *testing.T) {
 		t.Errorf("an agreeing pair logged something: %q", logs.String())
 	}
 }
+
+// A client with no server_addr uses the resolved address as its control address, so the
+// record it resolves has to be one that names the control port. Only a private proxy's
+// record does; the others name where visitors reach the proxy, and the client warns
+// instead of leaving the operator to guess why the connection keeps failing.
+func TestOnlyAPrivateProxyRecordNamesTheControlPort(t *testing.T) {
+	for _, proxyType := range []string{"stcp", "sudp", "xtcp"} {
+		if !namesAControlPort(proxyType) {
+			t.Errorf("a %s record names the control port; the client would not warn about it", proxyType)
+		}
+	}
+	for _, proxyType := range []string{"tcp", "udp", "http", "https", "socks5", ""} {
+		if namesAControlPort(proxyType) {
+			t.Errorf("a %s record does not name the control port, so resolving one as a server address is a mistake the client should report", proxyType)
+		}
+	}
+}
