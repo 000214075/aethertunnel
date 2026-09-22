@@ -411,12 +411,13 @@ func (c *client) runSession(ctx context.Context) error {
 
 	var response protocol.AuthResponse
 	if err := framer.ReadJSON(protocol.TypeAuthResponse, &response); err != nil {
-		// A server that cannot read this client's framing closes the connection instead
-		// of answering, and the client only sees a reset. The usual cause is a setting
-		// that has to match on both ends, so name it: the server's own log has the
-		// detail, but the person configuring the client is looking here.
-		return fmt.Errorf("%w (the server closed the connection without answering: check that [obfuscation] "+
-			"and [transport] match on both ends)", err)
+		// The server closes a connection it will not talk to instead of answering, so the
+		// client only sees a reset. It cannot know which rule refused it — a mismatch in
+		// [encryption], [transport] or [obfuscation], an access list, a ban — so name the
+		// candidates and point at the log that does know, which is the server's.
+		return fmt.Errorf("%w (the server accepted the connection and closed it without answering an "+
+			"authentication request: the server's log names the reason; usual causes are a mismatch in "+
+			"[encryption], [transport] or [obfuscation], or an access rule that refuses this source)", err)
 	}
 	if !response.OK {
 		return fmt.Errorf("authentication rejected: %s", response.Error)

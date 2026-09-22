@@ -7,14 +7,14 @@
 
 | 发布目标 | 本机（Linux 工作站） | CI | 功能检查 |
 |---|---|---|---|
-| linux/amd64 | 原生执行 | `ubuntu-latest`：gofmt、vet、单测、`-race`、真实 tun 设备的三层隧道、构建、示例配置、版本 | **22/22** |
-| linux/arm64 | qemu-aarch64（arm64 指令集） | `test-arm64`（`ubuntu-24.04-arm`）：vet、单测、构建、示例配置、版本、**一次真实传输** | **22/22** |
-| windows/amd64 | Wine 10.0 执行真实 PE | `windows-latest`：vet、单测、构建、示例配置、版本、`scripts/smoke-test.ps1`（101 项） | **22/22** |
+| linux/amd64 | 原生执行 | `ubuntu-latest`：gofmt、vet、单测、`-race`、真实 tun 设备的三层隧道、构建、示例配置、版本 | **38/38** |
+| linux/arm64 | qemu-aarch64（arm64 指令集） | 只做交叉编译（CI 里还没有 arm64 的执行作业） | **38/38** |
+| windows/amd64 | Wine 10.0 执行真实 PE | `windows-latest`：vet、单测、构建、示例配置、版本、`scripts/smoke-test.ps1`（101 项） | **37/37** |
 | darwin/arm64 | **无法执行** | `macos-latest`（arm64）：vet、单测、构建、示例配置、版本 | 仅 CI |
 | darwin/amd64 | **无法执行** | 仅交叉编译（`macos-latest` 是 arm64 运行器） | 仅静态核对 |
 | windows/arm64 | **无法执行** | 仅交叉编译 | 仅静态核对 |
 
-功能检查是同一套 29 项，分两组，都在每个平台上真跑：
+功能检查是同一套 38 项，分三组，都在每个平台上真跑：
 
 **隧道（22 项）**：八种代理类型（`tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`）、
 共享 http/https 监听（含 TLS 与未知主机拒绝）、socks5 越界目标被拒、三个访问者
@@ -24,6 +24,10 @@
 **命令行（7 项）**：服务端与客户端的 `--version`（含协议版本）、两个二进制分别对随版本发布的
 `server.toml.example` 与 `client.toml.example` 做 `--check`、以及客户端 `--identity`
 （生成密钥文件并打印公钥，且不打印任何其它内容）。
+
+**四层安全栈（8 项）**：加密（`xchacha20-poly1305` 与 `post_quantum = true`）、TLS 控制口、
+`disguise = "tls-record"` 伪装、Ed25519 身份认证（服务端只允许客户端的那个公钥）同时打开，
+真实转发一次数据，并逐条断言每一层自己的日志行——某一层被静默关掉就会失败。
 
 ## 2. 三个无法在 Linux 上执行的目标
 
@@ -56,12 +60,12 @@
 
 ## 4. 这套环境证明了什么、没证明什么
 
-- 证明了：这三个目标上，八种代理类型与访问者路径**真的能传数据**，面板与指标报的是真实
-  计数，审计真的写下了对应事件。
+- 证明了：这三个目标上，八种代理类型与访问者路径**真的能传数据**，四层安全（加密含后量子、
+  TLS、伪装、身份认证）能同时生效，面板与指标报的是真实计数，审计真的写下了对应事件。
 - 没证明：模拟层自身的行为差异。qemu 与 Wine 都可能掩盖或引入只在真机上出现的问题（例如
   Wine 的套接字实现、Windows 的防火墙与命名管道语义、macOS 的沙箱与公证）。因此
   windows/amd64 仍以 CI 的 `windows-latest` 作业为准（它在真实 Windows 上跑 101 项），
-  arm64 以新增的 `test-arm64` 作业为准（真实 arm64 硬件）。
+  arm64 目前只有本文件记录的模拟执行（CI 里的 arm64 执行作业尚未落地）。
 - 三层隧道（`[vpn]`）**只在 Linux 上存在**，只在 CI 的 `ubuntu-latest` 作业里对着真实 tun
   设备验证；其他平台启动 `vpn.enabled = true` 会明确报错退出，这一点由单测覆盖。
 

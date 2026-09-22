@@ -83,6 +83,16 @@
 
 ### 修复
 
+- **修掉一处我自己上一轮引入的误导性提示**：客户端在"服务端接受连接却在握手前关闭"时一律说
+  "check that [obfuscation] and [transport] match on both ends"，而这类关闭的原因有好几种——
+  `[encryption]` 的算法/口令/salt 不一致、`[transport]` 不一致、伪装不一致、访问名单拒绝、
+  封禁。实测七个用例里有四个被指向了错误的设置。现在提示改为列出候选原因并指向真正写下原因的
+  服务端日志，服务端一侧也对"首帧认证失败"这一类补上了
+  `(check that both ends agree on [encryption] algorithm, passphrase, salt and post_quantum)`。
+  该判断抽成纯函数 `handshakeFailureHint` 并配单测（认证失败给出提示、伪装与长度错误不给
+  误导性提示）；把提示条件改成永不成立后，单测按预期失败。
+
+
 - **修掉测试脚手架里的一处数据竞争**（`pkg/server/proxy_test.go`）：`testAgent.serve` 为每条流
   起一个 goroutine，而这些 goroutine 会调用 `t.Logf`；agent 清理时只等控制循环退出，不等它们。
   于是前一个测试结束后，它的流 goroutine 仍可能往已结束的测试里写日志——竞态检测器报
@@ -132,6 +142,18 @@
   点明"检查两端的 `[obfuscation]` 与 `[transport]` 是否一致"。
 
 ### 运维测试
+
+- **每个平台的检查从 29 项扩到 38 项，新增"四层安全栈"**：加密（`xchacha20-poly1305` +
+  `post_quantum = true`）、TLS 控制口、`disguise = "tls-record"` 伪装、Ed25519 身份认证
+  （服务端 `allowed_keys` 只放客户端的公钥）**同时打开**，然后真实转发一次数据。每一项都断言它
+  自己那条日志（`encryption: xchacha20-poly1305`、`post-quantum session key ... agreed`、
+  `the control port is wrapped in TLS`、`connection disguise: tls-record`、
+  `client identities: 1 allowed key(s)`），因此某一层被静默关掉会失败，而不是靠其它层通过。
+  三个可执行平台实测：linux/amd64 **38/38**、linux/arm64（qemu）**38/38**、
+  windows/amd64（Wine 下真实 PE）**37/37**（私钥模式一项在 Windows 上报告而非断言）。
+  这也回答了一个此前没有验证过的问题：**Windows 版客户端的加密、TLS、伪装与身份认证是否真的
+  可用**——之前只在 Windows 上跑过运维脚本，没有单独验证这四层。
+
 
 - **修掉运维脚本里一项会让 Windows 作业随机变红的检查**：`scripts/smoke-test.ps1` 的
   "a source inside the burst is served and then rate limited" 依赖"检查开始时突发额度是满的"，

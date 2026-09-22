@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -310,6 +311,21 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 }
 
+// handshakeFailureHint names the settings that produce a given first-frame failure, for
+// the log line that is the only record of it: the client is closed out without an answer,
+// so the server's log is where the reason lives.
+func handshakeFailureHint(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := err.Error()
+	if strings.Contains(text, "message authentication failed") ||
+		strings.Contains(text, "encryption mismatch") {
+		return " (check that both ends agree on [encryption] algorithm, passphrase, salt and post_quantum)"
+	}
+	return ""
+}
+
 // admit applies the access-control rules to a freshly accepted connection. It
 // returns false when the connection has already been closed.
 func (s *Server) admit(conn net.Conn) bool {
@@ -513,7 +529,12 @@ func (s *Server) handleConn(conn net.Conn) {
 	framer := protocol.NewFramerWithOptions(conn, s.cipher, s.framerOptions())
 	msg, err := framer.ReadFrame()
 	if err != nil {
-		s.logger.Printf("handshake from %s failed: %v", conn.RemoteAddr(), err)
+		// The client is closed out without an answer, so this line is the only place the
+		// reason is written down. Say which settings could produce it: an authentication
+		// failure on the first frame is what a passphrase, salt or algorithm that differs
+		// between the two ends looks like from here, and an operator reading it should not
+		// have to know that.
+		s.logger.Printf("handshake from %s failed: %v%s", conn.RemoteAddr(), err, handshakeFailureHint(err))
 		_ = conn.Close()
 		return
 	}
