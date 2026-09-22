@@ -411,7 +411,12 @@ func (c *client) runSession(ctx context.Context) error {
 
 	var response protocol.AuthResponse
 	if err := framer.ReadJSON(protocol.TypeAuthResponse, &response); err != nil {
-		return fmt.Errorf("read auth response: %w", err)
+		// A server that cannot read this client's framing closes the connection instead
+		// of answering, and the client only sees a reset. The usual cause is a setting
+		// that has to match on both ends, so name it: the server's own log has the
+		// detail, but the person configuring the client is looking here.
+		return fmt.Errorf("%w (the server closed the connection without answering: check that [obfuscation] "+
+			"and [transport] match on both ends)", err)
 	}
 	if !response.OK {
 		return fmt.Errorf("authentication rejected: %s", response.Error)

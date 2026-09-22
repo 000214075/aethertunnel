@@ -263,6 +263,13 @@ v3.7.3 的配置与二进制可以直接升级。这一版改面板、服务端�
     连续失败次数照常显示。
   - 这一格因此会比以前宽一些：窄屏下会折行，过长的客户端 ID 会断行，但数值与单位
     （`ms` / `毫秒`）始终留在同一行。
+- **`deploy/kubernetes/` 的凭据注入方式改了，照旧方式部署的 Pod 起不来**。此前 Deployment
+  用 `envFrom: secretRef`，但 `envFrom` 把 Secret 的键名原样当作变量名（这里是 `auth-token`、
+  `dashboard-token`），服务端读的是 `AETHERTUNNEL_AUTH_TOKEN`、`AETHERTUNNEL_DASHBOARD_TOKEN`，
+  凭据传不进去，Pod 会以 `server.auth_token is required` 退出。现在 Deployment 用显式的
+  `env`/`valueFrom` 映射，**Secret 无需改动**，`kubectl apply -k deploy/kubernetes` 重新应用
+  Deployment 即可。另外部署文档补上一条：`ConfigMap` 打开了 `[obfuscation]` 的
+  `disguise = "tls-record"`，**客户端必须配同样的伪装**才能连上。
 - **新增 `--ledger-proof`**（可选，不影响既有部署）：`--ledger-proof <文件> --proof-index <n>`
   把到第 n 条为止的账本前缀写到标准输出，`--verify-ledger` 可以直接校验它，链头就是整条链在
   第 n 条的哈希。用于只证明某一段用量、不必交出整条链的场合。
@@ -288,8 +295,10 @@ v3.7.3 的配置与二进制可以直接升级。这一版改面板、服务端�
 
 **升级检查清单**：
 
-1. 用的是 `deploy/kubernetes/` 时，把 `kustomization.yaml` 的 `newTag` 改成你要部署的版本
-   （此前它把镜像钉在 `v3.2.0`）。镜像内容本身没有变化。
+1. 用的是 `deploy/kubernetes/` 时：把 `kustomization.yaml` 的 `newTag` 改成你要部署的版本
+   （此前它把镜像钉在 `v3.2.0`），并重新 `kubectl apply -k deploy/kubernetes` 应用修好的
+   Deployment——旧清单注入凭据的方式是错的，Pod 会以 `server.auth_token is required` 退出。
+   正在运行的部署不受影响，直到你重新应用清单。
 2. 有代理池（多个客户端用同一个 `name` 与同一个 `group` 发布）时，打开面板的「代理」页
    确认每行的成员数与你部署的客户端数一致；某成员显示 `—` 表示它还没有成功服务过一次
    连接，因此还没有测到延迟。

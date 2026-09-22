@@ -31,9 +31,22 @@ spec:
         - name: server
           image: ghcr.io/aethertunnel/aethertunnel:latest
           args: ["--config", "/etc/aethertunnel/server.toml"]
-          envFrom:
-            - secretRef:
-                name: aethertunnel-secrets
+          # The Secret's keys are mapped explicitly. `envFrom: secretRef` would turn
+          # each key into an environment variable of the same name, and the keys here
+          # are short ("auth-token"), while the server reads AETHERTUNNEL_AUTH_TOKEN:
+          # with envFrom the credential never reaches the program and the server
+          # refuses to start with "server.auth_token is required".
+          env:
+            - name: AETHERTUNNEL_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aethertunnel-secrets
+                  key: auth-token
+            - name: AETHERTUNNEL_DASHBOARD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aethertunnel-secrets
+                  key: dashboard-token
           ports:
             - name: control
               containerPort: 7001

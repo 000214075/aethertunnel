@@ -82,6 +82,19 @@
   现在测试通过 `OnDatagram`（紧跟在计数之后触发）等到两个方向都到账再关闭；同样八路并行
   跑 80 次全绿。产品侧的语义没有动：计数仍然只在成功转发之后加，把写失败的字节算作已发送
   才是错的。
+- **Kubernetes 部署照原样部署起不来，已修**。`deploy/kubernetes/deployment.yaml` 用
+  `envFrom: secretRef` 注入凭据，而 `envFrom` 是把 Secret 的**键名**原样变成环境变量名：
+  这里的键名是短的 `auth-token` / `dashboard-token`，服务端读的却是
+  `AETHERTUNNEL_AUTH_TOKEN` / `AETHERTUNNEL_DASHBOARD_TOKEN`，凭据于是根本传不进程序，
+  服务端拒绝启动并报 `server.auth_token is required`（好在是拒绝启动，不是拿空令牌运行）。
+  现在 Deployment 用显式的 `env` + `valueFrom.secretKeyRef` 做映射，Secret 的键名与
+  `kubectl create secret` 的既有用法都不用改。同时补上部署文档里**漏写的一条**：`ConfigMap`
+  打开了 `[obfuscation] disguise = "tls-record"`，因此**每个客户端都必须配同样的伪装**，
+  否则会在握手处被关闭（`pad_to` 与 `jitter_millis` 不必一致——帧里自带是否填充）。
+- **客户端在"服务端没应答就断开"时给出可操作的提示**：上面的伪装不一致场景里，服务端日志
+  写着 `the stream is not carrying record-framed data`，客户端却只说 `read: connection reset
+  by peer; reconnecting` 并无限重试——配客户端的人正是看着这份日志的人。现在客户端会在错误里
+  点明"检查两端的 `[obfuscation]` 与 `[transport]` 是否一致"。
 
 ### 运维测试
 
@@ -147,6 +160,20 @@
   把别条的签名挪过来后拒绝。撤掉 `writeLedgerProof` 的前缀裁剪（改成输出整条链）后，
   仓库内那条 Go 测试按预期失败（`the proof has 4 lines, want entries 0 through 2`）。
 - **新增 `main_test.go`（3 项）**：证明能被独立校验、越界索引被拒、空账本被拒。
+- **新增 Kubernetes 清单检查（3 项，`pkg/config/deploy_test.go`）**：这是"随版本交付的部署
+  清单必须与程序接得上"的第一道自检——
+  - 清单里出现的每个 `AETHERTUNNEL_*` 名字都必须是本包真正读取的（改名或拼错会被静默忽略）；
+  - Deployment 必须设置 `AETHERTUNNEL_AUTH_TOKEN`，且不得使用 `envFrom`（它会把短键名原样
+    变成变量名），凭据必须来自 Secret 而不是写在清单里；Secret 的键名必须与 Deployment 读的
+    一致；
+  - ConfigMap 里的 `server.toml` 必须能被本版本接受（把它抽出来交给 `LoadServer` 校验）。
+  结构检查会先剔除注释行，所以清单**不能靠注释**满足检查，也不会因为**解释**这个陷阱而误报。
+  把 Deployment 改回 `envFrom` 后，第二条按预期失败（`deployment.yaml does not set
+  AETHERTUNNEL_AUTH_TOKEN, so the server would refuse to start`）。
+- **新增部署契约探测（9 项）**：把清单里的 `server.toml` 抽出来、按 Deployment 的映射方式
+  给出环境变量（值取自"Secret"），核对服务端能启动、客户端带 Secret 里的令牌能连上、
+  Secret 里的面板令牌才是生效的那个；再验两个反面：伪装不一致的客户端连不上且日志里有
+  提示，短键名当变量名时服务端拒绝启动而不是空凭据监听。
 - **Windows 侧的 `.uitest/panel-columns-check.js`（24 项）需要重跑**：它用的两个客户端组成
   代理池，而池的「成员」一格现在多出逐成员的行，凡是把这格文字当成一个整体来比对的断言都要
   相应放宽或改成按成员比对。上面那 30 项是在 Linux 上另跑的一套，不能替代它。

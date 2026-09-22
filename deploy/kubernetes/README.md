@@ -51,14 +51,39 @@ curl -s localhost:7500/readyz
 
 ## Credentials
 
-The server reads three environment variables and lets them override the file, so the
-`ConfigMap` never contains a secret:
+The `ConfigMap` holds no credential. The `Secret` carries two keys, `auth-token` and
+`dashboard-token`, and the `Deployment` maps them onto the environment variables the
+server reads:
 
-| Variable | Overrides |
-| --- | --- |
-| `AETHERTUNNEL_AUTH_TOKEN` | `[server] auth_token` |
-| `AETHERTUNNEL_DASHBOARD_TOKEN` | `[dashboard] token` |
-| `AETHERTUNNEL_ENCRYPTION_PASSPHRASE` | `[encryption] passphrase` |
+| Secret key | Environment variable | Overrides |
+| --- | --- | --- |
+| `auth-token` | `AETHERTUNNEL_AUTH_TOKEN` | `[server] auth_token` |
+| `dashboard-token` | `AETHERTUNNEL_DASHBOARD_TOKEN` | `[dashboard] token` |
+
+The mapping is written out (`env` + `valueFrom.secretKeyRef`) because `envFrom: secretRef`
+would turn each key into a variable of the same name — `auth-token`, not
+`AETHERTUNNEL_AUTH_TOKEN` — which the server does not read; it then refuses to start with
+`server.auth_token is required`. `AETHERTUNNEL_ENCRYPTION_PASSPHRASE` is not set here
+because the `ConfigMap` does not enable `[encryption]`; add it the same way if you do.
+
+## Clients
+
+The `ConfigMap` enables `[obfuscation]` with `disguise = "tls-record"`. **Every client
+must set the same disguise**, or it is closed at the handshake and sees only
+`connection reset by peer` while it reconnects:
+
+```toml
+[client]
+server_addr = "<host>:7001"
+auth_token = "<the Secret's auth-token>"
+
+[obfuscation]
+enabled = true
+disguise = "tls-record"
+```
+
+`pad_to` and `jitter_millis` do **not** have to match: the frame itself carries whether
+it was padded, so each end picks its own. Only the disguise has to agree.
 
 ## Tun device
 
