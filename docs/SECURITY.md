@@ -173,7 +173,7 @@ Schnorr 证明在 NIST P-256 上，用 Fiat-Shamir 去交互；上下文含服�
 
 `[ledger] enabled = true` 后，服务端为每个「客户端 × 代理」的用量追加一条记录：序号、时间、
 双向字节、上一条的哈希、本条哈希、Ed25519 签名。签名密钥首次使用时生成到
-`signing_key_file`（32 字节十六进制种子，权限 0600）。
+`signing_key_file`（32 字节十六进制种子，Unix 上以 0600 创建；Windows 上的保护来自目录继承的 ACL，见下）。
 
 - 持有公钥的第三方可以离线校验一段账本没有被改动：
   `aethertunnel-server --verify-ledger <文件> --ledger-key <公钥或私钥文件>`。
@@ -186,6 +186,17 @@ Schnorr 证明在 NIST P-256 上，用 Fiat-Shamir 去交互；上下文含服�
   `udp` 与 `sudp` 按数据报会话、`xtcp` 按直连或中继的流、`http` 与 `https` 按每个完成的
   请求。这是**用量声明**，不做流量分析级别的核对。
 
+### 9.1 私钥文件的权限
+
+账本签名密钥、DHT 通告密钥与客户端身份密钥都以 `0600` 打开后写入，但这只在 Unix 上等价于
+"仅本人可读"：**Windows 没有 POSIX 权限位**，Go 的 `0600` 不会设置任何 ACL，文件的保护来自
+所在目录继承的 ACL（用户配置目录默认只授予本人、SYSTEM 与 Administrators，因此默认情况下仍是
+受限的）。若把密钥文件写进一个共享目录，Windows 上不会自动收紧，需要自行设置 ACL。
+
+在 Wine 或其它把 Windows 路径映射到 Unix 文件系统的环境里，这个差异会变成真实的暴露：文件落在
+宿主文件系统上，模式由宿主决定而非 Windows ACL。用 Wine 跑 Windows 版时请确认密钥文件
+（如 `aethertunnel-ledger.key`、`aethertunnel-identity.key`）的宿主模式是 0600。
+
 ## 10. DHT 发现
 
 `[dht]` 是一个 Kademlia DHT 节点，服务端把「代理名 → 服务器地址与端口」发布到
@@ -194,7 +205,7 @@ Schnorr 证明在 NIST P-256 上，用 Fiat-Shamir 去交互；上下文含服�
 
 DHT 的值谁都能写：同一 `namespace` 下的任何节点都可以为任意代理名写一条指向别处的记录。
 因此服务端可以给每条通告签名（`[dht] signing_key_file`，Ed25519，密钥首次使用时生成，
-权限 0600），签名覆盖名字、类型、地址、域名、发布时间与失效时间以及签名公钥本身；
+Unix 上以 0600 创建），签名覆盖名字、类型、地址、域名、发布时间与失效时间以及签名公钥本身；
 读取端有两种策略：
 
 - `require_signed = true`：没有签名的记录直接拒绝；

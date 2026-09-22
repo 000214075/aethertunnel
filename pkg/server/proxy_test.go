@@ -39,6 +39,12 @@ type testAgent struct {
 	stopped chan struct{}
 	verdict chan *protocol.Message
 
+	// streams counts the goroutines serving one stream each. They log through the test,
+	// so the test waits for them before it ends: a stream that is still copying when the
+	// test returns would otherwise call Logf on a finished test, which the race detector
+	// reports as a data race.
+	streams sync.WaitGroup
+
 	// dialTarget decides what a socks5 request may reach. It emulates the real
 	// client, which dials the address the visitor named rather than a local
 	// service of its own; leaving it nil means this agent serves no socks5 proxy.
@@ -85,6 +91,7 @@ func startAgent(t *testing.T, serverAddr string, encryption bool, handlers map[s
 		close(agent.done)
 		client.close()
 		<-agent.stopped
+		agent.streams.Wait()
 	})
 	return agent
 }
@@ -148,14 +155,14 @@ func (a *testAgent) loop(handlers map[string]dataHandler) {
 			if request.Target != "" {
 				// A socks5 request carries the address to reach, so it needs no
 				// entry in the handlers map: the agent dials the target itself.
-				go a.serve(request, nil)
+				a.goServe(request, nil)
 				continue
 			}
 			handler, ok := handlers[request.Proxy]
 			if !ok {
 				continue
 			}
-			go a.serve(request, handler)
+			a.goServe(request, handler)
 
 		case protocol.TypeError, protocol.TypeProxyList:
 			select {
@@ -164,6 +171,17 @@ func (a *testAgent) loop(handlers map[string]dataHandler) {
 			}
 		}
 	}
+}
+
+// goServe runs one stream in its own goroutine, tracked so the agent's cleanup can wait
+// for it. The goroutine logs through the test, and test logging must be over before the
+// test is.
+func (a *testAgent) goServe(request protocol.DataRequest, handler dataHandler) {
+	a.streams.Add(1)
+	go func() {
+		defer a.streams.Done()
+		a.serve(request, handler)
+	}()
 }
 
 func (a *testAgent) serve(request protocol.DataRequest, handler dataHandler) {

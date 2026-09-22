@@ -24,6 +24,28 @@
 
 ### 新增
 
+- **每个平台都真实跑过一遍功能**，不只是"能编译"。此前六个发布目标的验证程度并不相同：
+  linux/amd64 与 windows/amd64 有端到端脚本（CI 的 Windows 作业跑 101 项），macOS 跑单测，
+  而 **linux/arm64 与 windows/arm64 只被交叉编译、从未被执行过**。这一版把这几个平台真正
+  跑了起来（细节与证据见 `docs/PLATFORMS.md`）：
+  - **linux/arm64**：用 qemu-aarch64 在 arm64 指令集上跑完整套件、29 项全过（CI 只交叉编译
+    它，从未执行）；
+  - **windows/amd64**：用 Wine 跑真实的 PE 二进制、28 项全过（与 CI 的 Windows 作业互为独立证据）；
+  - **linux/amd64**：原生 29/29。
+  - 每个平台的检查都分两组：隧道 22 项 + 命令行 7 项（两端 `--version`、两个二进制分别对随版本
+    发布的 `server.toml.example` / `client.toml.example` 做 `--check`、客户端 `--identity`
+    生成密钥并打印公钥）。命令行这组立刻抓到一个只在 Windows 上出现的差异：客户端生成的
+    私钥文件在 Linux 上是 0600，在 Windows（Wine 下）是 0664——Windows 没有 POSIX 权限位，
+    Go 的 0600 不设置 ACL，实际保护来自目录继承的 ACL。文档原先把"权限 0600"写成无条件的，
+    现在写明平台差异（`docs/SECURITY.md` 新增 9.1 节，`docs/CONFIGURATION.md` 的键表同步）。
+  - darwin/amd64、darwin/arm64、windows/arm64 在本机无法执行（Darwin 内核无法模拟，x86-64
+    上的 Wine 也跑不了 ARM64 的 PE），只做了静态核对：二进制格式、架构、Go 版本与内嵌符号。
+    macOS 上的执行由 CI 的 macos-latest 作业覆盖（它是 arm64），darwin/amd64 与 windows/arm64
+    目前**没有任何地方执行过**，这一点写在文档里而不是含糊过去。windows/arm64 另有一条路
+    （qemu 跑 ARM64 用户态 + ARM64 版 Wine）也被试过并记录为不可行：Wine 加载 PE 时要再 exec
+    自己的 loader，而在 qemu 用户态下 `/proc/self/exe` 指向 qemu；让该 exec 透明的唯一办法是
+    注册 binfmt_misc，可非特权用户命名空间里的注册会被内核拒绝。
+
 - **`--ledger-proof <文件> --proof-index <n>`：导出到第 n 条为止的账本前缀**。账本里早就有
   `ledger.Proof`（带单元测试），但没有任何接口能产出这样的证明，于是"只需证明某一条的
   包含性"这个能力使用者够不到——审计场景里只想证明某一段用量的人，此前只能把整条链交出去。
@@ -60,6 +82,19 @@
   v3.3.0 的配置。`deploy/kubernetes/kustomization.yaml` 的 `newTag` 同样从 `v3.2.0` 更新。
 
 ### 修复
+
+- **修掉测试脚手架里的一处数据竞争**（`pkg/server/proxy_test.go`）：`testAgent.serve` 为每条流
+  起一个 goroutine，而这些 goroutine 会调用 `t.Logf`；agent 清理时只等控制循环退出，不等它们。
+  于是前一个测试结束后，它的流 goroutine 仍可能往已结束的测试里写日志——竞态检测器报
+  `Read at ... testing.(*common).Logf ... serveTarget ... Previous write ... tRunner.func1`。
+  产品代码没有任何竞争，但 **CI 的 `-race` 作业会随机变红**（本仓库 2026-09-22 的
+  `ccb0eb1` 那次就是这样红的，同一提交前后两次都绿）。现在 agent 用 `WaitGroup` 跟踪这些流
+  goroutine 并在清理时等待它们。修复前复现过两次（一次在 CI、一次在本机），修复后连续约十轮
+  未再出现；由于这是时序相关的竞争，`-race` 作业仍是权威。
+- **本机现在可以跑 `-race`**：解出 `gcc-14`、`binutils`、`libc6-dev` 等包（`dpkg-deb -x`，
+  不需要 root），设置 `CC` 与 `CGO_ENABLED=1` 即可。此前交接文档注明 `-race` 只能靠 CI。
+  本轮 14 个包在 `-race` 下全部通过。
+
 
 - **自动封禁的"时长翻倍"此前永远不会发生**，`ban_max_seconds` 因此是一段死配置。
   `server.toml.example` 写着"重复违规者每次封禁时长翻倍，直到 `ban_max_seconds`"，

@@ -258,7 +258,7 @@ inode，不重建的话路径到重启为止都是空的。仍然写不下去的
 |---|---|---|---|
 | `enabled` | bool | false | 是否记录带宽账本 |
 | `path` | string | `aethertunnel-ledger.jsonl` | 账本文件，每行一条 JSON 记录 |
-| `signing_key_file` | string | `aethertunnel-ledger.key` | Ed25519 私钥种子（32 字节十六进制），首次使用时生成，权限 0600 |
+| `signing_key_file` | string | `aethertunnel-ledger.key` | Ed25519 私钥种子（32 字节十六进制），首次使用时生成。**Unix 上以 0600 创建**；Windows 没有 POSIX 权限位，`0600` 只是 Go 的请求，实际保护来自文件所在目录继承的 ACL（用户配置目录默认只授予本人、SYSTEM 与 Administrators） |
 
 每条记录包含序号、时间、客户端、代理、双向字节、上一条的哈希、本条哈希与签名。
 `GET /api/ledger` 发布公钥、链头、最近条目与按客户端汇总。

@@ -270,6 +270,9 @@ v3.7.3 的配置与二进制可以直接升级。这一版改面板、服务端�
   `env`/`valueFrom` 映射，**Secret 无需改动**，`kubectl apply -k deploy/kubernetes` 重新应用
   Deployment 即可。另外部署文档补上一条：`ConfigMap` 打开了 `[obfuscation]` 的
   `disguise = "tls-record"`，**客户端必须配同样的伪装**才能连上。
+- **`docs/PLATFORMS.md` 新增**：逐目标写明被什么执行、证明了什么、什么没证明。发布与运维
+  方式不受影响；如果你的部署依赖 darwin/amd64 或 windows/arm64，注意这两个目标**至今没有被
+  任何地方执行过**（CI 也只交叉编译它们）。
 - **新增 `--ledger-proof`**（可选，不影响既有部署）：`--ledger-proof <文件> --proof-index <n>`
   把到第 n 条为止的账本前缀写到标准输出，`--verify-ledger` 可以直接校验它，链头就是整条链在
   第 n 条的哈希。用于只证明某一段用量、不必交出整条链的场合。
