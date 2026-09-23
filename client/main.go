@@ -699,13 +699,39 @@ func (c *client) logProxyList(payload []byte) {
 	// port nothing is listening on.
 	parts := make([]string, 0, len(statuses))
 	for _, status := range statuses {
-		if status.RemotePort != 0 {
-			parts = append(parts, fmt.Sprintf("%s on port %d", status.Name, status.RemotePort))
-			continue
-		}
-		parts = append(parts, status.Name)
+		parts = append(parts, describePublishedProxy(status))
 	}
 	c.logger.Printf("server confirms %d tunnel(s): %s", len(parts), strings.Join(parts, ", "))
+}
+
+// describePublishedProxy writes one confirmed tunnel the way the operator can act on
+// it: what type it is, the port the server listens on, and how many clients share the
+// name. The share count is what tells the operator of a second client that it joined
+// the pool that was already published instead of publishing a second endpoint.
+func describePublishedProxy(status protocol.ProxyStatus) string {
+	parts := make([]string, 0, 4)
+	if status.Type != "" {
+		parts = append(parts, fmt.Sprintf("%s (%s)", status.Name, status.Type))
+	} else {
+		parts = append(parts, status.Name)
+	}
+	if status.RemotePort != 0 {
+		parts = append(parts, fmt.Sprintf("on port %d", status.RemotePort))
+	}
+	if status.GroupMembers > 1 {
+		parts = append(parts, fmt.Sprintf("shared by %d clients", status.GroupMembers))
+	}
+	return strings.Join(parts, " ")
+}
+
+// streamOrigin names how a stream reached this client, which is what an operator
+// needs when one of the two paths misbehaves: a connection to the published port,
+// or a visitor asking for this proxy by name.
+func streamOrigin(request protocol.DataRequest) string {
+	if request.Visitor {
+		return "from a visitor"
+	}
+	return "from the public port"
 }
 
 // framerOptions maps the client's [obfuscation] section onto frame padding and
@@ -795,8 +821,9 @@ func (c *client) serveStream(session string, request protocol.DataRequest) {
 	defer conn.Close()
 
 	framer := protocol.NewFramerWithOptions(conn, c.cipher, c.framerOptions())
+	origin := streamOrigin(request)
 	fail := func(reason string) {
-		c.logger.Printf("stream for %q: %s", request.Proxy, reason)
+		c.logger.Printf("stream for %q (%s): %s", request.Proxy, origin, reason)
 		_ = conn.Close()
 	}
 
@@ -843,8 +870,8 @@ func (c *client) serveStream(session string, request protocol.DataRequest) {
 	serverSide := &cryptoStreamConn{Stream: crypto.NewStream(conn, streamCipher), conn: conn}
 	idle := time.Duration(c.cfg.Client.IdleTimeoutSecs) * time.Second
 	toServer, fromServer := flynet.Pipe(local, serverSide, idle)
-	c.logger.Printf("stream for %q finished (sent %d bytes to the server, received %d)",
-		request.Proxy, toServer, fromServer)
+	c.logger.Printf("stream for %q (%s) finished (sent %d bytes to the server, received %d)",
+		request.Proxy, origin, toServer, fromServer)
 }
 
 // dialForProxy opens the connection a stream should carry. A socks5 tunnel is
@@ -912,7 +939,7 @@ func (c *client) reportStreamFailure(session, proxy, streamID string, cause erro
 // datagram for the local UDP service, and each reply becomes one frame.
 //
 // The service is dialled as a connected UDP socket, so a reply is only accepted
-// from the address the requests were sent to 鈥?which is what a local service
+// from the address the requests were sent to — which is what a local service
 // does. The frames are already sealed individually by the framer, so no record
 // layer is layered on top.
 func (c *client) serveDatagrams(proxy string, conn net.Conn, framer *protocol.Framer, localAddr string) {

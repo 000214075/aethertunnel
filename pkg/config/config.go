@@ -562,7 +562,7 @@ func (c *Config) applyDefaults() {
 			c.DHT.AnnounceTTLSeconds = 90
 		}
 		if c.DHT.RepublishSeconds == 0 {
-			c.DHT.RepublishSeconds = c.DHT.AnnounceTTLSeconds / 3
+			c.DHT.RepublishSeconds = DefaultRepublishSeconds(c.DHT.AnnounceTTLSeconds)
 		}
 		if c.DHT.LookupTimeoutSeconds == 0 {
 			c.DHT.LookupTimeoutSeconds = 5
@@ -618,6 +618,22 @@ const (
 	DefaultDHTAddr      = "0.0.0.0:7001"
 	DefaultDHTNamespace = "aethertunnel"
 )
+
+// DefaultRepublishSeconds is the interval [dht].republish_seconds takes when the
+// configuration does not name one: a third of the announce TTL, so a live
+// announcement is rewritten twice before a reader stops honouring it.
+//
+// The floor of one second is what keeps that true for a short TTL. A third of
+// one second is zero, and the discovery node reads a zero interval as "the
+// caller chose nothing" and falls back to its own 30-second default, which is
+// longer than such a TTL: the announcement would lapse before it was rewritten
+// and the name would stop resolving while the server was still running.
+func DefaultRepublishSeconds(announceTTLSeconds int) int {
+	if interval := announceTTLSeconds / 3; interval > 0 {
+		return interval
+	}
+	return 1
+}
 
 // DHTAddr is the address the DHT node binds.
 func (c *Config) DHTAddr() string { return c.DHT.ListenAddr }
@@ -1044,6 +1060,11 @@ func (c *Config) Validate(role string) error {
 		}
 		if c.DHT.AnnounceTTLSeconds < 0 {
 			problems = append(problems, "dht.announce_ttl_seconds cannot be negative")
+		}
+		if c.DHT.AnnounceTTLSeconds > 0 && c.DHT.AnnounceTTLSeconds < 2 {
+			problems = append(problems, fmt.Sprintf(
+				"dht.announce_ttl_seconds (%d) is too short: an announcement has to be rewritten before it lapses, and the interval is a whole number of seconds",
+				c.DHT.AnnounceTTLSeconds))
 		}
 		if c.DHT.RepublishSeconds < 0 {
 			problems = append(problems, "dht.republish_seconds cannot be negative")

@@ -198,8 +198,8 @@
   X25519+ML-KEM-768、TLS **带真实证书校验**、服务端 `require_identity = true`）也按跨系统
   方式跑了五对，**每对 6/6**。证书校验因此走过了三个平台各自的 TLS 实现，后量子与身份签名走过了
   各自的密码学实现。
-- **每个平台的检查现为 67 项**（隧道 22 + 命令行 7 + 池策略 3 + 命名与目标 5 + 发现与私有认证 8 +
-  四层安全两遍共 17，另有 1 项在 Windows 上为报告而非断言）。三平台实测：linux/amd64 **67/67**、
+- **每个平台的检查那时扩到 67 项**（隧道 22 + 命令行 7 + 池策略 3 + 命名与目标 5 + 发现与私有认证 8 +
+  四层安全两遍共 17，另有 1 项在 Windows 上为报告而非断言）。那一轮三平台实测：linux/amd64 **67/67**、
   linux/arm64（qemu）**67/67**、windows/amd64（Wine）**66/66**。
 - **每个平台的检查新增一组"命名与目标"（5 项）**：`domains` 的 `*.通配` 对单级与多级子域都
   生效、对裸后缀不生效；`allow_targets` 里放 CIDR 时，**目标写成域名会被先解析再匹配**（`localhost`
@@ -322,6 +322,79 @@
 - **Windows 侧的 `.uitest/panel-columns-check.js`（24 项）需要重跑**：它用的两个客户端组成
   代理池，而池的「成员」一格现在多出逐成员的行，凡是把这格文字当成一个整体来比对的断言都要
   相应放宽或改成按成员比对。上面那 30 项是在 Linux 上另跑的一套，不能替代它。
+
+### 修复
+
+- **`[dht]` 的派生重发间隔在短的 `announce_ttl_seconds` 下失效，让一个仍在运行的服务端的名字
+  停止解析**。`republish_seconds` 的默认值是 `announce_ttl_seconds / 3`，而整数除法的结果在
+  `announce_ttl_seconds` 小于 3 时是 **0**；0 在 discovery 这一层读作"调用者没有指定"，于是换成
+  它自己的 30 秒默认值。结果是间隔比 TTL 还长，通告在重写之前就失效了——正是配置文档里警告过的
+  那种情况（"否则通告会在被重写之前失效"），而当时的校验放过了它：`republish_seconds >=
+  announce_ttl_seconds` 这一条只检查配置文件里写出来的值，不看派生值。
+  - 现在派生值有 1 秒下限（`config.DefaultRepublishSeconds`，导出以便测试与文档引用），
+    discovery 这一层也改为按 `AnnounceTTL` 派生（库调用者与配置文件走同一条规则，不再用固定
+    常量），校验另外拒绝 `announce_ttl_seconds` 小于 2 秒的配置：间隔以整秒计，1 秒的 TTL
+    没有办法在失效之前被重写。
+  - 单测四处：`pkg/config` 断言 2 秒 TTL 的派生值是 1 秒、且**节点实际拿到的间隔**短于 TTL，
+    另一个测试断言 `ttl_seconds`、`announce_ttl_seconds`、`republish_seconds`、
+    `lookup_timeout_seconds` 四个时长都真的传到了节点；`pkg/discovery` 断言任意 TTL
+    （2 秒到 1 小时）派生出的间隔都落在 TTL 之内且为正，并保留默认那一对的断言。
+  - 反向验证：把派生改回 `announce_ttl_seconds / 3`、把 discovery 的派生改回固定 30 秒常量后，
+    `DHT.RepublishSeconds = 0, want 1`、`an announce TTL of 2s gets a republish interval of
+    30s, which does not fit inside it` 按预期失败。
+  - 这一项顺带暴露出一个**断言了错误行为的集成测试**：`pkg/server` 里原来那个"记录会在配置的
+    TTL 之后不再解析"的测试（`ttl_seconds = announce_ttl_seconds = 2`）长期通过，靠的正是上面
+    这个坏掉的派生值——重发间隔 30 秒比 2 秒的 TTL 还长，所以没有任何东西重写它。修好之后，
+    一个仍在运行的服务端每秒重写一次，记录不再失效。该测试改为断言修正后的行为（**短 TTL 下
+    名字持续可解析**，这只有在 TTL 之内重写才做得到），并把"发布者消失后记录失效"那一半留给
+    它真正可观测的地方：`pkg/dht`（存储层过期）与 `pkg/discovery`（过期通告被拒）。
+- **修掉两处被编码破坏的注释**（`client/main.go`、`pkg/config/config_test.go`）：文件曾被以 GBK
+  读过再写回，注释里的破折号变成了 `鈥?` 并在原处多出一个字符。两处都改回 `—`。全仓库重新扫过
+  这一类破坏（UTF-8 标点被按 GBK 解码后的典型字符），没有第三处。
+
+### 变更
+
+- **`TypeProxyList` 只保留客户端能据以行动的四项**（`name`、`type`、`remote_port`、
+  `group_members`）。这条消息是服务端发给**客户端**的，此前还带着 `local_addr`、`domains`、
+  `client_id`、`active_connections`、`total_connections`、`bytes_in`、`bytes_out`：`client_id`
+  就是这条连接自己的会话号（这条列表里只含本会话发布的代理），其余几个计数在服务端的面板与
+  指标里已经有人读，客户端收到也只能复述一遍。释义也一并写清：它是**发给客户端的列表**，
+  不是面板的代理表（面板读的是服务端自己的结构）。
+  - 字段减少不影响兼容性：JSON 解码忽略多出来的键，缺失的键读作零值，`ProtocolVersion` 不变。
+- **`AuthRequest.EncryptionSalt` 删除**。客户端从来没有发过它，服务端从来没有读过它，两端都按
+  各自 `[encryption]` 的 `salt` 派生密钥；而承载它的那个帧本身就用这个 salt 派生出的密钥加密，
+  真要读取就得先解开一个还没有密钥可用的帧。这是本轮清掉的"定义了没人用"的字段之一，同样不影响
+  线协议版本。
+- **客户端把 visitor 流与公网端口流分开写进日志**（`DataRequest.Visitor` 此前没有任何读取方）。
+  两种流在客户端看到的其余字段完全一样（同一个代理名、同一种流标识），所以这个标记是客户端唯一
+  能据以区分的依据：现在结束行与失败行写成 `stream for "x" (from a visitor) finished (...)`
+  与 `(from the public port)`，日志阅读者不必再去猜一条流是从哪里来的。判断抽成 `streamOrigin`
+  并配单测。
+  - 端到端检查两项（逐平台功能套件，读**真实客户端进程**的日志）：两条路径各自的行都必须出现过
+    ——只断言一侧的话，"标记永远为真"或"永远为假"的实现照样会通过。把服务端标记访客流的那一处
+    改成 `Visitor: false` 后，其中一项按预期失败（23/24），另一项仍过。
+  - 服务端一侧同时补了 Go 测试：`pkg/server` 的 STCP 中继测试断言访问者流的请求带 `Visitor`，
+    http 代理测试断言走公网端口的流**不带**它——测试代理现在会把每条 `DataRequest` 记下来。
+- **客户端确认行带上代理类型与共享成员数**，现在是
+  `server confirms 2 tunnel(s): pooled (tcp) on port 6022 shared by 2 clients`。`group_members`
+  是"第二个客户端并入了已发布的池、而不是又开了一个端点"的唯一可见证据（端口那一项是 v3.7.4
+  修的），`type` 让它不必回头翻自己的配置。只有一个成员时仍然不写共享字样，与之前一致。
+  `pkg/server` 的池测试新增两项断言：成员被告知共享这个名字的客户端数是 2、类型是 `tcp`；
+  `client` 包的单测覆盖"带类型与端口""共享时写出成员数""独占时不写"三种写法。
+  - 反向验证：把 `Type`、`GroupMembers` 从 `sendProxyList` 里去掉后，池测试按预期失败
+    （`the member was told the name is served by 0 client(s), want 2`）；把确认行改回"只有名字
+    与端口"后，`client` 包的两项按预期失败。
+
+### 文档
+
+- **README 的逐平台功能验证一行从 64/64 更正为 69/69**（第 4 轮把每平台的检查从 64 加到 67 时，
+  `docs/PLATFORMS.md` 改了、README 的中英两行都漏了），并写明本轮新增的两项检查**只在
+  linux/amd64 与 linux/arm64 上跑过**：本机这次无法创建用户命名空间，Wine 起不来（它需要私有
+  挂载命名空间把解出的区域数据绑到 `/usr/share/wine`），Windows/Wine 这一路因此是本轮唯一
+  没有重跑的可执行平台，`docs/PLATFORMS.md` 里记下这一点。
+- `docs/PLATFORMS.md`：结论表与分组说明同步到 69 项（隧道 22 → 24），并把 Windows 一行标注为
+  "本轮未重跑"。
+- `[dht]` 的两个键在 `docs/CONFIGURATION.md` 的说明里补上"最少 2 秒"与"至少 1 秒"。
 
 ---
 

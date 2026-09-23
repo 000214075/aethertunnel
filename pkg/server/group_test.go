@@ -204,6 +204,14 @@ func TestAPooledMemberIsToldThePoolsPort(t *testing.T) {
 		t.Fatalf("the member was told port %d, want the pool's %d (it asked for %d)",
 			got, poolPort, requested)
 	}
+	// The share count is what the client logs to tell its operator that the name is
+	// published by more than one client; without it the two look the same.
+	if got := statuses[0].GroupMembers; got != 2 {
+		t.Fatalf("the member was told the name is served by %d client(s), want 2", got)
+	}
+	if got := statuses[0].Type; got != protocol.ProxyTypeTCP {
+		t.Fatalf("the member was told the proxy type is %q, want %s", got, protocol.ProxyTypeTCP)
+	}
 
 	// A proxy outside a pool is still reported on the port it asked for.
 	soloPort := freePort(t)

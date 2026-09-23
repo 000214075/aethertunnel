@@ -558,19 +558,21 @@ func TestAServerWithNoSigningKeyPublishesUnsignedRecords(t *testing.T) {
 
 // --- record lifetime ----------------------------------------------------------
 
-// TestADHTRecordLapsesAfterTheConfiguredTTL drives dht.ttl_seconds, which bounds
-// how long any node keeps a record. It is what stops the name of a server that has
-// disappeared from resolving forever, because the DHT has no remote delete: copies
-// of an announcement sit on every node that stored one until they lapse.
+// TestAShortAnnounceTTLIsStillRewrittenInTime drives the derived republish interval
+// through a real configuration. dht.republish_seconds defaults to a third of
+// dht.announce_ttl_seconds, and a third of a short TTL is zero seconds — which the
+// discovery node reads as "the caller chose nothing" and replaces with its own
+// 30-second default. The announcement would then lapse before it was rewritten, and
+// the name of a server that is still running would stop resolving: the name is what
+// a client resolves instead of being configured with an address.
 //
-// The configuration is written as TOML and loaded, so the key is proven to reach
-// the DHT rather than only the Go field. config validation requires the storage TTL
-// to be at least the announcement TTL, so the two are set to the same short value,
-// which is the shortest pair the validator accepts. That makes the error the
-// discriminator: once the storage has dropped the record the lookup reports
-// dht.ErrNotFound, whereas a record that is still stored but no longer announced
-// reports discovery.ErrStale.
-func TestADHTRecordLapsesAfterTheConfiguredTTL(t *testing.T) {
+// config validation requires the storage TTL to be at least the announcement TTL, so
+// the two are set to the same short value, which is the shortest pair the validator
+// accepts. The name is then resolved well past that TTL, which only republishing
+// inside it can achieve. The other half of a record's lifetime — a copy whose
+// announcer has stopped refreshing it — is covered where it is observable:
+// pkg/dht for the storage lapse and pkg/discovery for a stale announcement.
+func TestAShortAnnounceTTLIsStillRewrittenInTime(t *testing.T) {
 	const ttlSeconds = 2
 
 	path := filepath.Join(t.TempDir(), "ttl.toml")
@@ -598,8 +600,19 @@ announce_ttl_seconds = %d
 	if cfg.DHT.TTLSeconds != ttlSeconds {
 		t.Fatalf("dht.ttl_seconds loaded as %d, want %d", cfg.DHT.TTLSeconds, ttlSeconds)
 	}
+	settings := cfg.DHTSettings(discardLogger())
+	// A third of two seconds is zero, and zero would come back as the node's own
+	// 30-second default, so the derived interval has a one-second floor.
+	if cfg.DHT.RepublishSeconds != 1 {
+		t.Fatalf("dht.republish_seconds came out as %d for a %ds announce TTL, want 1",
+			cfg.DHT.RepublishSeconds, cfg.DHT.AnnounceTTLSeconds)
+	}
+	if settings.RepublishInterval >= time.Duration(cfg.DHT.AnnounceTTLSeconds)*time.Second {
+		t.Fatalf("the node rewrites its announcements every %s, which is not inside the %ds announce TTL",
+			settings.RepublishInterval, cfg.DHT.AnnounceTTLSeconds)
+	}
 
-	node, err := discovery.Start(cfg.DHTSettings(discardLogger()))
+	node, err := discovery.Start(settings)
 	if err != nil {
 		t.Fatalf("start the node: %v", err)
 	}
@@ -614,8 +627,8 @@ announce_ttl_seconds = %d
 	}
 	published := time.Now()
 
-	// Inside the lifetime the name resolves, which is what makes the expiry below
-	// an expiry rather than a record that never worked.
+	// Inside the lifetime the name resolves, which is what makes the checks below
+	// about republishing rather than about a record that never worked.
 	record, err := node.Resolve("ssh")
 	if err != nil {
 		t.Fatalf("resolve inside the lifetime: %v", err)
@@ -624,24 +637,14 @@ announce_ttl_seconds = %d
 		t.Fatalf("resolved %q, want the published address", record.Server)
 	}
 
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		_, err := node.Resolve("ssh")
-		if errors.Is(err, dht.ErrNotFound) {
-			break
+	// Well past the announce TTL and past the storage TTL: nothing that was not
+	// rewritten in between is still here.
+	time.Sleep(time.Duration(ttlSeconds)*time.Second + time.Second)
+	for i := 0; i < 5; i++ {
+		if _, err := node.Resolve("ssh"); err != nil {
+			t.Fatalf("the name stopped resolving %v after it was published, with a %ds announce TTL: %v",
+				time.Since(published).Round(time.Millisecond), ttlSeconds, err)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the record still resolved %v after it was published with a %d-second dht.ttl_seconds: %v",
-				time.Since(published), ttlSeconds, err)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	lapsed := time.Since(published)
-	if lapsed < time.Duration(ttlSeconds)*time.Second {
-		t.Errorf("the record lapsed after %v, before the %d-second dht.ttl_seconds", lapsed, ttlSeconds)
-	}
-	if lapsed > 10*time.Second {
-		t.Errorf("the record lapsed after %v, far past the %d-second dht.ttl_seconds", lapsed, ttlSeconds)
+		time.Sleep(300 * time.Millisecond)
 	}
 }

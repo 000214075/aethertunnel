@@ -37,9 +37,10 @@ const (
 	DefaultNamespace = "aethertunnel"
 	// DefaultAnnounceTTL is how long a reader honours an announcement.
 	DefaultAnnounceTTL = 90 * time.Second
-	// DefaultRepublishInterval is how often live announcements are rewritten. It
-	// has to be shorter than the announce TTL so a running server never lets one
-	// lapse.
+	// DefaultRepublishInterval is the interval that goes with DefaultAnnounceTTL:
+	// a third of it, which is what a third of any chosen TTL comes to. The
+	// interval has to stay below the TTL, or a running server lets its own
+	// announcements lapse.
 	DefaultRepublishInterval = 30 * time.Second
 	// DefaultLookupTimeout bounds a single resolution from start to finish.
 	DefaultLookupTimeout = 5 * time.Second
@@ -278,12 +279,28 @@ func (c Config) withDefaults() Config {
 		c.AnnounceTTL = DefaultAnnounceTTL
 	}
 	if c.RepublishInterval <= 0 {
-		c.RepublishInterval = DefaultRepublishInterval
+		c.RepublishInterval = republishIntervalFor(c.AnnounceTTL)
 	}
 	if c.LookupTimeout <= 0 {
 		c.LookupTimeout = DefaultLookupTimeout
 	}
 	return c
+}
+
+// republishIntervalFor is how often a live announcement is rewritten when the
+// caller named no interval: a third of the announce TTL, so a record is refreshed
+// twice before a reader stops honouring it.
+//
+// A third of a TTL shorter than three seconds is zero, and a zero interval would
+// mean "the caller chose nothing" all over again. The floor of one second keeps
+// the interval below any TTL the configuration accepts, which is the property that
+// matters: an announcement that lapses before it is rewritten stops resolving
+// while its server is still running.
+func republishIntervalFor(announceTTL time.Duration) time.Duration {
+	if interval := announceTTL / 3; interval > time.Second {
+		return interval
+	}
+	return time.Second
 }
 
 // Key is the DHT key a proxy name is published under.

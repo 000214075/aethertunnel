@@ -856,16 +856,9 @@ func (s *Server) sendProxyList(session *Session) {
 			continue
 		}
 		status := protocol.ProxyStatus{
-			Name:        tunnel.Name,
-			Type:        tunnel.Spec.Type,
-			LocalAddr:   tunnel.Spec.LocalAddr,
-			RemotePort:  tunnel.PublicPort(),
-			Domains:     tunnel.Spec.Domains,
-			ClientID:    session.ID,
-			Active:      tunnel.Active.Load(),
-			TotalOpened: tunnel.Total.Load(),
-			BytesIn:     tunnel.BytesIn.Load(),
-			BytesOut:    tunnel.BytesOut.Load(),
+			Name:       tunnel.Name,
+			Type:       tunnel.Spec.Type,
+			RemotePort: tunnel.PublicPort(),
 		}
 		if tunnel.group != nil {
 			status.GroupMembers = tunnel.group.memberCount()

@@ -315,6 +315,31 @@ func TestConfigDefaults(t *testing.T) {
 	}
 }
 
+// The derived interval has to stay below whatever TTL was chosen, including a TTL so
+// short that a third of it is zero seconds: a zero interval reads as "the caller
+// chose nothing" and would come back as the 30-second default, which is longer than
+// such a TTL, so a live announcement would lapse and its name would stop resolving.
+func TestTheDerivedRepublishIntervalFitsEveryAnnounceTTL(t *testing.T) {
+	for _, ttl := range []time.Duration{
+		2 * time.Second, 3 * time.Second, 30 * time.Second, DefaultAnnounceTTL, time.Hour,
+	} {
+		cfg := Config{AnnounceTTL: ttl}.withDefaults()
+		if cfg.RepublishInterval >= ttl {
+			t.Errorf("an announce TTL of %s gets a republish interval of %s, which does not fit inside it",
+				ttl, cfg.RepublishInterval)
+		}
+		if cfg.RepublishInterval <= 0 {
+			t.Errorf("an announce TTL of %s gets a republish interval of %s, which is not a period a ticker accepts",
+				ttl, cfg.RepublishInterval)
+		}
+	}
+	// The pair of defaults still comes out as the documented one.
+	if cfg := (Config{}).withDefaults(); cfg.RepublishInterval != DefaultRepublishInterval {
+		t.Errorf("the default TTL republishes every %s, want %s",
+			cfg.RepublishInterval, DefaultRepublishInterval)
+	}
+}
+
 func TestZeroValueContextFallsBackToTheLookupTimeout(t *testing.T) {
 	node := startNode(t, Config{ListenAddr: freeUDPAddr(t), LookupTimeout: time.Second})
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/aethertunnel/aethertunnel/pkg/config"
+	"github.com/aethertunnel/aethertunnel/pkg/protocol"
 )
 
 // testClient builds the smallest client the heartbeat decision needs: a config and a
@@ -87,5 +88,51 @@ func TestOnlyAPrivateProxyRecordNamesTheControlPort(t *testing.T) {
 		if namesAControlPort(proxyType) {
 			t.Errorf("a %s record does not name the control port, so resolving one as a server address is a mistake the client should report", proxyType)
 		}
+	}
+}
+
+// The confirmation line is the client's only report of what the server published, and
+// the port it names is the one the server listens on: a member of a pool that was
+// already published asks for one port and gets another, and an operator who read the
+// requested one would test a port nothing is listening on.
+func TestTheConfirmationLineNamesThePortTheServerListensOn(t *testing.T) {
+	got := describePublishedProxy(protocol.ProxyStatus{
+		Name: "pooled", Type: "tcp", RemotePort: 6022,
+	})
+	if !strings.Contains(got, "on port 6022") {
+		t.Errorf("the confirmation names %q, want the server's port", got)
+	}
+	if !strings.Contains(got, "tcp") {
+		t.Errorf("the confirmation names %q, want the proxy type", got)
+	}
+}
+
+// A name can be published by several clients, and the share count is what tells the
+// operator of a second client that it joined the existing pool instead of publishing a
+// second endpoint.
+func TestTheConfirmationLineReportsASharedName(t *testing.T) {
+	shared := describePublishedProxy(protocol.ProxyStatus{
+		Name: "pooled", Type: "tcp", RemotePort: 6022, GroupMembers: 3,
+	})
+	if !strings.Contains(shared, "3") {
+		t.Errorf("a name shared by three clients reads %q, want the share count", shared)
+	}
+	single := describePublishedProxy(protocol.ProxyStatus{
+		Name: "solo", Type: "tcp", RemotePort: 6023, GroupMembers: 1,
+	})
+	if strings.Contains(single, "shared by") {
+		t.Errorf("a proxy served by one client was reported as shared: %q", single)
+	}
+}
+
+// A stream reaches a client either as a connection to the published port or as a
+// visitor asking for the proxy by name. The per-stream log line is where that
+// difference is visible, so the flag has to be read rather than assumed.
+func TestAStreamFromAVisitorIsLabelledAsOne(t *testing.T) {
+	if got := streamOrigin(protocol.DataRequest{Visitor: true}); !strings.Contains(got, "visitor") {
+		t.Errorf("a visitor stream is labelled %q", got)
+	}
+	if got := streamOrigin(protocol.DataRequest{}); strings.Contains(got, "visitor") {
+		t.Errorf("a stream from the public port is labelled %q", got)
 	}
 }

@@ -364,12 +364,15 @@ func (f *Framer) ReadJSON(expected MessageType, v any) error {
 // --- payload types ------------------------------------------------------------
 
 // AuthRequest is sent by the client to open a session.
+//
+// The encryption salt is not part of it: both ends take theirs from their own
+// [encryption] section, and the frame that would have carried the client's value
+// is sealed with the key derived from it.
 type AuthRequest struct {
-	Token          string `json:"token"`
-	ClientVersion  string `json:"client_version"`
-	Protocol       int    `json:"protocol"`
-	Encryption     string `json:"encryption"`
-	EncryptionSalt string `json:"encryption_salt,omitempty"`
+	Token         string `json:"token"`
+	ClientVersion string `json:"client_version"`
+	Protocol      int    `json:"protocol"`
+	Encryption    string `json:"encryption"`
 	// KEX carries the client's X25519 public key followed by its ML-KEM-768
 	// encapsulation key when [encryption].post_quantum is on.
 	KEX []byte `json:"kex,omitempty"`
@@ -535,21 +538,22 @@ type P2PFallback struct {
 	Token string `json:"token"`
 }
 
-// ProxyStatus is one row of the proxy table reported to the dashboard.
+// ProxyStatus is one row of the proxy list the server sends a client: what is
+// published under that client's session, and where.
+//
+// It carries what the client can act on and nothing else. The counters a reader
+// would want (streams, bytes) are reported by the server's own dashboard and
+// metrics, which is where they are read; a client that was told them could only
+// repeat them.
 type ProxyStatus struct {
-	Name       string   `json:"name"`
-	Type       string   `json:"type"`
-	LocalAddr  string   `json:"local_addr"`
-	RemotePort int      `json:"remote_port,omitempty"`
-	Domains    []string `json:"domains,omitempty"`
-	ClientID   string   `json:"client_id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+	// RemotePort is the port the server is listening on, which is not the port the
+	// client asked for when the proxy joined a pool that was already published.
+	RemotePort int `json:"remote_port,omitempty"`
 	// GroupMembers is how many clients share this published name. One means the
 	// proxy is served by a single client.
-	GroupMembers int   `json:"group_members,omitempty"`
-	Active       int64 `json:"active_connections"`
-	TotalOpened  int64 `json:"total_connections"`
-	BytesIn      int64 `json:"bytes_in"`
-	BytesOut     int64 `json:"bytes_out"`
+	GroupMembers int `json:"group_members,omitempty"`
 }
 
 // DataRequest tells the client that a public connection is waiting and asks it to

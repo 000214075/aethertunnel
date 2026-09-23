@@ -7,19 +7,20 @@
 
 | 发布目标 | 本机（Linux 工作站） | CI | 功能检查 |
 |---|---|---|---|
-| linux/amd64 | 原生执行 | `ubuntu-latest`：gofmt、vet、单测、`-race`、真实 tun 设备的三层隧道、构建、示例配置、版本 | **67/67** |
-| linux/arm64 | qemu-aarch64（arm64 指令集） | 只做交叉编译（CI 里还没有 arm64 的执行作业） | **67/67** |
-| windows/amd64 | Wine 10.0 执行真实 PE | `windows-latest`：vet、单测、构建、示例配置、版本、`scripts/smoke-test.ps1`（101 项） | **66/66** |
+| linux/amd64 | 原生执行 | `ubuntu-latest`：gofmt、vet、单测、`-race`、真实 tun 设备的三层隧道、构建、示例配置、版本 | **69/69** |
+| linux/arm64 | qemu-aarch64（arm64 指令集） | 只做交叉编译（CI 里还没有 arm64 的执行作业） | **69/69** |
+| windows/amd64 | Wine 10.0 执行真实 PE（**本轮未跑，见 3.1**） | `windows-latest`：vet、单测、构建、示例配置、版本、`scripts/smoke-test.ps1`（101 项） | 上一轮 67 项时为 **66/66** |
 | darwin/arm64 | **无法执行** | `macos-latest`（arm64）：vet、单测、构建、示例配置、版本 | 仅 CI |
 | darwin/amd64 | **无法执行** | 仅交叉编译（`macos-latest` 是 arm64 运行器） | 仅静态核对 |
 | windows/arm64 | **无法执行** | 仅交叉编译 | 仅静态核对 |
 
-功能检查是同一套 67 项，分六组，都在每个平台上真跑：
+功能检查是同一套 69 项，分六组，都在每个平台上真跑：
 
-**隧道（22 项）**：八种代理类型（`tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`）、
+**隧道（24 项）**：八种代理类型（`tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`）、
 共享 http/https 监听（含 TLS 与未知主机拒绝）、socks5 越界目标被拒、三个访问者
 （stcp/sudp/xtcp）、面板四个接口、指标与 `/api/status` 数字一致、审计里同时出现
-`proxy_registered` 与 `visitor_accepted`。
+`proxy_registered` 与 `visitor_accepted`，以及**真实客户端进程的日志里两条到达路径各自的行**
+（一条流来自访问者、另一条来自公网端口，各一项）。
 
 **命令行（7 项）**：服务端与客户端的 `--version`（含协议版本）、两个二进制分别对随版本发布的
 `server.toml.example` 与 `client.toml.example` 做 `--check`、以及客户端 `--identity`
@@ -66,12 +67,12 @@
 
 | 服务端 | 客户端 | 结果 |
 |---|---|---|
-| linux/amd64 | linux/arm64 | **22/22** |
-| linux/arm64 | linux/amd64 | **22/22** |
-| linux/amd64 | windows/amd64 | **22/22** |
-| linux/arm64 | windows/amd64 | **22/22** |
-| windows/amd64 | linux/amd64 | **22/22** |
-| windows/amd64 | linux/arm64 | **22/22** |
+| linux/amd64 | linux/arm64 | **24/24** |
+| linux/arm64 | linux/amd64 | **24/24** |
+| linux/amd64 | windows/amd64 | **22/22**（上一轮，22 项那套） |
+| linux/arm64 | windows/amd64 | **22/22**（上一轮，22 项那套） |
+| windows/amd64 | linux/amd64 | **22/22**（上一轮，22 项那套） |
+| windows/amd64 | linux/arm64 | **22/22**（上一轮，22 项那套） |
 
 四层安全（`aes-256-gcm`、后量子 X25519+ML-KEM-768、TLS **带真实证书校验**、服务端
 `require_identity = true`）也按同样的方式跨系统验证过，每一对 6 项全过：
@@ -87,6 +88,9 @@
 这是同平台运行看不到的东西：证书校验走各平台自己的 TLS 实现、后量子与身份签名走各自的密码学
 实现、伪装走各自的套接字写入、加密走各自的字节序与对齐。
 
+隧道检查这一套从 22 项变成 24 项（新增的两项读客户端日志），表中涉及 `windows/amd64` 的行是
+**上一轮**跑出来的，本轮本机起不来 Wine（见 3.1），只重跑了上面两对 Linux 组合。
+
 ## 3. 模拟执行是怎么搭起来的
 
 两者都不需要 root：把 Ubuntu 的 `.deb` 用 `dpkg-deb -x` 解到私有目录即可。
@@ -100,6 +104,16 @@
   `Z:\...` 路径，且 TOML 里要用**字面量单引号**（双引号字符串里的 `\h` 是非法转义）。
 - **`go test -race`**：本机没有 C 编译器时只能靠 CI。现在可以按需解出 `gcc-14` 与
   `libc6-dev`（同样不需要 root），设置 `CC` 与 `CGO_ENABLED=1` 后本地即可跑 `-race`。
+
+### 3.1 一次没能跑起来的 Wine
+
+2026-09-23 这一轮里，Wine 没能启动：`unshare -rm` 在建好用户命名空间后写
+`/proc/self/uid_map` 被拒（`不允许的操作`），Python 里手工走到同一步也是同样的错误，因此
+`wine-inner.sh` 那个绑定挂载做不了，`wineserver` 随即报 `failed to load l_intl.nls` 并退出。
+这是**这台机器当次会话的限制**，不是 Wine 或本项目的缺陷：同一个封装在本文件此前记录的轮次里
+跑通过（66/66）。缺这一次的代价写在结论表里——`windows/amd64` 一栏仍是上一轮的数字，本轮新增的
+两项检查没有在 Windows 上执行过。它们读的是客户端进程写的日志，内容与平台无关，但"与平台无关"
+不是"跑过"。
 
 ## 4. 这套环境证明了什么、没证明什么
 

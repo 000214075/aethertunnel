@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aethertunnel/aethertunnel/pkg/dht"
 )
@@ -283,7 +284,8 @@ remote_port = 6022
 // TestAnHTTPProxyWithoutDomainsIsAcceptedWithAWarning covers the one way an http
 // proxy can be published without the client naming its hostname: the server
 // publishes it as <proxy-name>.<server.subdomain_host>. Only the server knows that
-// setting, so refusing the configuration here would make the setting unusable 鈥?// which is what used to happen.
+// setting, so refusing the configuration here would make the setting unusable —
+// which is what used to happen.
 func TestAnHTTPProxyWithoutDomainsIsAcceptedWithAWarning(t *testing.T) {
 	path := writeConfig(t, `
 [client]
@@ -575,6 +577,79 @@ enabled = true
 	}
 }
 
+// A third of a short announce TTL is zero seconds, and a zero interval means "the
+// caller chose nothing" to the discovery node, which would then use its own
+// 30-second default: longer than the TTL, so the announcement would lapse before
+// it was rewritten and the name would stop resolving while the server was running.
+func TestDHTRepublishIntervalStaysBelowAShortAnnounceTTL(t *testing.T) {
+	path := writeConfig(t, `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[dht]
+enabled = true
+announce_ttl_seconds = 2
+`)
+	cfg, err := LoadServer(path)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if cfg.DHT.RepublishSeconds != 1 {
+		t.Errorf("DHT.RepublishSeconds = %d, want 1 for a 2-second announce TTL",
+			cfg.DHT.RepublishSeconds)
+	}
+	if cfg.DHT.RepublishSeconds >= cfg.DHT.AnnounceTTLSeconds {
+		t.Fatalf("the derived republish interval %ds does not fit inside the announce TTL %ds",
+			cfg.DHT.RepublishSeconds, cfg.DHT.AnnounceTTLSeconds)
+	}
+	// The interval the node is actually given, not just the number in the file.
+	if interval := cfg.DHTSettings(discardConfigLogger()).RepublishInterval; interval >= time.Duration(cfg.DHT.AnnounceTTLSeconds)*time.Second {
+		t.Errorf("the node republishes every %s, which is not inside the %ds announce TTL",
+			interval, cfg.DHT.AnnounceTTLSeconds)
+	}
+}
+
+// Every [dht] duration is handed to the node. A key that is parsed and then dropped
+// would leave the node on its own defaults, and the default that matters is the
+// republish interval: too long an interval lets an announcement lapse while the server
+// that published it is still running.
+func TestDHTDurationsReachTheNode(t *testing.T) {
+	path := writeConfig(t, `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[dht]
+enabled = true
+ttl_seconds = 300
+announce_ttl_seconds = 120
+republish_seconds = 30
+lookup_timeout_seconds = 7
+`)
+	cfg, err := LoadServer(path)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	settings := cfg.DHTSettings(discardConfigLogger())
+	for _, tc := range []struct {
+		key  string
+		got  time.Duration
+		want time.Duration
+	}{
+		{"dht.ttl_seconds", settings.TTL, 300 * time.Second},
+		{"dht.announce_ttl_seconds", settings.AnnounceTTL, 120 * time.Second},
+		{"dht.republish_seconds", settings.RepublishInterval, 30 * time.Second},
+		{"dht.lookup_timeout_seconds", settings.LookupTimeout, 7 * time.Second},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s reached the node as %s, want %s", tc.key, tc.got, tc.want)
+		}
+	}
+}
+
 func TestDHTValidation(t *testing.T) {
 	base := `
 [server]
@@ -611,6 +686,11 @@ auth_token = "0123456789abcdef0123456789abcdef"
 			name: "dht ttl shorter than the announce ttl",
 			body: base + "\n[dht]\nenabled = true\nannounce_ttl_seconds = 120\nttl_seconds = 60\n",
 			want: "must not be shorter than dht.announce_ttl_seconds",
+		},
+		{
+			name: "announce ttl too short to republish within",
+			body: base + "\n[dht]\nenabled = true\nannounce_ttl_seconds = 1\n",
+			want: "dht.announce_ttl_seconds (1) is too short",
 		},
 		{
 			name: "advertise host with a port",

@@ -280,8 +280,8 @@ JSONL 格式写到标准输出（索引从 0 开始，越界或缺失时报错�
 | `node_id` | string | 空 | 两端 | 40 位十六进制标识；留空则随机生成，每次重启都会变 |
 | `namespace` | string | `aethertunnel` | 两端 | 键前缀，两套部署可以共用一个 DHT |
 | `ttl_seconds` | int | 3600 | 两端 | 记录在 DHT 中的存活时间，不能短于 `announce_ttl_seconds` |
-| `announce_ttl_seconds` | int | 90 | 两端 | 一条通告对读取端有效的时长 |
-| `republish_seconds` | int | `announce_ttl_seconds / 3` | 两端 | 重新发布已有通告的间隔，必须短于 `announce_ttl_seconds` |
+| `announce_ttl_seconds` | int | 90 | 两端 | 一条通告对读取端有效的时长，最少 2 秒：通告必须在失效前被重写，而间隔以整秒计 |
+| `republish_seconds` | int | `announce_ttl_seconds / 3`，至少 1 秒 | 两端 | 重新发布已有通告的间隔，必须短于 `announce_ttl_seconds` |
 | `lookup_timeout_seconds` | int | 5 | 两端 | 单次解析的时限 |
 | `advertise_host` | string | 空 | 服务端 | 通告里写给客户端的主机名，**不含端口**（端口按代理类型取）。留空取 `server.bind_addr`，广播地址会**警告** |
 | `discover` | string | 空 | 客户端 | `client.server_addr` 为空时要解析的代理名。**要用来找服务器地址时，这个名字必须是私有代理**（`stcp`/`sudp`/`xtcp`）：只有私有代理的记录写的是控制端口；`tcp`/`udp` 的记录写的是该代理的公网端口，`http`/`https` 是共享监听端口，那些是访问者到达代理的地方。客户端解析到公网类型的记录会给出警告 |

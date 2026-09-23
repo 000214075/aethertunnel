@@ -52,6 +52,42 @@ type testAgent struct {
 	// under dialMu.
 	dialMu     sync.Mutex
 	dialTarget func(target string) (net.Conn, error)
+
+	// requests records what the server said about each stream, oldest first. The
+	// control loop writes it and the test reads it, so it is guarded. A real client
+	// reads the same fields, including the one that says whether a visitor asked for
+	// the stream rather than a connection to the published port.
+	reqMu    sync.Mutex
+	requests []protocol.DataRequest
+}
+
+// recordRequest keeps one data request for the test to inspect.
+func (a *testAgent) recordRequest(request protocol.DataRequest) {
+	a.reqMu.Lock()
+	a.requests = append(a.requests, request)
+	a.reqMu.Unlock()
+}
+
+// requestFor returns the first data request recorded for a proxy name. It waits,
+// because the request is written by the agent's own control loop.
+func (a *testAgent) requestFor(t *testing.T, name string) protocol.DataRequest {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		a.reqMu.Lock()
+		for _, request := range a.requests {
+			if request.Proxy == name {
+				a.reqMu.Unlock()
+				return request
+			}
+		}
+		a.reqMu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatalf("the server never sent a data request for %q", name)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // setDialTarget installs the dial function a socks5 request goes through.
@@ -152,6 +188,7 @@ func (a *testAgent) loop(handlers map[string]dataHandler) {
 			if err := json.Unmarshal(msg.Payload, &request); err != nil {
 				continue
 			}
+			a.recordRequest(request)
 			if request.Target != "" {
 				// A socks5 request carries the address to reach, so it needs no
 				// entry in the handlers map: the agent dials the target itself.
@@ -517,6 +554,12 @@ func TestHTTPVHostRoutesByHostHeader(t *testing.T) {
 			t.Fatalf("%s: body %q, want %q", tc.host, body, tc.body)
 		}
 	}
+
+	// A connection to a published port is not a visitor, and the client is told so:
+	// the mark is what a client logs to separate the two ways a stream can arrive.
+	if request := agent.requestFor(t, "web"); request.Visitor {
+		t.Errorf("a stream on the published port arrived marked as a visitor: %+v", request)
+	}
 }
 
 // TestHTTPProxyTrafficIsRecorded covers the accounting of an http proxy: the
@@ -690,6 +733,13 @@ func TestSTCPRelayReachesThePrivateService(t *testing.T) {
 	}
 	if string(got) != string(payload) {
 		t.Fatalf("echo returned %q, want %q", got, payload)
+	}
+
+	// The client is told how the stream reached it. The two paths are otherwise
+	// indistinguishable there: a visitor asking for the proxy by name and a connection
+	// to the published port carry the same proxy name and the same kind of stream id.
+	if request := agent.requestFor(t, "private"); !request.Visitor {
+		t.Errorf("a stream from a visitor arrived without the visitor mark: %+v", request)
 	}
 }
 
