@@ -348,16 +348,8 @@ func (m *TunnelManager) Unregister(name string, session *Session, reason string)
 		}
 		// The name stays published while another member holds it, so the audit
 		// trail follows every member while the map entry and the DHT record follow
-		// the group.
-		if removed, empty := group.remove(member); removed {
-			clientID := ""
-			if member.Session != nil {
-				clientID = member.Session.ID
-			}
-			m.auditor.Record(AuditEvent{
-				Event: EventProxyRemoved, ClientID: clientID, Proxy: name,
-				Outcome: "removed", Detail: reason,
-			})
+		// the group. The record itself is written by the removal.
+		if removed, empty := group.remove(member, reason); removed {
 			if empty {
 				m.mu.Lock()
 				if current, still := m.groups[name]; still && current == group {

@@ -359,6 +359,44 @@ func TestAuditLogKeepsRecordingWhenTheFileIsClosedUnderneathIt(t *testing.T) {
 	}
 }
 
+// A record that arrives after the log is closed is a record the server meant to keep
+// and did not. Dropping it without a trace is the same failure the tests above cover
+// from the other side — a log that stops recording while everything looks healthy —
+// so the record is counted and reported, and the closed file stays closed.
+func TestARecordThatArrivesAfterTheLogIsClosedIsReported(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	logs := &strings.Builder{}
+	auditor, err := NewAuditor(true, path, 0, log.New(logs, "", 0))
+	if err != nil {
+		t.Fatalf("NewAuditor: %v", err)
+	}
+
+	auditor.Record(AuditEvent{Event: EventControlAccepted, Remote: "127.0.0.1:1", Outcome: "ok"})
+	if err := auditor.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	auditor.Record(AuditEvent{Event: EventClientGone, Remote: "127.0.0.1:1", Outcome: "closed"})
+
+	if got := auditor.Lost(); got != 1 {
+		t.Errorf("%d record(s) were reported lost, want the one that arrived late", got)
+	}
+	if text := logs.String(); !strings.Contains(text, "after the log was closed") {
+		t.Errorf("the late record was not reported: %q", text)
+	}
+	records, err := readAuditEvents(t, path)
+	if err != nil {
+		t.Fatalf("read the log: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("the log holds %d records, want the one written before the close", len(records))
+	}
+	// Closing again, and recording again, must stay no-ops rather than recreating a
+	// log after the server said it had stopped writing one.
+	if err := auditor.Close(); err != nil {
+		t.Errorf("closing a closed log: %v", err)
+	}
+}
+
 // TestAuditLogReportsRecordsItCannotWrite covers the other half: when the path cannot
 // be reopened, the record is counted as lost and the error is kept, which is what the
 // dashboard and the metric report. The server keeps running either way.

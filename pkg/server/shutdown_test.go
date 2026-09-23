@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -191,5 +192,128 @@ func TestANewStreamIsRefusedWhileDraining(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the shutdown did not finish after the last stream ended")
+	}
+}
+
+// A session's teardown is what records client_disconnected and proxy_removed, and
+// that teardown runs in the connection handler after Shutdown has returned. The
+// audit log therefore has to stay open until the handlers are done: closing it
+// inside Shutdown dropped both records, and a dropped record leaves no trace in the
+// file it should be in — the log of a stopped server simply showed the sessions
+// still connected.
+func TestAGracefulShutdownRecordsTheSessionEnd(t *testing.T) {
+	echo := startEcho(t)
+	cfg := testConfig(t, false)
+	cfg.Server.GracefulShutdownSecs = 1
+	cfg.Audit.Enabled = true
+	cfg.Audit.Path = filepath.Join(t.TempDir(), "audit.jsonl")
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	rs := startServer(t, cfg)
+
+	publicPort := freePort(t)
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"echo": streamHandler(echo)})
+	agent.register(protocol.ProxySpec{
+		Name: "echo", Type: protocol.ProxyTypeTCP, LocalAddr: echo, RemotePort: publicPort,
+	})
+	waitForListener(t, rs.server, "echo")
+
+	rs.server.Shutdown("audit test")
+
+	// The teardown that writes these records runs in the connection handler, which
+	// Shutdown does not wait for, so the file is read once the records are there
+	// rather than once Shutdown returns.
+	deadline := time.Now().Add(5 * time.Second)
+	events := map[string]int{}
+	for {
+		events = countAuditEvents(t, cfg.Audit.Path)
+		if events[EventClientGone] > 0 && events[EventProxyRemoved] > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	for _, want := range []string{EventControlAccepted, EventProxyRegistered, EventClientGone, EventProxyRemoved} {
+		if events[want] == 0 {
+			t.Errorf("the audit log of a graceful shutdown has no %s record; it holds %v", want, events)
+		}
+	}
+	// The session's end is recorded once: the handler tears the session down and the
+	// removal is what writes the record, so a second call site must not add another.
+	if events[EventProxyRemoved] != 1 {
+		t.Errorf("the member was recorded as removed %d times, want once", events[EventProxyRemoved])
+	}
+	if events[EventClientGone] != 1 {
+		t.Errorf("the session end was recorded %d times, want once", events[EventClientGone])
+	}
+}
+
+// countAuditEvents counts the events in an audit log by name. A log that is not
+// there yet counts as no events, because the writer may not have created it.
+func countAuditEvents(t *testing.T, path string) map[string]int {
+	t.Helper()
+
+	events := map[string]int{}
+	records, err := readAuditEvents(t, path)
+	if err != nil {
+		return events
+	}
+	for _, event := range records {
+		events[event.Event]++
+	}
+	return events
+}
+
+// A client that leaves on its own is the other way a member is removed, and it takes
+// the other path through the teardown: the control handler unregisters the proxies
+// before the session closes. The record has to be written once there too, with the
+// reason that path carries.
+func TestTheAuditTrailRecordsAMemberThatLeavesOnItsOwn(t *testing.T) {
+	echo := startEcho(t)
+	cfg := testConfig(t, false)
+	cfg.Audit.Enabled = true
+	cfg.Audit.Path = filepath.Join(t.TempDir(), "audit.jsonl")
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	rs := startServer(t, cfg)
+
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"echo": streamHandler(echo)})
+	agent.register(protocol.ProxySpec{
+		Name: "echo", Type: protocol.ProxyTypeTCP, LocalAddr: echo, RemotePort: freePort(t),
+	})
+	waitForListener(t, rs.server, "echo")
+
+	agent.client.close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	removals := 0
+	for {
+		removals = countAuditEvents(t, cfg.Audit.Path)[EventProxyRemoved]
+		if removals > 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if removals != 1 {
+		t.Fatalf("the member that left was recorded as removed %d times, want once", removals)
+	}
+	records, err := readAuditEvents(t, cfg.Audit.Path)
+	if err != nil {
+		t.Fatalf("read the audit log: %v", err)
+	}
+	for _, event := range records {
+		if event.Event != EventProxyRemoved {
+			continue
+		}
+		if event.Detail != "client disconnected" {
+			t.Errorf("the removal is recorded as %q, want the reason that path carries", event.Detail)
+		}
+		if event.Proxy != "echo" {
+			t.Errorf("the removal names proxy %q, want echo", event.Proxy)
+		}
 	}
 }

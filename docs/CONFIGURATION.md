@@ -238,6 +238,8 @@ inode，不重建的话路径到重启为止都是空的。仍然写不下去的
 `enabled`、`writable`、`path`、`max_bytes`、`bytes_written`、`write_failures`、
 `records_lost`、`recovered` 与 `last_error`，面板的"服务器状态"栏会显示这一行，
 有记录丢失时还会顶出一条横幅。服务器本身不受影响：审计写不进去不会让隧道停下来。
+日志关闭之后到达的记录同样计入 `records_lost`，并在服务器日志里写出是哪一条事件：
+关闭之后再写一条，说明有写记录的东西活过了关闭，不能就这么算了。
 
 每行一个 JSON 对象，字段为 `time`、`event`、`client_id`、`remote`、`proxy`、`detail`、`outcome`；
 `event` 取值为 `control_accepted`、`control_rejected`、`auth_failed`、`client_disconnected`、
@@ -248,7 +250,8 @@ inode，不重建的话路径到重启为止都是空的。仍然写不下去的
 `vpn_address_assigned`、`vpn_address_rejected`。
 
 `proxy_removed` 在成员真正被移除时记录：代理池里少一个成员也记录，`detail` 是移除原因，
-`proxy` 是代理名。`dashboard_action` 记录从面板发起的操作（目前是断开客户端）。
+`proxy` 是代理名。记录写在移除发生的那一处，所以客户端自己断开与**服务端关闭会话**（优雅关闭
+走的就是这条）两种情形都会写，且只写一条。`dashboard_action` 记录从面板发起的操作（目前是断开客户端）。
 `p2p_abandoned` 表示访客的控制连接消失了，既没有要求中继、也没有回报直连路径，
 服务器因此不知道那条尝试的结果，不会把它记成直连。
 

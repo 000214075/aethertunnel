@@ -422,6 +422,10 @@ func (s *Server) recordAuthSuccess(conn net.Conn) {
 // The wait is bounded by [server] graceful_shutdown_seconds. Without it a restart
 // or a deployment cut every transfer in flight the moment the signal arrived, which
 // for a long upload means starting over.
+//
+// Shutdown returns as soon as the clients have been disconnected; the handlers
+// that tear those sessions down are still writing their audit records and ledger
+// entries at that point, so the stores are closed with them, not here.
 func (s *Server) Shutdown(reason string) {
 	if s.closing.Swap(true) {
 		return
@@ -449,15 +453,18 @@ func (s *Server) Shutdown(reason string) {
 	}
 
 	s.sessions.CloseAll(reason)
-	if err := s.auditor.Close(); err != nil {
-		s.logger.Printf("closing the audit log: %v", err)
-	}
 }
 
-// closeStores releases the ledgers and directories that connection teardown writes
-// to. It is called once the last handler has returned, because a handler that is
-// still tearing down a session appends a ledger entry and withdraws the session's
-// proxies from the DHT. It is safe to call more than once.
+// closeStores releases everything that connection teardown writes to: the
+// bandwidth ledger, the DHT directory, the vpn router and the audit log. It is
+// called once the last handler has returned, because a handler that is still
+// tearing down a session appends a ledger entry and withdraws the session's
+// proxies from the DHT.
+//
+// The audit log belongs here rather than in Shutdown for the same reason: a
+// session's teardown is what records client_disconnected and proxy_removed, and a
+// record that arrives after the file is closed has nowhere to go. It is safe to
+// call more than once.
 func (s *Server) closeStores() {
 	if err := s.ledger.Close(); err != nil {
 		s.logger.Printf("closing the bandwidth ledger: %v", err)
@@ -467,6 +474,9 @@ func (s *Server) closeStores() {
 	}
 	if err := s.vpn.Close(); err != nil {
 		s.logger.Printf("closing the vpn interface: %v", err)
+	}
+	if err := s.auditor.Close(); err != nil {
+		s.logger.Printf("closing the audit log: %v", err)
 	}
 }
 

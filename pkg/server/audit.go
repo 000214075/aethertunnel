@@ -217,7 +217,10 @@ func (a *Auditor) Summary() map[string]any {
 }
 
 // Record appends one event. A closed auditor ignores it, which is what keeps a
-// late record from recreating a log after shutdown.
+// late record from recreating a log after shutdown — but it does not ignore it in
+// silence: a record that arrives after the log is closed is a record the server
+// meant to keep and did not, which is exactly the kind of loss the counters and
+// the log line exist to make visible.
 func (a *Auditor) Record(event AuditEvent) {
 	if a == nil || !a.configured {
 		return
@@ -230,6 +233,11 @@ func (a *Auditor) Record(event AuditEvent) {
 	defer a.mu.Unlock()
 
 	if a.closed {
+		a.lost++
+		if a.logger != nil {
+			a.logger.Printf("audit: the %s record arrived after the log was closed; it was not written",
+				event.Event)
+		}
 		return
 	}
 	// A file that could not be reopened on an earlier record is retried here, so

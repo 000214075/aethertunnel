@@ -396,6 +396,44 @@
   "本轮未重跑"。
 - `[dht]` 的两个键在 `docs/CONFIGURATION.md` 的说明里补上"最少 2 秒"与"至少 1 秒"。
 
+### 修复
+
+- **优雅关闭时审计日志丢掉"会话结束"的两条记录**。`client_disconnected` 与 `proxy_removed` 是
+  **连接处理器**在拆除会话时写的，而 `Shutdown` 在 `sessions.CloseAll` 之后立刻关闭了审计日志：
+  `Record` 对已关闭的日志直接返回，于是这两条记录既没进文件，也没有留下任何痕迹——审计日志
+  停下来是"没有别的痕迹"的那种失败，而这个包存在的理由正是不要这样。
+  - 实测（真实进程：一个客户端在线、一条流在传，对服务端发 SIGTERM）：修之前 `audit.jsonl`
+    只有 `control_accepted` 与 `proxy_registered` 两行，日志里也没有下线记录；修之后多出
+    `proxy_removed`（`detail = server shutting down`）与 `client_disconnected`
+    （`detail = connected for 2s`）。
+  - 审计日志改为在 `closeStores` 里关闭：那正是"最后一个处理器已经返回"的地方（账本与 DHT
+    节点本来就在那里收尾），而 `Shutdown` 的注释现在写明它不等处理器。
+  - **关闭之后到达的记录不再静默丢弃**：计入 `records_lost` 并在服务器日志里写出是哪一条事件
+    （`audit: the client_disconnected record arrived after the log was closed`）。仍有写记录
+    的东西活过关闭时，这条线索就是唯一的提示；面板与 `/api/status` 的 `audit` 段也照常报告。
+  - 单测两项：`TestAGracefulShutdownRecordsTheSessionEnd`（关闭一个在线会话，日志里必须同时
+    出现这四条事件、且各只有一条）、`TestARecordThatArrivesAfterTheLogIsClosedIsReported`
+    （关闭后再写一条：计入丢失、写进日志、文件不被重建）。把 `auditor.Close()` 挪回 `Shutdown`
+    后，第一项按预期失败（`has no client_disconnected record; it holds map[control_accepted:1
+    proxy_registered:1 proxy_removed:1]`）；把晚到记录改回静默返回后，第二项按预期失败。
+- **成员被移除时只有一条路径写审计记录**。服务端自己关闭会话时——**优雅关闭走的就是这条**——
+  `Session.Close` 直接把成员从池里摘掉，而写 `proxy_removed` 的代码在 `Unregister` 里，那是
+  控制处理器拆除会话时走的另一条路径；此时池里已经没有这个成员，于是记录被漏掉。文档写着
+  "代理池里少一个成员也记录"，`Unregister` 的注释写着"审计线索跟着每个成员走"，而事实上
+  服务端主动关掉的会话一条都不留。
+  - 现在记录写在**真正移除成员的那一处**（`ProxyGroup.remove`），并且带上移除原因：客户端
+    自己断开时是 `client disconnected`，服务端关闭会话时是关闭原因（例如 `server shutting
+    down`）。两条路径都覆盖，且只写一次。
+  - 单测一项：`TestTheAuditTrailRecordsAMemberThatLeavesOnItsOwn`（客户端自己断开：日志里
+    恰好一条 `proxy_removed`，`detail` 是那条路径的原因）。把记录挪回 `Unregister` 后，
+    `TestAGracefulShutdownRecordsTheSessionEnd` 按预期失败（`has no proxy_removed record`），
+    而这一项仍然通过——两个方向各由一项盯住。
+
+### 文档
+
+- `docs/CONFIGURATION.md` 的 `[audit]` 段补两句：`proxy_removed` 写在移除发生的那一处、服务端
+  关闭会话时同样会写；关闭之后到达的记录计入 `records_lost` 并写进服务器日志。
+
 ---
 
 ## [3.7.3] — 2026-09-21

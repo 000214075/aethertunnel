@@ -268,8 +268,11 @@ func (s *Session) Close(reason string) {
 		}
 		for _, t := range tunnels {
 			// Removing the member closes the endpoint only when it was the last
-			// one, so a pool survives the loss of one client.
-			t.group.remove(t)
+			// one, so a pool survives the loss of one client. A session that is
+			// closed before its control handler tears it down — which is what a
+			// shutdown does — is where its members actually leave, so the removal
+			// carries the reason this session was closed for.
+			t.group.remove(t, reason)
 		}
 
 		s.vpnMu.Lock()

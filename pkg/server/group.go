@@ -374,7 +374,13 @@ func (g *ProxyGroup) add(session *Session, spec protocol.ProxySpec) (*Tunnel, er
 // is left: a pool that loses one of its members keeps the name published, and the
 // caller has to tell the two cases apart to know whether the endpoint and the DHT
 // record still belong to somebody.
-func (g *ProxyGroup) remove(member *Tunnel) (removed, empty bool) {
+//
+// The audit record is written here rather than at the call sites because a member
+// leaves through whichever of them runs first: the control handler tearing a
+// session down, or the session closing itself while the server shuts down. Both
+// end the same registration, and only the removal knows whether there was anything
+// to remove.
+func (g *ProxyGroup) remove(member *Tunnel, reason string) (removed, empty bool) {
 	member.closed.Store(true)
 
 	g.mu.Lock()
@@ -388,6 +394,17 @@ func (g *ProxyGroup) remove(member *Tunnel) (removed, empty bool) {
 	}
 	empty = len(g.members) == 0
 	g.mu.Unlock()
+
+	if removed {
+		clientID := ""
+		if member.Session != nil {
+			clientID = member.Session.ID
+		}
+		g.manager.auditor.Record(AuditEvent{
+			Event: EventProxyRemoved, ClientID: clientID, Proxy: g.Name,
+			Outcome: "removed", Detail: reason,
+		})
+	}
 
 	if empty {
 		g.close("no member is left")
