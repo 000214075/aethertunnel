@@ -24,6 +24,7 @@ import (
 	"github.com/aethertunnel/aethertunnel/pkg/dht"
 	"github.com/aethertunnel/aethertunnel/pkg/discovery"
 	"github.com/aethertunnel/aethertunnel/pkg/obfs"
+	"github.com/aethertunnel/aethertunnel/pkg/protocol"
 	"github.com/aethertunnel/aethertunnel/pkg/socks"
 	"github.com/aethertunnel/aethertunnel/pkg/vpn"
 )
@@ -941,6 +942,16 @@ func (c *Config) Validate(role string) error {
 
 	if c.Obfuscation.Enabled && c.Obfuscation.PadTo < 0 {
 		problems = append(problems, "obfuscation.pad_to cannot be negative")
+	}
+	// Padding happens before the frame is written, and a frame larger than the limit is
+	// refused by its own sender: a pad_to above the limit therefore refuses every
+	// frame, so a client configured with one never gets as far as authenticating.
+	// The two ends do not have to agree on pad_to (the receiver unpads from the frame
+	// flag), but both are bound by the same frame limit.
+	if c.Obfuscation.PadTo > protocol.DefaultMaxPayload {
+		problems = append(problems, fmt.Sprintf(
+			"obfuscation.pad_to must not exceed %d (the frame limit), got %d: every frame would be refused by its sender",
+			protocol.DefaultMaxPayload, c.Obfuscation.PadTo))
 	}
 	if c.Obfuscation.JitterMillis < 0 {
 		problems = append(problems, "obfuscation.jitter_millis cannot be negative")

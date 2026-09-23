@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aethertunnel/aethertunnel/pkg/dht"
+	"github.com/aethertunnel/aethertunnel/pkg/protocol"
 )
 
 // discardConfigLogger silences the diagnostics DHTSettings emits.
@@ -350,6 +352,32 @@ auth_token = "0123456789abcdef0123456789abcdef"
 				t.Fatalf("error %q does not contain %q", err.Error(), tc.want)
 			}
 		})
+	}
+}
+
+// Padding happens before the frame is written and a frame over the limit is refused by
+// its own sender, so a pad_to above the limit refuses every frame: measured with real
+// processes, a client configured with pad_to = 1500000 never sent its authentication
+// request ("refusing to send 1500000 byte frame (limit 1048576)") and retried forever.
+func TestAPaddingTargetAboveTheFrameLimitIsRejected(t *testing.T) {
+	body := `
+[client]
+server_addr = "127.0.0.1:7001"
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[obfuscation]
+enabled = true
+pad_to = %d
+`
+	_, err := LoadClient(writeConfig(t, fmt.Sprintf(body, protocol.DefaultMaxPayload+1)))
+	if err == nil || !strings.Contains(err.Error(), "obfuscation.pad_to must not exceed") {
+		t.Fatalf("expected a pad_to limit error, got %v", err)
+	}
+
+	// The limit itself is usable: a payload below it pads up to exactly the limit, which
+	// the frame check accepts (it refuses only what is larger).
+	if _, err := LoadClient(writeConfig(t, fmt.Sprintf(body, protocol.DefaultMaxPayload))); err != nil {
+		t.Fatalf("pad_to at the frame limit was refused: %v", err)
 	}
 }
 

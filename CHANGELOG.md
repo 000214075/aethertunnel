@@ -461,6 +461,25 @@
   `max_reconnect_seconds` 注明不得小于 `reconnect_seconds`；`rate_limit_burst` 注明负值此前会
   被静默当作 1（`dht.lookup_timeout_seconds` 的负值此前会被 discovery 静默换成 5 秒默认值）。
 
+### 修复
+
+- **`obfuscation.pad_to` 超过帧上限时，隧道一条帧也发不出去**。补齐发生在写出之前，而发送端自己
+  会拒收超过帧上限（1 MiB）的帧，于是 `pad_to = 1500000` 这样的配置把**每一条**帧都挡在门外：
+  实测客户端连认证请求都发不出，日志每一轮都是
+  `send auth request: protocol: refusing to send 1500000 byte frame (limit 1048576)`，服务端那一侧
+  只看到 `handshake failed: EOF`，而 `--check` 当时回答 `is valid`。
+  - 现在 `pad_to` 超过 `protocol.DefaultMaxPayload` 直接拒绝，报出上限与实际值。上限本身仍可用：
+    比它小的负载会补齐到正好等于上限，而帧检查只拒收"更大"的帧，这一点由测试里的第二个用例
+    钉住（`pad_to` 取到上限仍然加载成功）。
+  - 单测一项：`TestAPaddingTargetAboveTheFrameLimitIsRejected`。把这条校验改成永假后，它按预期
+    失败（`expected a pad_to limit error, got <nil>`）。
+  - 顺带说明：`pkg/config` 因此开始依赖 `pkg/protocol`（只为这个常量），依赖方向没有环——
+    `pkg/protocol` 只依赖 `pkg/crypto`。
+
+### 文档
+
+- `docs/CONFIGURATION.md` 的 `pad_to` 一行补上上限与原因（两端不必一致，但都受同一个帧上限约束）。
+
 ---
 
 ## [3.7.3] — 2026-09-21
