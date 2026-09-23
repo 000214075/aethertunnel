@@ -960,6 +960,44 @@ func (c *Config) Validate(role string) error {
 	if c.Server.GracefulShutdownSecs < 0 {
 		problems = append(problems, "server.graceful_shutdown_seconds cannot be negative")
 	}
+	// A negative duration is not a smaller setting, and the program does not treat it
+	// as one. -1 second of dial timeout is an immediate timeout, so a client
+	// configured with it never reaches its server; a negative reconnect interval
+	// makes every wait fall back to one second, which turns the backoff into a retry
+	// loop; the limits on the server side (heartbeat window, stream idle time,
+	// handshake deadline, connection cap) each stop being enforced, silently and
+	// invisibly, because every use site guards with "if the value is positive".
+	// Zero keeps its documented meaning everywhere: it selects the default.
+	for _, key := range []struct {
+		name  string
+		value int
+	}{
+		{"server.max_connections", c.Server.MaxConnections},
+		{"server.handshake_timeout_seconds", c.Server.HandshakeTimeoutSecs},
+		{"server.read_timeout_seconds", c.Server.ReadTimeoutSecs},
+		{"server.heartbeat_seconds", c.Server.HeartbeatSeconds},
+		{"server.dial_timeout_seconds", c.Server.DialTimeoutSecs},
+		{"server.rate_limit_burst", c.Server.RateLimitBurst},
+		{"client.reconnect_seconds", c.Client.ReconnectSeconds},
+		{"client.max_reconnect_seconds", c.Client.MaxReconnectSeconds},
+		{"client.heartbeat_seconds", c.Client.HeartbeatSeconds},
+		{"client.dial_timeout_seconds", c.Client.DialTimeoutSecs},
+		{"client.idle_timeout_seconds", c.Client.IdleTimeoutSecs},
+		{"dht.lookup_timeout_seconds", c.DHT.LookupTimeoutSeconds},
+	} {
+		if key.value < 0 {
+			problems = append(problems, fmt.Sprintf("%s cannot be negative, got %d", key.name, key.value))
+		}
+	}
+	// A ceiling below the starting value would be exceeded by the first wait, so the
+	// backoff would begin above the limit that is supposed to bound it.
+	if c.Client.ReconnectSeconds > 0 && c.Client.MaxReconnectSeconds > 0 &&
+		c.Client.MaxReconnectSeconds < c.Client.ReconnectSeconds {
+		problems = append(problems, fmt.Sprintf(
+			"client.max_reconnect_seconds (%d) is smaller than client.reconnect_seconds (%d), "+
+				"so the first wait would already exceed the ceiling",
+			c.Client.MaxReconnectSeconds, c.Client.ReconnectSeconds))
+	}
 	// An upper bound keeps a typo from making the server rename files in a loop and
 	// from filling a directory with generations nobody asked for. Zero is the
 	// default of one, like the other keys here.

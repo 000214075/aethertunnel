@@ -434,6 +434,33 @@
 - `docs/CONFIGURATION.md` 的 `[audit]` 段补两句：`proxy_removed` 写在移除发生的那一处、服务端
   关闭会话时同样会写；关闭之后到达的记录计入 `records_lost` 并写进服务器日志。
 
+### 修复
+
+- **负数的时长与计数不再是"有效配置"**。`--check` 此前对 `reconnect_seconds = -1`、
+  `dial_timeout_seconds = -1`、`heartbeat_seconds = -1`、`max_connections = -5` 这类值回答
+  `is valid`，而它们并不是"更小的设置"——程序对它们的处理是另一个意思：
+  - **客户端 `dial_timeout_seconds` 为负等于永远连不上**：`net.DialTimeout` 拿到负的时限立即
+    超时。实测（真实进程，服务端一切正常）客户端每一轮都报
+    `session ended: dial 127.0.0.1:17451: dial tcp ...: i/o timeout`，一次也没有连上。
+  - **`reconnect_seconds` 为负等于每秒重试一次**：抖动函数对非正值回退到 1 秒，而退避再也不
+    增长（负数翻倍仍是负数，永远到不了上限）。实测日志每行都是 `reconnecting in 1s`，一直不停；
+    `max_reconnect_seconds` 为负同理。
+  - **服务端一侧是"这条限制不再执行"**：心跳窗口（连续三次未收到即断开）、流的空闲上限、
+    握手时限、连接数上限都在"值大于 0 才设置"的判断里，负值等于把这条限制悄悄关掉；
+    `rate_limit_burst` 更直接，被 `<= 0` 兜成 1。启动横幅还会照原样打印 `heartbeat: -1s`，
+    看上去像是设置成功了。
+  - 现在这些键取负值直接拒绝，`max_reconnect_seconds` 小于 `reconnect_seconds` 也拒绝——第一个
+    等待就会超过它自己的上限。**0 的语义没有变**：仍然是"取文档里的默认值"。
+  - 单测两项：`TestNegativeDurationsAndCountsAreRejected`（12 个键 + 上限与起始值的关系，各一
+    例）与 `TestZeroDurationsAndCountsStillSelectTheDefaults`（同名的 0 仍然得到默认值，这条
+    防止把规则写成"必须为正"）。把新增的校验删掉后，前面那项的每个用例都按预期失败。
+
+### 文档
+
+- `docs/CONFIGURATION.md`：`[server]`、`[client]` 与 `[dht]` 的时长/计数各行补上"负数被拒绝"，
+  `max_reconnect_seconds` 注明不得小于 `reconnect_seconds`；`rate_limit_burst` 注明负值此前会
+  被静默当作 1（`dht.lookup_timeout_seconds` 的负值此前会被 discovery 静默换成 5 秒默认值）。
+
 ---
 
 ## [3.7.3] — 2026-09-21

@@ -281,6 +281,145 @@ remote_port = 6022
 	}
 }
 
+// A negative duration or count is not a smaller setting, and the program does not
+// treat it as one: -1 second of dial timeout is an immediate timeout, so a client
+// configured with it never reaches its server, and a negative reconnect interval
+// collapses the backoff into a one-second retry loop. On the server side each of
+// these keys stops being enforced the moment it is negative, because every use site
+// guards with "if the value is positive". All of them used to load as "valid".
+func TestNegativeDurationsAndCountsAreRejected(t *testing.T) {
+	serverBase := `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+`
+	clientBase := `
+[client]
+server_addr = "127.0.0.1:7001"
+auth_token = "0123456789abcdef0123456789abcdef"
+`
+	cases := []struct {
+		name   string
+		body   string
+		client bool
+		want   string
+	}{
+		{"max_connections", serverBase + "max_connections = -5\n",
+			false, "server.max_connections cannot be negative"},
+		{"handshake_timeout_seconds", serverBase + "handshake_timeout_seconds = -1\n",
+			false, "server.handshake_timeout_seconds cannot be negative"},
+		{"read_timeout_seconds", serverBase + "read_timeout_seconds = -1\n",
+			false, "server.read_timeout_seconds cannot be negative"},
+		{"server heartbeat_seconds", serverBase + "heartbeat_seconds = -1\n",
+			false, "server.heartbeat_seconds cannot be negative"},
+		{"server dial_timeout_seconds", serverBase + "dial_timeout_seconds = -1\n",
+			false, "server.dial_timeout_seconds cannot be negative"},
+		{"rate_limit_burst", serverBase + "rate_limit_burst = -1\n",
+			false, "server.rate_limit_burst cannot be negative"},
+		{"reconnect_seconds", clientBase + "reconnect_seconds = -1\n",
+			true, "client.reconnect_seconds cannot be negative"},
+		{"max_reconnect_seconds", clientBase + "max_reconnect_seconds = -1\n",
+			true, "client.max_reconnect_seconds cannot be negative"},
+		{"client heartbeat_seconds", clientBase + "heartbeat_seconds = -1\n",
+			true, "client.heartbeat_seconds cannot be negative"},
+		{"client dial_timeout_seconds", clientBase + "dial_timeout_seconds = -1\n",
+			true, "client.dial_timeout_seconds cannot be negative"},
+		{"idle_timeout_seconds", clientBase + "idle_timeout_seconds = -1\n",
+			true, "client.idle_timeout_seconds cannot be negative"},
+		{"dht lookup_timeout_seconds", serverBase + "[dht]\nenabled = true\nlookup_timeout_seconds = -1\n",
+			false, "dht.lookup_timeout_seconds cannot be negative"},
+		{"a ceiling below the starting value",
+			clientBase + "reconnect_seconds = 30\nmax_reconnect_seconds = 5\n",
+			true, "is smaller than client.reconnect_seconds"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeConfig(t, tc.body)
+			var err error
+			if tc.client {
+				_, err = LoadClient(path)
+			} else {
+				_, err = LoadServer(path)
+			}
+			if err == nil {
+				t.Fatalf("expected an error containing %q, got nil", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+// The rule is "not negative", not "must be positive": zero keeps selecting the
+// documented default for every one of these keys.
+func TestZeroDurationsAndCountsStillSelectTheDefaults(t *testing.T) {
+	path := writeConfig(t, `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+max_connections = 0
+handshake_timeout_seconds = 0
+read_timeout_seconds = 0
+heartbeat_seconds = 0
+dial_timeout_seconds = 0
+rate_limit_burst = 0
+`)
+	cfg, err := LoadServer(path)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	for _, tc := range []struct {
+		key  string
+		got  int
+		want int
+	}{
+		{"server.max_connections", cfg.Server.MaxConnections, 512},
+		{"server.handshake_timeout_seconds", cfg.Server.HandshakeTimeoutSecs, 10},
+		{"server.read_timeout_seconds", cfg.Server.ReadTimeoutSecs, 120},
+		{"server.heartbeat_seconds", cfg.Server.HeartbeatSeconds, 30},
+		{"server.dial_timeout_seconds", cfg.Server.DialTimeoutSecs, 10},
+		{"server.rate_limit_burst", cfg.Server.RateLimitBurst, 20},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %d with a zero in the file, want the default %d", tc.key, tc.got, tc.want)
+		}
+	}
+
+	clientPath := writeConfig(t, `
+[client]
+server_addr = "127.0.0.1:7001"
+auth_token = "0123456789abcdef0123456789abcdef"
+reconnect_seconds = 0
+max_reconnect_seconds = 0
+heartbeat_seconds = 0
+dial_timeout_seconds = 0
+idle_timeout_seconds = 0
+`)
+	client, err := LoadClient(clientPath)
+	if err != nil {
+		t.Fatalf("LoadClient: %v", err)
+	}
+	for _, tc := range []struct {
+		key  string
+		got  int
+		want int
+	}{
+		{"client.reconnect_seconds", client.Client.ReconnectSeconds, 3},
+		{"client.max_reconnect_seconds", client.Client.MaxReconnectSeconds, 60},
+		{"client.heartbeat_seconds", client.Client.HeartbeatSeconds, 30},
+		{"client.dial_timeout_seconds", client.Client.DialTimeoutSecs, 10},
+		{"client.idle_timeout_seconds", client.Client.IdleTimeoutSecs, 300},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %d with a zero in the file, want the default %d", tc.key, tc.got, tc.want)
+		}
+	}
+}
+
 // TestAnHTTPProxyWithoutDomainsIsAcceptedWithAWarning covers the one way an http
 // proxy can be published without the client naming its hostname: the server
 // publishes it as <proxy-name>.<server.subdomain_host>. Only the server knows that

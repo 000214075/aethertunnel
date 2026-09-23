@@ -20,16 +20,16 @@ aethertunnel-client --config client.toml --check
 | `bind_addr` | string | 必填 | 监听地址。`0.0.0.0` 表示所有网卡 |
 | `bind_port` | int | 必填 | 监听端口（1–65535）。控制连接与数据连接共用 |
 | `auth_token` | string | 必填 | 与客户端共享的密钥。少于 16 位或形如占位符会**警告** |
-| `max_connections` | int | 512 | 同时在线客户端上限，超出的会被明确拒绝 |
-| `handshake_timeout_seconds` | int | 10 | 连接建立后必须在此时限内发出第一帧 |
-| `read_timeout_seconds` | int | 120 | 隧道流的空闲上限，同时也是控制连接的空闲判据 |
-| `heartbeat_seconds` | int | 30 | 期望客户端的心跳间隔；连续 3 次未收到即断开 |
-| `dial_timeout_seconds` | int | 10 | 访问者到来后，等待客户端回拨数据连接的时限 |
+| `max_connections` | int | 512 | 同时在线客户端上限，超出的会被明确拒绝。负数被拒绝 |
+| `handshake_timeout_seconds` | int | 10 | 连接建立后必须在此时限内发出第一帧。负数被拒绝 |
+| `read_timeout_seconds` | int | 120 | 隧道流的空闲上限，同时也是控制连接的空闲判据。负数被拒绝 |
+| `heartbeat_seconds` | int | 30 | 期望客户端的心跳间隔；连续 3 次未收到即断开。负数被拒绝 |
+| `dial_timeout_seconds` | int | 10 | 访问者到来后，等待客户端回拨数据连接的时限。负数被拒绝 |
 | `graceful_shutdown_seconds` | int | 5 | 收到停止信号后，先停止接受新连接，并给正在传输的流最多这么多秒完成，之后才断开客户端。0 视为默认值，负数被拒绝 |
 | `allow_cidrs` | []string | 空 | CIDR 白名单。非空时只有匹配的来源可以连接 |
 | `deny_cidrs` | []string | 空 | CIDR 黑名单，优先级高于白名单 |
 | `rate_limit_per_second` | float | 0 | 按来源地址的连接速率（每秒），0 表示关闭 |
-| `rate_limit_burst` | int | 20 | 令牌桶容量 |
+| `rate_limit_burst` | int | 20 | 令牌桶容量。负数被拒绝（此前会静默当作 1） |
 | `ban_after_failures` | int | 0 | 同一来源认证失败多少次后封禁该来源，0 表示关闭 |
 | `ban_seconds` | int | 300 | 首次封禁的时长；再次封禁时按倍数增长 |
 | `ban_max_seconds` | int | 3600 | 封禁时长的上限 |
@@ -48,11 +48,11 @@ aethertunnel-client --config client.toml --check
 |---|---|---|---|
 | `server_addr` | string | 条件必填 | `host:port`。为空时必须设置 `[dht] discover`，否则报错 |
 | `auth_token` | string | 必填 | 与服务端一致 |
-| `reconnect_seconds` | int | 3 | 重连退避的起始值 |
-| `max_reconnect_seconds` | int | 60 | 退避上限；退避带 ±20% 抖动 |
-| `heartbeat_seconds` | int | 30 | 心跳间隔的**回退值**：服务端在会话建立时把自己的 `[server].heartbeat_seconds` 下发下来，客户端按它发心跳（服务端才是"连续 3 次未收到即断开"的一方），因此正常会话里本项不生效；服务端没有下发时（旧版或第三方服务端）才用它。与下发的值不同时会在连接时报告一行 |
-| `dial_timeout_seconds` | int | 10 | 连接服务端、等待 `DataOpenAck`、连接本地服务的超时 |
-| `idle_timeout_seconds` | int | 300 | 单条隧道流的空闲上限：超过这段时间没有字节流动就断开。适用于服务端转发的流、访客的本地监听连接，以及打洞后的直连路径 |
+| `reconnect_seconds` | int | 3 | 重连退避的起始值。负数被拒绝 |
+| `max_reconnect_seconds` | int | 60 | 退避上限，不得小于 `reconnect_seconds`；退避带 ±20% 抖动。负数被拒绝 |
+| `heartbeat_seconds` | int | 30 | 心跳间隔的**回退值**：服务端在会话建立时把自己的 `[server].heartbeat_seconds` 下发下来，客户端按它发心跳（服务端才是"连续 3 次未收到即断开"的一方），因此正常会话里本项不生效；服务端没有下发时（旧版或第三方服务端）才用它。与下发的值不同时会在连接时报告一行。负数被拒绝 |
+| `dial_timeout_seconds` | int | 10 | 连接服务端、等待 `DataOpenAck`、连接本地服务的超时。负数被拒绝（此前负值等于"立即超时"，客户端永远连不上） |
+| `idle_timeout_seconds` | int | 300 | 单条隧道流的空闲上限：超过这段时间没有字节流动就断开。适用于服务端转发的流、访客的本地监听连接，以及打洞后的直连路径。负数被拒绝 |
 
 ## `[[proxies]]`（客户端，可重复）
 
@@ -285,7 +285,7 @@ JSONL 格式写到标准输出（索引从 0 开始，越界或缺失时报错�
 | `ttl_seconds` | int | 3600 | 两端 | 记录在 DHT 中的存活时间，不能短于 `announce_ttl_seconds` |
 | `announce_ttl_seconds` | int | 90 | 两端 | 一条通告对读取端有效的时长，最少 2 秒：通告必须在失效前被重写，而间隔以整秒计 |
 | `republish_seconds` | int | `announce_ttl_seconds / 3`，至少 1 秒 | 两端 | 重新发布已有通告的间隔，必须短于 `announce_ttl_seconds` |
-| `lookup_timeout_seconds` | int | 5 | 两端 | 单次解析的时限 |
+| `lookup_timeout_seconds` | int | 5 | 两端 | 单次解析的时限。负数被拒绝 |
 | `advertise_host` | string | 空 | 服务端 | 通告里写给客户端的主机名，**不含端口**（端口按代理类型取）。留空取 `server.bind_addr`，广播地址会**警告** |
 | `discover` | string | 空 | 客户端 | `client.server_addr` 为空时要解析的代理名。**要用来找服务器地址时，这个名字必须是私有代理**（`stcp`/`sudp`/`xtcp`）：只有私有代理的记录写的是控制端口；`tcp`/`udp` 的记录写的是该代理的公网端口，`http`/`https` 是共享监听端口，那些是访问者到达代理的地方。客户端解析到公网类型的记录会给出警告 |
 | `signing_key_file` | string | 空 | 服务端 | 通告签名用的 Ed25519 种子，首次使用时生成。留空则发布未签名通告并**警告** |
