@@ -7,14 +7,14 @@
 
 | 发布目标 | 本机（Linux 工作站） | CI | 功能检查 |
 |---|---|---|---|
-| linux/amd64 | 原生执行 | `ubuntu-latest`：gofmt、vet、单测、`-race`、真实 tun 设备的三层隧道、构建、示例配置、版本 | **46/46** |
-| linux/arm64 | qemu-aarch64（arm64 指令集） | 只做交叉编译（CI 里还没有 arm64 的执行作业） | **46/46** |
-| windows/amd64 | Wine 10.0 执行真实 PE | `windows-latest`：vet、单测、构建、示例配置、版本、`scripts/smoke-test.ps1`（101 项） | **45/45** |
+| linux/amd64 | 原生执行 | `ubuntu-latest`：gofmt、vet、单测、`-race`、真实 tun 设备的三层隧道、构建、示例配置、版本 | **64/64** |
+| linux/arm64 | qemu-aarch64（arm64 指令集） | 只做交叉编译（CI 里还没有 arm64 的执行作业） | **64/64** |
+| windows/amd64 | Wine 10.0 执行真实 PE | `windows-latest`：vet、单测、构建、示例配置、版本、`scripts/smoke-test.ps1`（101 项） | **63/63** |
 | darwin/arm64 | **无法执行** | `macos-latest`（arm64）：vet、单测、构建、示例配置、版本 | 仅 CI |
 | darwin/amd64 | **无法执行** | 仅交叉编译（`macos-latest` 是 arm64 运行器） | 仅静态核对 |
 | windows/arm64 | **无法执行** | 仅交叉编译 | 仅静态核对 |
 
-功能检查是同一套 46 项，分四组，都在每个平台上真跑：
+功能检查是同一套 64 项，分五组，都在每个平台上真跑：
 
 **隧道（22 项）**：八种代理类型（`tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`）、
 共享 http/https 监听（含 TLS 与未知主机拒绝）、socks5 越界目标被拒、三个访问者
@@ -25,14 +25,19 @@
 `server.toml.example` 与 `client.toml.example` 做 `--check`、以及客户端 `--identity`
 （生成密钥文件并打印公钥，且不打印任何其它内容）。
 
+**命名与目标（5 项）**：`domains` 的 `*.通配` 对单级与多级子域都生效、对裸后缀不生效；
+`allow_targets` 里放 CIDR 时，目标写成**域名**会被先解析再匹配（`localhost` 被 `127.0.0.1/32`
+允许），解析到范围外的名字仍被拒。
+
 **发现与私有认证（8 项）**：DHT 名称解析（`--dht-lookup` 把 `tcp` 名解析到它的公网端口、
 `--discover` 把私有名解析到控制端口）、一个 `server_addr` 留空的客户端靠 `[dht] discover` 解析出
 服务器并真实转发一次数据、把公网类型的名字当作服务器地址会被报告为错误、nizk 访问者（知道密钥
 的能过、密钥错误的被拒）、以及没有 `domains` 的 http 代理以 `<名字>.<subdomain_host>` 可达。
 
-**四层安全栈（8 项）**：加密（`xchacha20-poly1305` 与 `post_quantum = true`）、TLS 控制口、
-`disguise = "tls-record"` 伪装、Ed25519 身份认证（服务端只允许客户端的那个公钥）同时打开，
-真实转发一次数据，并逐条断言每一层自己的日志行——某一层被静默关掉就会失败。
+**四层安全栈（两遍，各 8-9 项）**：加密、TLS 控制口、`disguise = "tls-record"` 伪装、Ed25519
+身份认证同时打开，真实转发一次数据，并逐条断言每一层自己的日志行——某一层被静默关掉就会失败。
+文档里的**两种算法各跑一遍**：`xchacha20-poly1305` 一遍；`aes-256-gcm` 那一遍同时改用
+`ca_file`（**真实证书校验**，而不是 `insecure_skip_verify`）并要求服务端 `require_identity = true`。
 
 ## 2. 三个无法在 Linux 上执行的目标
 
@@ -48,6 +53,34 @@
   内核拒绝（`register` 写入返回 EIO，即使该命名空间已挂载 binfmt_misc）。因此这个目标**只被
   交叉编译过**，要执行它需要一台 ARM64 Windows 机器，或用完整的系统级虚拟化装上 Windows on
   ARM。CI 也没有 Windows on ARM 的运行器。
+
+## 2.1 跨系统连接
+
+上面的检查里两端是**同一个平台**。除此之外还有一组跨系统矩阵：服务端与客户端来自**不同平台**，
+每一对都跑同一套功能检查（八种代理类型、共享监听、访问者、面板、指标、审计）。
+
+| 服务端 | 客户端 | 结果 |
+|---|---|---|
+| linux/amd64 | linux/arm64 | **22/22** |
+| linux/arm64 | linux/amd64 | **22/22** |
+| linux/amd64 | windows/amd64 | **22/22** |
+| linux/arm64 | windows/amd64 | **22/22** |
+| windows/amd64 | linux/amd64 | **22/22** |
+| windows/amd64 | linux/arm64 | **22/22** |
+
+四层安全（`aes-256-gcm`、后量子 X25519+ML-KEM-768、TLS **带真实证书校验**、服务端
+`require_identity = true`）也按同样的方式跨系统验证过，每一对 6 项全过：
+
+| 服务端 | 客户端 | 结果 |
+|---|---|---|
+| linux/amd64 | linux/arm64 | **6/6** |
+| linux/arm64 | linux/amd64 | **6/6** |
+| linux/amd64 | windows/amd64 | **6/6** |
+| windows/amd64 | linux/amd64 | **6/6** |
+| windows/amd64 | linux/arm64 | **6/6** |
+
+这是同平台运行看不到的东西：证书校验走各平台自己的 TLS 实现、后量子与身份签名走各自的密码学
+实现、伪装走各自的套接字写入、加密走各自的字节序与对齐。
 
 ## 3. 模拟执行是怎么搭起来的
 
