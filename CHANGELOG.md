@@ -355,6 +355,15 @@
 
 ### 运维测试
 
+- **修掉运维脚本里又一处"假定次序"的检查**：`the client reconnects and publishes its proxy again
+  by itself` 在轮询到 `/api/proxies` 已经列出该代理之后，**只读一次**审计文件就断言里面有
+  `proxy_registered`。而服务端是先让注册成功（面板立刻能看到），随后才写这条审计记录——在忙碌的
+  CI 运行器上两者之间的窗口足以让断言落空，于是出现"代理已重新发布、下一条'流恢复'也通过，却报
+  审计里没有 `proxy_registered`"这种自相矛盾的失败（2026-09-23 的 `9acb8d8e` 那次 Windows 作业
+  即如此，同一提交几分钟前全绿）。现在这两条记录也带 15 秒期限轮询等待，断言强度未变。
+  说明：这一次只能靠日志推理（本机无法执行 PowerShell），下一次 CI 运行会给出确认。
+
+
 - `scripts/smoke-test.ps1`（89 → 101 项）新增：
   - **两个端点报同一批数字**：`/api/status` 与 `/metrics` 在流量字节、
     `connections.authenticated` 对 `aethertunnel_control_connections_total`、活动流数、

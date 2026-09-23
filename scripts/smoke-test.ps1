@@ -2380,9 +2380,20 @@ Test-Check 'the client reconnects and publishes its proxy again by itself' {
         if (-not $published) { Start-Sleep -Milliseconds 500 }
     }
     if (-not $published) { throw "the proxy was not published again after 30s: $(Read-Log $restartClientLog)" }
-    $audit = Get-Content -Raw $restartAudit
-    foreach ($event in @('control_accepted', 'proxy_registered')) {
-        if ($audit -notmatch $event) { throw "the restarted server has no $event record" }
+    # The dashboard shows the proxy as soon as the registration succeeded, while the audit
+    # record for it is written just afterwards, so reading the file once here races the
+    # writer: on a busy runner the record can still be missing at that instant and the
+    # check then fails on a server that recorded everything. Wait for the records the way
+    # the check above waits for the proxy.
+    $deadline = (Get-Date).AddSeconds(15)
+    while ($true) {
+        $audit = Get-Content -Raw $restartAudit -ErrorAction SilentlyContinue
+        $missing = @(@('control_accepted', 'proxy_registered') | Where-Object { $audit -notmatch $_ })
+        if ($missing.Count -eq 0) { break }
+        if ((Get-Date) -gt $deadline) {
+            throw "the restarted server has not recorded $($missing -join ', ') within 15s: $audit"
+        }
+        Start-Sleep -Milliseconds 200
     }
     return $true
 }
