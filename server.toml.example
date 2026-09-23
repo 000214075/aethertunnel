@@ -71,6 +71,9 @@ p2p_port = 7002
 #   "failover"     the first member until it stops being healthy
 #   "adaptive"     the lowest cost, where cost is the measured response time
 #                  multiplied by a penalty for consecutive failures
+#   "bandit"       a UCB1 multi-armed bandit: it learns online which member answers
+#                  fastest by rewarding each stream for its speed, and keeps sampling
+#                  the least-observed member so one that recovers is found again
 load_balance = "round-robin"
 
 # Access control, applied to every accepted connection. An empty allow list accepts

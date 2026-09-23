@@ -35,14 +35,6 @@ utun 控制套接字；本程序都不安装也不打开，也没有对应的驱
 要真正支持，需要 Wintun 的驱动与签名、macOS 的 utun 代码路径，以及能在 Windows/macOS 上运行
 并验证这些设备的环境——本仓库的检查跑在 Linux 上，无法为另外两个平台的设备代码提供证据。
 
-## ❌ 机器学习的路由或调度
-
-`load_balance = "adaptive"` 的代价函数是"移动时延均值 × 连续失败惩罚"，没有模型、没有训练、
-没有历史样本。名称按实际做法书写，不叫 AI。
-
-可以按需选择的策略只有下面这些，全部是确定性的：`round-robin`、`random`、`latency`、
-`failover`、`adaptive`。
-
 ## ❌ 区块链、代币或激励
 
 带宽账本是一条 Ed25519 签名的哈希链：能证明某段用量没有被改动或替换，没有共识、没有货币、
@@ -89,7 +81,6 @@ what it does not do is written down here.
 | --- | --- | --- |
 | Mobile app | no iOS/Android project, no mobile build artifacts | publish a `socks5` exit (`remote_port` + `allow_targets`) and point any phone SOCKS5 client at it; `http`/`https` proxies work with the system proxy settings |
 | tun device on Windows and macOS | no Wintun driver, no utun control socket, no driver-loading code | `tcp`/`udp` port forwarding, or the `socks5` exit; `vpn.enabled = true` refuses to start on those platforms rather than degrading silently |
-| machine-learning routing | `adaptive` is a mean latency × consecutive-failure penalty, with no model and no training | `round-robin`, `random`, `latency`, `failover`, `adaptive` — all deterministic |
 | blockchain, tokens, incentives | the ledger is a signed hash chain: no consensus, no currency, no miners | `--verify-ledger` and `--ledger-proof` give auditability without a distributed ledger |
 | WebRTC | XTCP is its own UDP hole punching (HMAC-SHA256 simultaneous open over a reliable byte stream) | it needs no ICE, DTLS or SCTP; a failed punch falls back to the server's relay automatically |
 | zk-SNARK | `nizk` is a Schnorr proof over P-256: knowledge of a secret, without succinctness or a trusted setup | use `auth_method = "nizk"` when the key must not appear on the wire, with `[encryption]` or `[transport]` on |

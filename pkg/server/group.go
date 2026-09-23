@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"math/rand"
 	"net"
 	"net/http"
@@ -52,8 +53,12 @@ type ProxyGroup struct {
 	dialTimeout time.Duration
 	strategy    string
 
-	mu      sync.RWMutex
-	members []*Tunnel
+	mu sync.RWMutex
+
+	// banditRing rotates which candidate is examined first, so two untried members are
+	// both reached when streams arrive one after another.
+	banditRing atomic.Uint64
+	members    []*Tunnel
 
 	// allowVisitor and denyVisitor are the proxy's own visitor filters, compiled
 	// from [[proxies]] allow_cidrs and deny_cidrs.
@@ -108,6 +113,13 @@ type Tunnel struct {
 	// it, so it measures the member's present state rather than its history.
 	failures atomic.Int64
 
+	// banditPulls and banditReward are what the UCB1 strategy learns from: how many
+	// streams this member was asked for, and the total reward they earned. A stream's
+	// reward is how quickly the member answered (1 for an immediate answer, falling
+	// towards 0 as it takes longer); a failure earns nothing.
+	banditPulls  atomic.Uint64
+	banditReward atomicFloat64
+
 	Active   atomic.Int64
 	Total    atomic.Int64
 	BytesIn  atomic.Int64 // received from the client (its service's replies)
@@ -155,6 +167,21 @@ func (t *Tunnel) PublicPort() int {
 	}
 	return t.RemotePort
 }
+
+// atomicFloat64 is a float64 that can be updated from several stream goroutines.
+type atomicFloat64 struct{ bits atomic.Uint64 }
+
+func (a *atomicFloat64) Add(delta float64) {
+	for {
+		old := a.bits.Load()
+		next := math.Float64bits(math.Float64frombits(old) + delta)
+		if a.bits.CompareAndSwap(old, next) {
+			return
+		}
+	}
+}
+
+func (a *atomicFloat64) Load() float64 { return math.Float64frombits(a.bits.Load()) }
 
 // --- group lifecycle ----------------------------------------------------------
 
@@ -594,11 +621,107 @@ func (g *ProxyGroup) pickExcluding(tried map[*Tunnel]bool) *Tunnel {
 	case config.LoadBalanceAdaptive:
 		return g.pickByCost(candidates)
 
+	case config.LoadBalanceBandit:
+		return g.pickByUCB(candidates)
+
 	default: // round-robin
 		n := g.counter.Add(1) - 1
 		return candidates[int(n%uint64(len(candidates)))]
 	}
 }
+
+// pickByUCB returns the member a UCB1 multi-armed bandit would sample: the one with
+// the highest estimated reward plus an exploration term. Every member is tried once
+// before any is tried twice, which is what keeps a cold member from being passed over
+// and, later, what lets a member that had a bad run be measured again.
+//
+// The estimates come from the streams the pool actually served, so the strategy learns
+// online: nothing is trained offline and nothing has to be configured.
+func (g *ProxyGroup) pickByUCB(candidates []*Tunnel) *Tunnel {
+	var total uint64
+	for _, member := range candidates {
+		total += member.banditPulls.Load()
+	}
+
+	// An untried member first, starting at a different place each time so that two
+	// fresh members are both reached when streams arrive one after another.
+	attempt := g.banditRing.Add(1)
+	start := int((attempt - 1) % uint64(len(candidates)))
+	for offset := 0; offset < len(candidates); offset++ {
+		member := candidates[(start+offset)%len(candidates)]
+		if member.banditPulls.Load() == 0 {
+			return member
+		}
+	}
+
+	// Every so often, measure the member with the fewest observations instead of the
+	// best-scoring one. The exploration term alone is not enough for this: with a wide
+	// gap in estimated reward it grows far too slowly to close it, so a member that was
+	// slow for a while would never be measured again even after it recovered. The
+	// adaptive strategy caps its failure penalty for the same reason.
+	if attempt%banditRecoveryInterval == 0 {
+		// Fewest observations first, and among members observed equally often the one with
+		// the worst estimate: that is the member whose information is most likely to be
+		// stale, which is the case this probe exists for.
+		chosen := candidates[0]
+		for _, member := range candidates[1:] {
+			switch {
+			case member.banditPulls.Load() < chosen.banditPulls.Load():
+				chosen = member
+			case member.banditPulls.Load() == chosen.banditPulls.Load() &&
+				meanReward(member) < meanReward(chosen):
+				chosen = member
+			}
+		}
+		return chosen
+	}
+
+	best := candidates[0]
+	bestScore := ucbScore(best, total)
+	for _, member := range candidates[1:] {
+		if score := ucbScore(member, total); score > bestScore {
+			best, bestScore = member, score
+		}
+	}
+	return best
+}
+
+// meanReward is the member's average reward per stream so far, and zero for a member
+// that has never answered.
+func meanReward(member *Tunnel) float64 {
+	pulls := member.banditPulls.Load()
+	if pulls == 0 {
+		return 0
+	}
+	return member.banditReward.Load() / float64(pulls)
+}
+
+// ucbScore is the UCB1 index of one member: its mean reward so far plus the exploration
+// term, which shrinks as the member is used and grows as the pool is used as a whole.
+func ucbScore(member *Tunnel, total uint64) float64 {
+	pulls := member.banditPulls.Load()
+	if pulls == 0 {
+		return math.Inf(1)
+	}
+	mean := member.banditReward.Load() / float64(pulls)
+	explore := math.Sqrt(2 * math.Log(float64(total)+1) / float64(pulls))
+	return mean + explore
+}
+
+// banditRewardFor turns how long a member took into a reward in (0, 1]. An immediate
+// answer earns 1, and the reward halves for every reference interval the answer takes,
+// so a member that is twice as fast is clearly better without any single slow stream
+// dominating the estimate.
+func banditRewardFor(elapsed time.Duration) float64 {
+	return 1 / (1 + elapsed.Seconds()/banditRewardReference)
+}
+
+// banditRewardReference is the response time that halves a stream's reward.
+const banditRewardReference = 0.05
+
+// banditRecoveryInterval is how many picks pass between two that go to the member with
+// the fewest observations, so a member that was slow for a while is measured again.
+const banditRecoveryInterval = 20
 
 // pickByCost returns the member with the lowest cost, breaking ties by rotating
 // through the candidates so that equal members share the load.
@@ -809,6 +932,7 @@ func (g *ProxyGroup) openStreamFor(member *Tunnel, visitor bool, target string) 
 			return nil, err
 		}
 		member.failures.Add(1)
+		member.banditPulls.Add(1)
 		return nil, err
 	}
 	member.failures.Store(0)
@@ -821,6 +945,8 @@ func (g *ProxyGroup) openStreamFor(member *Tunnel, visitor bool, target string) 
 		// slow connection redefine the member.
 		member.dialLatency.Store(previous - previous/4 + elapsed/4)
 	}
+	member.banditPulls.Add(1)
+	member.banditReward.Add(banditRewardFor(time.Duration(elapsed)))
 	return &openedStream{dc: dc, release: release}, nil
 }
 

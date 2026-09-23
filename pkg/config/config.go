@@ -600,6 +600,12 @@ const (
 	// recent failures. It is a moving average, not a learned model: nothing is
 	// trained and no history beyond the average is kept.
 	LoadBalanceAdaptive = "adaptive"
+	// LoadBalanceBandit picks the member a UCB1 multi-armed bandit would pick: every
+	// member is tried once, then the one with the highest estimated reward plus an
+	// exploration term wins, where the reward of a stream is its speed. The estimates
+	// are learned online from the streams the pool actually serves — there is no
+	// offline training and no model file.
+	LoadBalanceBandit = "bandit"
 )
 
 // MaxMultipath bounds [[proxies]].multipath.
@@ -949,12 +955,13 @@ func (c *Config) Validate(role string) error {
 		problems = append(problems, "audit.max_bytes cannot be negative")
 	}
 	switch c.Server.LoadBalance {
-	case LoadBalanceRoundRobin, LoadBalanceRandom, LoadBalanceLatency, LoadBalanceFailover, LoadBalanceAdaptive:
+	case LoadBalanceRoundRobin, LoadBalanceRandom, LoadBalanceLatency, LoadBalanceFailover,
+		LoadBalanceAdaptive, LoadBalanceBandit:
 	default:
 		problems = append(problems, fmt.Sprintf(
-			"server.load_balance %q is not supported (use %s, %s, %s, %s or %s)",
+			"server.load_balance %q is not supported (use %s, %s, %s, %s, %s or %s)",
 			c.Server.LoadBalance, LoadBalanceRoundRobin, LoadBalanceRandom,
-			LoadBalanceLatency, LoadBalanceFailover, LoadBalanceAdaptive))
+			LoadBalanceLatency, LoadBalanceFailover, LoadBalanceAdaptive, LoadBalanceBandit))
 	}
 	if c.Server.LoadBalance != LoadBalanceRoundRobin {
 		c.Warnings = append(c.Warnings,

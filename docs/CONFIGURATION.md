@@ -40,7 +40,7 @@ aethertunnel-client --config client.toml --check
 | `https_key_file` | string | 空 | 共享 HTTPS 监听的私钥 |
 | `subdomain_host` | string | 空 | 设置后，没有显式 `domains` 的 `http`/`https` 代理以 `<代理名>.<该值>` 注册；为空时这类代理在注册阶段被服务端拒绝 |
 | `p2p_port` | int | 0 | `xtcp` 打洞的 UDP 会合端口，0 表示不支持打洞（xtcp 走中继） |
-| `load_balance` | string | `round-robin` | 代理池策略：`round-robin` `random` `latency` `failover` `adaptive`。只对声明了 `group` 的代理有影响 |
+| `load_balance` | string | `round-robin` | 代理池策略：`round-robin` `random` `latency` `failover` `adaptive` `bandit`。只对声明了 `group` 的代理有影响。`bandit` 是**在线学习**的多臂老虎机（UCB1）：每条流按应答速度记奖励（立即回答记 1，越慢越小），据此估计各成员的平均奖励并加一个探索项来选择成员；没有离线训练、没有模型文件，学习只来自这个池子实际服务过的流。每第 20 次选择会去测观测最少的成员，因此曾经很慢的成员在恢复后仍会被重新测量 |
 
 ## `[client]`（客户端）
 

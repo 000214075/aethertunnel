@@ -80,7 +80,7 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 | 代理类型 | ✅ 可用 | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`；http/https 走服务器的共享监听并按 Host 头选择隧道（精确域名、`*.通配`，或服务端 `subdomain_host` 拼出的 `<代理名>.<该值>`），stcp/sudp/xtcp 为私有隧道，socks5 是出口代理（访客指定目标，客户端拨号，`allow_targets` 限定可达范围） |
 | XTCP 直连 | ✅ 可用 | 自研 UDP 打洞（HMAC-SHA256 同时打开 + 可靠有序字节流），打洞失败自动回退到服务器中继；访客把实际走通的路径回报给服务器（`ATP3` 数据报），因此指标与审计记录的是真实结果而不是猜测 |
 | TCP/UDP 转发 | ✅ 可用 | 访问者 → 服务器端口 → 客户端 → 本地服务；TCP 保留半关闭，UDP 按来源地址分会话 |
-| 负载均衡 | ✅ 可用 | 同名代理可由多个客户端组成代理池，策略：`round-robin` `random` `latency` `failover` `adaptive`。池只拥有一个端点（取第一个成员的端口），后到的成员即使请求了别的端口也不会另开一个，服务端会把**实际生效的端口**回给客户端，客户端日志按它显示；`scripts/smoke-test.ps1` 用两个真实客户端验到池成员都被分流、掉一个成员后仍继续服务 |
+| 负载均衡 | ✅ 可用 | 同名代理可由多个客户端组成代理池，策略：`round-robin` `random` `latency` `failover` `adaptive`，以及**在线学习**的 `bandit`（UCB1 多臂老虎机：按每条流的应答速度记奖励，估计各成员并保留探索，所以曾经慢过的成员在恢复后仍会被重新测量；没有离线训练与模型文件）。池只拥有一个端点（取第一个成员的端口），后到的成员即使请求了别的端口也不会另开一个，服务端会把**实际生效的端口**回给客户端，客户端日志按它显示；`scripts/smoke-test.ps1` 用两个真实客户端验到池成员都被分流、掉一个成员后仍继续服务 |
 | 多路径 | ✅ 可用 | 数据报代理可把流量分散到最多 8 条数据连接（`multipath`），单条故障不影响整体；运维脚本用一次数据报会话验到确实开了 3 条数据连接 |
 | 控制连接与会话 | ✅ 可用 | 认证、心跳、断线自动重连（指数退避 + 抖动）、连接数上限 |
 | 可选的数据包加密 | ✅ 可用 | XChaCha20-Poly1305 或 AES-256-GCM，默认**关闭**；控制消息与隧道字节都加密 |
@@ -110,8 +110,8 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 
 ### 这一版有意不做的能力
 
-**移动端 App**、**Windows/macOS 的 tun 设备**、**机器学习路由**、**区块链/代币**、**WebRTC**、
-**zk-SNARK**、**TLS 会话模拟**这七项本版不做。每一条都写清楚了缺的具体是什么、以及同样目的下
+**移动端 App**、**Windows/macOS 的 tun 设备**、**区块链/代币**、**WebRTC**、**zk-SNARK**、
+**TLS 会话模拟**这六项本版不做。每一条都写清楚了缺的具体是什么、以及同样目的下
 本程序真正可用并且已被检查覆盖的做法：见 [`docs/NOT-IN-THIS-VERSION.md`](docs/NOT-IN-THIS-VERSION.md)。
 
 清单之所以存在：本仓库在 v3.1.0 之前宣称过 WebRTC、区块链、抗量子加密、AI 路由等 20 项功能，
@@ -330,7 +330,7 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 | Proxy types | ✅ works | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`; http and https use one shared listener and are selected by the Host header; stcp, sudp and xtcp are private; socks5 is an exit, where the visitor names the target and `allow_targets` bounds what may be reached |
 | XTCP direct path | ✅ works | its own UDP hole punching (HMAC-SHA256 simultaneous open over a reliable ordered byte stream) with an automatic fall back to the server's relay; the visitor reports the path it actually took with an `ATP3` datagram, so the metrics and the audit log record the outcome rather than a guess |
 | TCP and UDP forwarding | ✅ works | visitor → server port → client → local service; TCP preserves half-close, UDP keeps one session per source address |
-| Load balancing | ✅ works | several clients may publish one name as a pool; strategies `round-robin`, `random`, `latency`, `failover`, `adaptive`. A pool owns one endpoint (the first member's port), so a member that arrives later and asks for another port does not get a second one; the server reports the port that is actually in effect and the client's log shows that one. `scripts/smoke-test.ps1` runs two real clients and checks that both members serve, and that the pool keeps serving after one of them leaves |
+| Load balancing | ✅ works | several clients may publish one name as a pool; strategies `round-robin`, `random`, `latency`, `failover`, `adaptive` and `bandit` — a UCB1 multi-armed bandit that learns online which member answers fastest (each stream rewards its speed, and the least-observed member is still sampled so one that recovers is found again; no offline training, no model file). A pool owns one endpoint (the first member's port), so a member that arrives later and asks for another port does not get a second one; the server reports the port that is actually in effect and the client's log shows that one. `scripts/smoke-test.ps1` runs two real clients and checks that both members serve, and that the pool keeps serving after one of them leaves |
 | Multipath | ✅ works | a datagram proxy spreads traffic over up to 8 data connections (`multipath`), and the loss of one does not stop the rest; the operations script checks that one datagram session really opens three connections |
 | Control session | ✅ works | auth, heartbeat, exponential-backoff reconnect with jitter, connection limit |
 | Optional packet encryption | ✅ works | XChaCha20-Poly1305 or AES-256-GCM, **off** by default, covers control frames and tunnelled bytes |
@@ -360,9 +360,8 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 
 ### What this release deliberately does not do
 
-Seven capabilities are out of scope: a **mobile app**, **tun devices on Windows and macOS**,
-**machine-learning routing**, a **blockchain**, **WebRTC**, **zk-SNARKs** and **TLS session
-emulation**. Each entry in [`docs/NOT-IN-THIS-VERSION.md`](docs/NOT-IN-THIS-VERSION.md) says what
+Six capabilities are out of scope: a **mobile app**, **tun devices on Windows and macOS**, a
+**blockchain**, **WebRTC**, **zk-SNARKs** and **TLS session emulation**. Each entry in [`docs/NOT-IN-THIS-VERSION.md`](docs/NOT-IN-THIS-VERSION.md) says what
 exactly is missing and what this program offers instead for the same purpose, with the checks that
 cover the alternative.
 
