@@ -7,14 +7,14 @@
 
 | 发布目标 | 本机（Linux 工作站） | CI | 功能检查 |
 |---|---|---|---|
-| linux/amd64 | 原生执行 | `ubuntu-latest`：gofmt、vet、单测、`-race`、真实 tun 设备的三层隧道、构建、示例配置、版本 | **64/64** |
-| linux/arm64 | qemu-aarch64（arm64 指令集） | 只做交叉编译（CI 里还没有 arm64 的执行作业） | **64/64** |
-| windows/amd64 | Wine 10.0 执行真实 PE | `windows-latest`：vet、单测、构建、示例配置、版本、`scripts/smoke-test.ps1`（101 项） | **63/63** |
+| linux/amd64 | 原生执行 | `ubuntu-latest`：gofmt、vet、单测、`-race`、真实 tun 设备的三层隧道、构建、示例配置、版本 | **67/67** |
+| linux/arm64 | qemu-aarch64（arm64 指令集） | 只做交叉编译（CI 里还没有 arm64 的执行作业） | **67/67** |
+| windows/amd64 | Wine 10.0 执行真实 PE | `windows-latest`：vet、单测、构建、示例配置、版本、`scripts/smoke-test.ps1`（101 项） | **66/66** |
 | darwin/arm64 | **无法执行** | `macos-latest`（arm64）：vet、单测、构建、示例配置、版本 | 仅 CI |
 | darwin/amd64 | **无法执行** | 仅交叉编译（`macos-latest` 是 arm64 运行器） | 仅静态核对 |
 | windows/arm64 | **无法执行** | 仅交叉编译 | 仅静态核对 |
 
-功能检查是同一套 64 项，分五组，都在每个平台上真跑：
+功能检查是同一套 67 项，分六组，都在每个平台上真跑：
 
 **隧道（22 项）**：八种代理类型（`tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`）、
 共享 http/https 监听（含 TLS 与未知主机拒绝）、socks5 越界目标被拒、三个访问者
@@ -24,6 +24,11 @@
 **命令行（7 项）**：服务端与客户端的 `--version`（含协议版本）、两个二进制分别对随版本发布的
 `server.toml.example` 与 `client.toml.example` 做 `--check`、以及客户端 `--identity`
 （生成密钥文件并打印公钥，且不打印任何其它内容）。
+
+**池策略（3 项）**：两个客户端组成一个池，一个转发到可用的回显服务、另一个指向无人监听的端口。
+访问者不会被丢（服务端发现成员不应答会改问另一个），差别在于**浪费掉多少尝试**：30 次访问里
+`round-robin` 浪费 15 次、`bandit` 只浪费 4 次（三个平台实测一致），且 `bandit` 仍会采样那个成员
+（恢复后能被重新测量）。
 
 **命名与目标（5 项）**：`domains` 的 `*.通配` 对单级与多级子域都生效、对裸后缀不生效；
 `allow_targets` 里放 CIDR 时，目标写成**域名**会被先解析再匹配（`localhost` 被 `127.0.0.1/32`
