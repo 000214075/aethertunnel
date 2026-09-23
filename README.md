@@ -106,33 +106,17 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 | 多平台 | ✅ 可用 | linux/darwin/windows × amd64/arm64，`scripts/build-release.*` 一键出 12 个产物 + SHA256 |
 | 配置校验 | ✅ 可用 | 未知配置项会**报出来**而不是静默忽略；`--check` 只校验不启动 |
 | 单元 + 端到端测试 | ✅ 可用 | 含"访问者→隧道→本地服务"的真实回环测试，明文与加密两种模式；另有 101 项检查的运维脚本 `scripts/smoke-test.ps1`（CI 的 Windows 作业与发布流程都会跑它，发布前不通过就不出 Release；发布后还会把发布页上的二进制下载下来重跑一遍），以及真实 tun 设备上的 `scripts/vpn-linux-test.sh`（20 项）与发布后在真实内核上跑 `scripts/verify-release-linux.sh`（18 项） |
+| 逐平台功能验证 | ✅ 可用 | 同一套 64 项功能检查（八种代理类型、共享监听、三个访问者、面板、指标、审计、命令行子命令、两种加密算法、带证书校验的 TLS、伪装、身份认证、DHT 解析、通配域名、socks5 域名目标）在三个可执行平台上真跑：原生 linux/amd64 **64/64**、qemu 下的 linux/arm64 **64/64**、Wine 下的 windows/amd64（真实 PE）**63/63**；另有**跨系统矩阵**——两端来自不同平台，六对组合各 22 项隧道检查全过，五对组合各 6 项四层安全全过。细节与不可执行目标的说明见 [`docs/PLATFORMS.md`](docs/PLATFORMS.md) |
 
-### 这一版没有什么
+### 这一版有意不做的能力
 
-以下能力**没有实现**，文档与配置示例里不再出现对应描述。每一条都写清楚缺什么、
-以及同样目的下本程序真正可用、已在 CI 与 `scripts/smoke-test.ps1` 里跑过的做法：
+**移动端 App**、**Windows/macOS 的 tun 设备**、**机器学习路由**、**区块链/代币**、**WebRTC**、
+**zk-SNARK**、**TLS 会话模拟**这七项本版不做。每一条都写清楚了缺的具体是什么、以及同样目的下
+本程序真正可用并且已被检查覆盖的做法：见 [`docs/NOT-IN-THIS-VERSION.md`](docs/NOT-IN-THIS-VERSION.md)。
 
-- ❌ **移动端 App**。本仓库只产出服务端与客户端两个可执行程序，没有 iOS/Android 工程，
-  也没有可用的移动端工具链或设备，因此**没有任何移动端构建产物**。
-  **可用的替代**：在服务端发布一个 `socks5` 出口（`remote_port` + `allow_targets`），
-  手机上的任意 SOCKS5 客户端指向 `<服务器>:<remote_port>` 即可使用；
-  http/https 代理也可以被系统代理设置直接使用。smoke test 里
-  `socks5: a visitor reaches the address it asks for`、`socks5: a target outside allow_targets is refused`
-  两项就是用真实二进制与 curl 跑通这条路径的。
-- ❌ **Windows 与 macOS 的 tun 设备**。三层隧道只在 Linux 上打开设备；Windows 需要 Wintun
-  驱动，macOS 需要 utun 控制套接字，本程序都不安装也不打开，也没有对应的驱动加载或系统调用代码。
-  非 Linux 平台启动 `vpn.enabled = true` 会直接报错退出，smoke test 的
-  `the vpn section refuses to start where there is no tun device` 一项断言了这个拒绝行为与报错内容。
-  **可用的替代**：非 Linux 上按端口转发使用 `tcp` / `udp` 代理，按地址使用上面那个 `socks5` 出口；
-  两者都不需要驱动，也不需要改动路由表。
-- ❌ **机器学习的路由或调度**。`load_balance = "adaptive"` 的代价函数是"移动平均时延 ×
-  连续失败惩罚"，没有模型、没有训练、没有历史样本。
-- ❌ **区块链、代币或激励**。带宽账本是一条签名哈希链，没有共识、没有货币、没有矿工。
-- ❌ **WebRTC**。XTCP 用的是自己的 UDP 打洞实现，不依赖 WebRTC 协议栈。
-- ❌ **zk-SNARK**。`nizk` 是 P-256 上的 Schnorr 证明：它能证明"知道秘密"而不泄露秘密，
-  但不具备简洁证明、可信设置等性质，名称按实际能力书写。
-- ❌ **TLS 会话模拟**。`disguise = "tls-record"` 只是把写入包进 TLS 记录头，没有握手，
-  能骗过只看首字节的识别器，骗不过会建模 TLS 会话的识别器。
+清单之所以存在：本仓库在 v3.1.0 之前宣称过 WebRTC、区块链、抗量子加密、AI 路由等 20 项功能，
+而对全部 Go 源码检索这些关键词，出现次数为 0。现在的规则是**名称按实际能力书写**——
+做到什么写什么，没做的写在上面那份文件里，而不是从文档里消失。
 
 ### 加密怎么开
 
@@ -371,42 +355,21 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 | Containers and orchestration | ✅ works | a multi-stage `Dockerfile` ending in distroless, and manifests under `deploy/kubernetes/`; credentials can come from environment variables instead of the ConfigMap |
 | Platforms | ✅ works | linux/darwin/windows × amd64/arm64; `scripts/build-release.*` produces 12 binaries + SHA256 |
 | Config validation | ✅ works | unknown keys are **reported**, not ignored; `--check` validates without starting |
-| Tests | ✅ works | unit tests, a real end-to-end tunnel test in cleartext and encrypted modes, a 89-check operations script `scripts/smoke-test.ps1` (run by CI, required before a release is created, and run again against the published binaries afterwards), a 20-check layer-3 run on real tun devices in `scripts/vpn-linux-test.sh`, and `scripts/verify-release-linux.sh` (18 checks), which runs the published Linux binaries on a real kernel after they are uploaded |
+| Tests | ✅ works | unit tests, a real end-to-end tunnel test in cleartext and encrypted modes, a 101-check operations script `scripts/smoke-test.ps1` (run by CI, required before a release is created, and run again against the published binaries afterwards), a 20-check layer-3 run on real tun devices in `scripts/vpn-linux-test.sh`, and `scripts/verify-release-linux.sh` (18 checks), which runs the published Linux binaries on a real kernel after they are uploaded |
+| Per-platform checks | ✅ works | the same 64 checks (eight proxy types, shared listeners, three visitor kinds, dashboard, metrics, audit, command-line subcommands, both ciphers, TLS with certificate verification, the disguise, identity authentication, DHT resolution, wildcard domains, a hostname socks5 target) run on every platform this machine can execute: **64/64** natively on linux/amd64, **64/64** on linux/arm64 under qemu-aarch64, **63/63** on windows/amd64 (real PE) under Wine; plus a **cross-system matrix** — the two ends on different platforms — six platform pairs at 22 tunnel checks each and five pairs at 6 security-layer checks each, all passing. which targets these checks cannot execute, and why, are in [`docs/PLATFORMS.md`](docs/PLATFORMS.md) |
 
-### What this release does not do
+### What this release deliberately does not do
 
-Each item below says what is missing and which tested path covers the same need:
+Seven capabilities are out of scope: a **mobile app**, **tun devices on Windows and macOS**,
+**machine-learning routing**, a **blockchain**, **WebRTC**, **zk-SNARKs** and **TLS session
+emulation**. Each entry in [`docs/NOT-IN-THIS-VERSION.md`](docs/NOT-IN-THIS-VERSION.md) says what
+exactly is missing and what this program offers instead for the same purpose, with the checks that
+cover the alternative.
 
-- ❌ **Mobile apps.** This repository produces a server and a client binary. There is no
-  iOS or Android project, and no mobile toolchain or device was used to build or test one,
-  so there is no mobile artifact of any kind.
-  **What works instead:** publish a `socks5` exit on the server (`remote_port` plus
-  `allow_targets`) and point any SOCKS5 client app on the phone at
-  `<server>:<remote_port>`; an `http` or `https` proxy can be used from the system proxy
-  settings. The smoke test drives that path with the real binaries and curl in
-  `socks5: a visitor reaches the address it asks for` and
-  `socks5: a target outside allow_targets is refused`.
-- ❌ **A tun device on Windows or macOS.** The layer-3 tunnel opens a device only on Linux.
-  Windows would need the Wintun driver and macOS a utun control socket; this program installs
-  neither and opens neither. The Linux path is cross-compiled on every CI run but **has not
-  been exercised on a real tun device**. On any other platform, `vpn.enabled = true` makes the
-  server exit with an error naming what is missing, and the smoke test's
-  `the vpn section refuses to start where there is no tun device` asserts that refusal and the
-  message it prints.
-  **What works instead:** port forwarding with a `tcp` or `udp` proxy, and address-based access
-  with the `socks5` exit above. Neither needs a driver or a routing change.
-- ❌ **Learned routing.** `load_balance = "adaptive"` scores a member by its moving-average
-  response time multiplied by a penalty for consecutive failures. There is no model, no
-  training and no sample history.
-- ❌ **Blockchain, tokens or incentives.** The bandwidth ledger is a signed hash chain: no
-  consensus, no currency and no miners.
-- ❌ **WebRTC.** XTCP uses its own UDP hole punching and does not depend on the WebRTC stack.
-- ❌ **zk-SNARK.** `nizk` is a Schnorr proof over P-256. It proves knowledge of a secret
-  without revealing it, and it has none of the succinctness or setup properties of a SNARK,
-  so it is not called one.
-- ❌ **TLS session mimicry.** `disguise = "tls-record"` wraps writes in TLS record headers and
-  performs no handshake: it defeats a detector that reads the first bytes, not one that models
-  a TLS session.
+The list exists because before v3.1.0 this repository claimed twenty features — WebRTC, a
+blockchain, post-quantum encryption, AI routing among them — that a search of the entire Go source
+turned up **zero** times. Names are now written to match what the code does: what is implemented is
+described as such, and what is not is in that file rather than missing from the documentation.
 
 ### Encryption
 
