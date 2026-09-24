@@ -118,6 +118,7 @@ Schnorr 证明在 NIST P-256 上，用 Fiat-Shamir 去交互；上下文含服�
 | 自动封禁 | `[server] ban_after_failures` / `ban_seconds` / `ban_max_seconds` / `ban_ignore_cidrs` | 同一来源认证失败达到次数后，在握手前拒绝该来源；每次封禁时长翻倍，直到上限 |
 | 按代理的访客 ACL | `[[proxies]] allow_cidrs` / `deny_cidrs` | 服务器整体接受之后、建立隧道之前，再按该代理自己的名单判断 |
 | 服务端的代理策略 | 服务端 `[[proxies]]` 的 `type` / `remote_port` / `allow_cidrs` / `deny_cidrs` | 注册时比对类型与端口，不匹配即拒绝并记录 `proxy_rejected`；访客来源还要再通过服务端自己的名单，客户端无法放宽 |
+| 访问者的本地监听 | `[[visitors]] bind_addr` | 默认只绑回环地址；绑到非回环地址时客户端会**警告**——该监听器自身没有认证，服务端 `[[proxies]]` 的 `allow_cidrs`/`deny_cidrs` 判断的是运行访问者的这台客户端，而不是它后面的用户 |
 | 审计日志 | `[audit]` | JSON Lines，超过 `max_bytes` 后按 `keep` 代轮转（`<path>.1` … `<path>.<keep>`，默认保留一代）；写不进去的记录会重开文件重试，仍然失败的计入 `aethertunnel_audit_records_lost_total` 并出现在 `GET /api/status` 的 `audit` 段与面板上 |
 
 规则在握手**之前**执行，被拒绝的连接不会消耗会话槽位，也不会读取任何帧。白名单或黑名单

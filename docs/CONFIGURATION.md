@@ -110,7 +110,7 @@ SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` �
 | `server_name` | string | 必填 | 服务端上对应的私有代理名 |
 | `secret_key` | string | 必填 | 必须与代理侧一致 |
 | `auth_method` | string | `secret` | `secret` 或 `nizk` |
-| `bind_addr` | string | `127.0.0.1` | 本机监听地址 |
+| `bind_addr` | string | `127.0.0.1` | 本机监听地址。非回环地址时会**警告**：这个监听器自身没有认证（能连上端口的人就能用这条隧道），而服务端的 `[[proxies]]` 名单判断的是**这个客户端**的地址、不是它后面的用户，所以绑到别的地址等于把私有代理交给那个网络 |
 | `bind_port` | int | 必填 | 本机监听端口（1–65535）。两个 visitor 绑同一个地址时被拒绝 |
 
 ## `[dashboard]`（服务端）

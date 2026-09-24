@@ -1470,6 +1470,17 @@ func (c *Config) Validate(role string) error {
 		if v.BindPort < 1 || v.BindPort > 65535 {
 			problems = append(problems, fmt.Sprintf("visitor %q: bind_port must be 1-65535, got %d", v.Name, v.BindPort))
 		}
+		// A visitor's listener authenticates nobody: whoever can open that port can use
+		// the tunnel. The server-side [[proxies]] allow_cidrs/deny_cidrs do not help
+		// either — they judge the address the visitor connects from, which is this client
+		// rather than the user behind it. So binding anything but a loopback address
+		// hands the private proxy to whoever can reach the listener.
+		if v.BindAddr != "" && !isLoopback(v.BindAddr) {
+			c.Warnings = append(c.Warnings, fmt.Sprintf(
+				"visitor %q listens on %s, which is not a loopback address: the listener authenticates nobody, "+
+					"and the server-side allow_cidrs/deny_cidrs judge this client rather than the user behind it, "+
+					"so anyone who can reach that port can use the tunnel", v.Name, v.BindAddr))
+		}
 	}
 
 	if c.Server.HTTPPort != 0 || c.Server.HTTPSPort != 0 {
@@ -1581,8 +1592,17 @@ func ValidDomain(pattern string) bool {
 	return true
 }
 
+// isLoopback reports whether a bind address stays on this machine.
+//
+// A hostname that is not "localhost" is not loopback: it can resolve to any interface, and
+// both callers of this decide whether to warn that a port is reachable from elsewhere, where
+// the cost of being wrong is a port nobody was warned about.
 func isLoopback(addr string) bool {
-	return addr == "127.0.0.1" || addr == "::1" || addr == "localhost"
+	if addr == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(addr, "[]"))
+	return ip != nil && ip.IsLoopback()
 }
 
 // isUnspecifiedAddr reports whether a bind address accepts every interface, in

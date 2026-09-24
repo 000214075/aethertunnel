@@ -545,6 +545,53 @@ remote_port = %d
 	}
 }
 
+// A visitor's listener has no authentication of its own — whoever can open the port can use
+// the tunnel — and the server-side allow_cidrs/deny_cidrs judge the visitor's own address,
+// which is this client rather than the user behind it. Binding anything but a loopback
+// address therefore exposes the private proxy to that network, which is worth a warning.
+func TestAVisitorOnANonLoopbackAddressWarns(t *testing.T) {
+	body := `
+[client]
+server_addr = "127.0.0.1:7001"
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[[proxies]]
+name = "private"
+type = "stcp"
+local_port = 9
+secret_key = "s3cret"
+
+[[visitors]]
+name = "v"
+type = "stcp"
+server_name = "private"
+secret_key = "s3cret"
+bind_port = 7004
+bind_addr = %q
+`
+	warned := func(t *testing.T, bindAddr string) bool {
+		t.Helper()
+		cfg, err := LoadClient(writeConfig(t, fmt.Sprintf(body, bindAddr)))
+		if err != nil {
+			t.Fatalf("LoadClient(%q): %v", bindAddr, err)
+		}
+		return strings.Contains(strings.Join(cfg.Warnings, "\n"), "which is not a loopback address")
+	}
+
+	for _, addr := range []string{"0.0.0.0", "192.0.2.1", "::", "[::]"} {
+		if !warned(t, addr) {
+			t.Errorf("a visitor bound to %q was not reported as reachable from elsewhere", addr)
+		}
+	}
+	// The loopback range is the whole 127.0.0.0/8, not just 127.0.0.1: a second loopback
+	// address is as private as the first, and a warning nobody can act on is noise.
+	for _, addr := range []string{"127.0.0.1", "127.0.0.2", "::1", "[::1]", "localhost"} {
+		if warned(t, addr) {
+			t.Errorf("a visitor bound to %q was reported as reachable from elsewhere", addr)
+		}
+	}
+}
+
 // The rule is "not negative", not "must be positive": zero keeps selecting the
 // documented default for every one of these keys.
 func TestZeroDurationsAndCountsStillSelectTheDefaults(t *testing.T) {
