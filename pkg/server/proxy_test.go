@@ -709,6 +709,84 @@ func visitorHandshake(t *testing.T, serverAddr, proxy, secret, kind string) (net
 	return conn, framer
 }
 
+// visitorAck performs the visitor handshake and returns what the server answered, refusal
+// included. visitorHandshake fails the test instead, which is what a test that expects to be
+// served wants.
+func visitorAck(t *testing.T, serverAddr, proxy, secret, kind string) protocol.DataOpenAck {
+	t.Helper()
+
+	conn, err := net.DialTimeout("tcp", serverAddr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	framer := protocol.NewFramer(conn, nil, 0)
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	if err := framer.WriteJSON(protocol.TypeVisitorConnect, protocol.VisitorConnect{
+		Proxy: proxy, Secret: secret, Type: kind, AuthToken: testToken,
+	}); err != nil {
+		t.Fatalf("send visitor-connect: %v", err)
+	}
+	var ack protocol.DataOpenAck
+	if err := framer.ReadJSON(protocol.TypeDataOpenAck, &ack); err != nil {
+		t.Fatalf("read the ack: %v", err)
+	}
+	return ack
+}
+
+// A visitor's transport has to match the shape of the proxy it names. The server relays
+// datagram frames for an sudp visitor while the client — which decides by its own proxy type —
+// pipes raw bytes, so the framing bytes are written into the local service and its answer
+// comes back unparsable: measured with real binaries, a sudp visitor against an stcp proxy put
+// 5 bytes on the wire, the owner's local service received 11 bytes of frame header and
+// payload, and the visitor got nothing back at all. Refusing the pair says why instead.
+//
+// xtcp is the exception and stays accepted for both shapes: a punch carries a stream or
+// datagrams depending on what the proxy is.
+func TestAVisitorTransportMustMatchTheProxyShape(t *testing.T) {
+	echo := startEcho(t)
+	cfg := testConfig(t, false)
+	rs := startServer(t, cfg)
+
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{
+		"stream":    streamHandler(echo),
+		"datagrams": streamHandler(echo),
+	})
+	agent.register(protocol.ProxySpec{
+		Name: "stream", Type: protocol.ProxyTypeSTCP, LocalAddr: echo, SecretKey: "s3cret",
+	})
+	agent.register(protocol.ProxySpec{
+		Name: "datagrams", Type: protocol.ProxyTypeSUDP, LocalAddr: echo, SecretKey: "s3cret",
+	})
+
+	cases := []struct {
+		name       string
+		proxy      string
+		kind       string
+		wantOK     bool
+		wantDetail string
+	}{
+		{"a datagram visitor on a stream proxy", "stream", protocol.ProxyTypeSUDP, false,
+			"carries a byte stream, and a \"sudp\" visitor carries datagrams"},
+		{"a stream visitor on a datagram proxy", "datagrams", protocol.ProxyTypeSTCP, false,
+			"carries datagrams, and a \"stcp\" visitor carries a byte stream"},
+		{"xtcp on a stream proxy", "stream", protocol.ProxyTypeXTCP, true, ""},
+		{"a matching stream visitor", "stream", protocol.ProxyTypeSTCP, true, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ack := visitorAck(t, rs.addr, tc.proxy, "s3cret", tc.kind)
+			if ack.OK != tc.wantOK {
+				t.Fatalf("ack.OK is %v (%q), want %v", ack.OK, ack.Error, tc.wantOK)
+			}
+			if tc.wantDetail != "" && !strings.Contains(ack.Error, tc.wantDetail) {
+				t.Fatalf("refusal %q does not contain %q", ack.Error, tc.wantDetail)
+			}
+		})
+	}
+}
+
 func TestSTCPRelayReachesThePrivateService(t *testing.T) {
 	echo := startEcho(t)
 	cfg := testConfig(t, false)

@@ -110,6 +110,36 @@ func (s *Server) handleVisitor(conn net.Conn, framer *protocol.Framer, msg *prot
 		return
 	}
 
+	// The visitor's transport has to match the shape of the proxy it names. A datagram
+	// visitor on a byte-stream proxy makes the server relay TypeUDPPacket frames while the
+	// client — which decides by its own proxy type — pipes raw bytes: the framing bytes are
+	// written into the local service and its answer comes back unparsable, so the visitor
+	// gets nothing at all, and only a service that echoes the frame bytes untouched hides
+	// it. xtcp asks for either shape, since a punch carries a stream or datagrams
+	// depending on what the proxy is.
+	visitorWantsDatagrams := req.Type == protocol.ProxyTypeSUDP
+	proxyIsDatagram := group.Type == protocol.ProxyTypeSUDP
+	if req.Type != protocol.ProxyTypeXTCP && visitorWantsDatagrams != proxyIsDatagram {
+		carries, asked := "a byte stream", "a byte stream"
+		want := string(protocol.ProxyTypeSTCP)
+		if proxyIsDatagram {
+			carries, want = "datagrams", string(protocol.ProxyTypeSUDP)
+		}
+		if visitorWantsDatagrams {
+			asked = "datagrams"
+		}
+		reason := fmt.Sprintf(
+			"proxy %q carries %s, and a %q visitor carries %s: use a %s visitor (xtcp works for either shape)",
+			req.Proxy, carries, req.Type, asked, want)
+		s.auditor.Record(AuditEvent{
+			Event: EventVisitorRejected, Remote: remote, Proxy: req.Proxy,
+			Outcome: "denied", Detail: reason,
+		})
+		s.logger.Printf("visitor from %s rejected for proxy %q: %s", remote, req.Proxy, reason)
+		s.rejectVisitor(conn, framer, reason)
+		return
+	}
+
 	// The key agreement runs before the proxy is authorised so that the
 	// challenge, the proof and everything after it are protected by the agreed
 	// key rather than by the configured cipher alone.

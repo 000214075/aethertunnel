@@ -89,6 +89,11 @@ them on disconnect; every number the dashboard shows is read from those managers
 - 双向复制各带空闲超时（读超时），防止对端静默时永久占用 goroutine 与 fd。
 - 32 KiB 缓冲来自 `sync.Pool`。
 
+访问者请求的传输必须与代理的形状一致：`stcp` 代理只接受 `stcp` 访客，`sudp` 代理只接受
+`sudp` 访客，`xtcp` 两者皆可（先打洞，失败后按代理的形状回到中继）。两端对"帧"的看法必须相同——
+服务端按数据报转发而客户端按字节流直通时，本地服务会收到帧头，访客什么也收不到——所以不一致的
+组合在服务端被拒绝，并说明是哪两个形状撞在一起。
+
 ## 5. 代理池与调度
 
 同名代理由 `ProxyGroup` 持有端点，每个注册它的客户端是它的一个 `Tunnel` 成员。

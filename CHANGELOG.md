@@ -617,6 +617,31 @@
 - `docs/ARCHITECTURE.md` 第 4 节把"每一层包装都必须实现 `CloseWrite`"写成规则，并列出三个
   包装与各自的位置，避免下次再漏一层。
 
+### 修复
+
+- **访客的传输形状与代理不一致时，隧道会"什么都不发生"地失败**。服务端按**访客请求的传输**决定怎么
+  转发（`sudp` 访客走数据报转发），而客户端按**自己配置里那个代理的类型**决定怎么处理（`stcp` 代理
+  走字节流直通）：两端的"帧"看法不同，于是服务端写出的 `TypeUDPPacket` 帧头被客户端原样灌进本地
+  服务，本地服务的应答又被服务端当成帧去解析——解析不了，访客什么也收不到，审计里却是一条
+  `visitor_accepted`。
+  - 实测（真实进程）：`stcp` 代理 + `sudp` 访客，本地服务收到请求后回自己的 `pong`。服务端日志
+    是 `datagram session for visitor ... finished (5 bytes out, 0 bytes in)`，客户端日志是
+    `stream for "stream-proxy" (from a visitor) finished (sent 4 bytes to the server, received 11)`
+    ——那 11 字节正是帧头加负载，被塞给了本地服务；访客那边 6 秒内**没有任何数据报回来**。
+    本地服务若是回显，就会把帧字节原样送回，于是这个错配**看起来是通的**（本轮一开始就是这么被骗
+    过去的，最初那次探测用了回显服务）。
+  - 现在服务端在授权之后检查形状：`stcp` 代理只接受 `stcp` 访客，`sudp` 代理只接受 `sudp` 访客，
+    `xtcp` 两者皆可（它先打洞、失败后按代理形状回到中继）。不一致时以
+    `proxy "x" carries a byte stream, and a "sudp" visitor carries datagrams: use a stcp visitor
+    (xtcp works for either shape)` 拒绝，并留下 `visitor_rejected` 审计记录与一行服务器日志。
+  - 单测一项：`TestAVisitorTransportMustMatchTheProxyShape`（两个方向各一例拒绝、`xtcp` 与匹配
+    的 `stcp` 各一例接受）。把这条检查改成永假后，两个拒绝用例按预期失败（`ack.OK is true`）。
+
+### 文档
+
+- `docs/CONFIGURATION.md` 的访客 `type` 一行、`docs/ARCHITECTURE.md` 第 5 节前各说明这条形状规则
+  与原因（两端对帧的看法不同）。
+
 ---
 
 ## [3.7.3] — 2026-09-21

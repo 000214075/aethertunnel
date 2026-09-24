@@ -106,7 +106,7 @@ SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` �
 | 键 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `name` | string | 必填 | 本机监听器的名字 |
-| `type` | string | `stcp` | `stcp` `sudp` `xtcp` |
+| `type` | string | `stcp` | `stcp` `sudp` `xtcp`。要与服务端上那个代理的**形状**一致：`stcp` 代理只接受 `stcp` 访客，`sudp` 代理只接受 `sudp` 访客，`xtcp` 两者皆可（它先尝试打洞，失败后按代理的形状回到中继）。不一致时服务端拒绝并说明原因：服务端按数据报转发、客户端按字节流直通，本地服务会收到帧头，访客什么也收不到 |
 | `server_name` | string | 必填 | 服务端上对应的私有代理名 |
 | `secret_key` | string | 必填 | 必须与代理侧一致 |
 | `auth_method` | string | `secret` | `secret` 或 `nizk` |
