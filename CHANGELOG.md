@@ -630,17 +630,42 @@
     ——那 11 字节正是帧头加负载，被塞给了本地服务；访客那边 6 秒内**没有任何数据报回来**。
     本地服务若是回显，就会把帧字节原样送回，于是这个错配**看起来是通的**（本轮一开始就是这么被骗
     过去的，最初那次探测用了回显服务）。
-  - 现在服务端在授权之后检查形状：`stcp` 代理只接受 `stcp` 访客，`sudp` 代理只接受 `sudp` 访客，
-    `xtcp` 两者皆可（它先打洞、失败后按代理形状回到中继）。不一致时以
-    `proxy "x" carries a byte stream, and a "sudp" visitor carries datagrams: use a stcp visitor
-    (xtcp works for either shape)` 拒绝，并留下 `visitor_rejected` 审计记录与一行服务器日志。
-  - 单测一项：`TestAVisitorTransportMustMatchTheProxyShape`（两个方向各一例拒绝、`xtcp` 与匹配
-    的 `stcp` 各一例接受）。把这条检查改成永假后，两个拒绝用例按预期失败（`ack.OK is true`）。
+  - 现在服务端在授权之后检查形状：`stcp` 与 `xtcp` 是字节流访客、`sudp` 是数据报访客，形状必须
+    一致（`xtcp` 也是字节流——见下一轮的修正）。不一致时以
+    `proxy "x" carries a byte stream, and a "sudp" visitor carries datagrams: use a stcp visitor` 拒绝，并留下 `visitor_rejected` 审计记录与一行服务器日志。
+  - 单测一项：`TestAVisitorTransportMustMatchTheProxyShape`（拒绝与接受各若干例，见第 15 轮的
+    修正）。把这条检查改成永假后，拒绝用例按预期失败（`ack.OK is true`）。
 
 ### 文档
 
 - `docs/CONFIGURATION.md` 的访客 `type` 一行、`docs/ARCHITECTURE.md` 第 5 节前各说明这条形状规则
   与原因（两端对帧的看法不同）。
+
+### 修复
+
+- **上一轮的形状规则把 `xtcp` 当成了"两者皆可"，实际上它是字节流访客**——于是
+  `sudp` 代理 + `xtcp` 访客这一对被放行，而它和上一轮修掉的错配一样是坏的：服务端按访客的
+  `type` 走 `serveXTCPVisitor`（打洞或退回 `relayStreamVisitor`，都是**字节流**），而拥有者客户端
+  按自己代理的类型走 `serveDatagrams`（数据报），两端的帧看法再次不同。
+  - 实测（真实进程：`sudp` 代理 + `xtcp` 访客）：访客的本地监听器是 **TCP**（xtcp 本来就是字节流），
+    TCP 上连过去之后服务端此前放行、随后整条会话静默失败；现在服务端在握手阶段就以
+    `proxy "datagrams" carries datagrams, and a "xtcp" visitor carries a byte stream: use a sudp
+    visitor` 拒绝，访客日志里也有同一句话。带 `p2p_port` 与不带 `p2p_port` 两种情形都已确认。
+  - 规则现在是**两个形状的严格比较**：`stcp` 与 `xtcp` 是字节流访客，`sudp` 是数据报访客；代理侧
+    `stcp`/`xtcp` 是字节流、`sudp`/`udp` 是数据报（`config.IsDatagramProxyType` 是同一个判定）。
+    上一轮那句 `(xtcp works for either shape)` 已从错误信息、`docs/CONFIGURATION.md`、
+    `docs/ARCHITECTURE.md` 与 `docs/MIGRATION.md` 里删掉。
+  - 单测：`TestAVisitorTransportMustMatchTheProxyShape` 增加"`xtcp` 访客对 `sudp` 代理"一例；
+    把检查放宽回上一轮的写法后，这一例按预期失败（`ack.OK is true`，即放行了一个注定静默失败的组合）。
+- **这一轮的教训写在交接文档里**：上一轮"确认"这条规则时，我用 UDP 往 `xtcp` 访客的端口发数据报
+  ——而 `xtcp` 的监听器是 TCP，那次探测什么也没测到，我却把它当成了"这个组合也通"的证据。
+  规则没被验证过就不该写进错误信息与文档；这一轮补的是同一件事的另一半。
+
+### 文档
+
+- `docs/CONFIGURATION.md` 的访客 `type` 一行、`docs/ARCHITECTURE.md` 第 5 节前的说明、
+  `docs/MIGRATION.md` 的 4.8 条目都改成"`stcp` 与 `xtcp` 是字节流访客（`xtcp` 的本地监听器是 TCP，
+  打洞之后也走字节流）、`sudp` 是数据报访客"。
 
 ---
 

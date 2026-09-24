@@ -115,11 +115,15 @@ func (s *Server) handleVisitor(conn net.Conn, framer *protocol.Framer, msg *prot
 	// client — which decides by its own proxy type — pipes raw bytes: the framing bytes are
 	// written into the local service and its answer comes back unparsable, so the visitor
 	// gets nothing at all, and only a service that echoes the frame bytes untouched hides
-	// it. xtcp asks for either shape, since a punch carries a stream or datagrams
-	// depending on what the proxy is.
+	// it.
+	//
+	// xtcp is a byte-stream visitor even though its name suggests otherwise: the client
+	// handles it with the stream path and a punch carries a byte stream, so an xtcp visitor
+	// on a datagram proxy disagrees in exactly the same way (measured: no answer at all,
+	// with or without a punch port).
 	visitorWantsDatagrams := req.Type == protocol.ProxyTypeSUDP
 	proxyIsDatagram := group.Type == protocol.ProxyTypeSUDP
-	if req.Type != protocol.ProxyTypeXTCP && visitorWantsDatagrams != proxyIsDatagram {
+	if visitorWantsDatagrams != proxyIsDatagram {
 		carries, asked := "a byte stream", "a byte stream"
 		want := string(protocol.ProxyTypeSTCP)
 		if proxyIsDatagram {
@@ -129,7 +133,7 @@ func (s *Server) handleVisitor(conn net.Conn, framer *protocol.Framer, msg *prot
 			asked = "datagrams"
 		}
 		reason := fmt.Sprintf(
-			"proxy %q carries %s, and a %q visitor carries %s: use a %s visitor (xtcp works for either shape)",
+			"proxy %q carries %s, and a %q visitor carries %s: use a %s visitor",
 			req.Proxy, carries, req.Type, asked, want)
 		s.auditor.Record(AuditEvent{
 			Event: EventVisitorRejected, Remote: remote, Proxy: req.Proxy,

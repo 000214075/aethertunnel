@@ -742,8 +742,9 @@ func visitorAck(t *testing.T, serverAddr, proxy, secret, kind string) protocol.D
 // 5 bytes on the wire, the owner's local service received 11 bytes of frame header and
 // payload, and the visitor got nothing back at all. Refusing the pair says why instead.
 //
-// xtcp is the exception and stays accepted for both shapes: a punch carries a stream or
-// datagrams depending on what the proxy is.
+// xtcp is a byte-stream visitor in spite of the name — the client handles it with the stream
+// path and a punch carries a byte stream — so it reaches stcp and xtcp proxies and is refused
+// for a datagram proxy, with or without a punch port (measured: silence either way).
 func TestAVisitorTransportMustMatchTheProxyShape(t *testing.T) {
 	echo := startEcho(t)
 	cfg := testConfig(t, false)
@@ -773,6 +774,8 @@ func TestAVisitorTransportMustMatchTheProxyShape(t *testing.T) {
 			"carries datagrams, and a \"stcp\" visitor carries a byte stream"},
 		{"xtcp on a stream proxy", "stream", protocol.ProxyTypeXTCP, true, ""},
 		{"a matching stream visitor", "stream", protocol.ProxyTypeSTCP, true, ""},
+		{"an xtcp visitor on a datagram proxy", "datagrams", protocol.ProxyTypeXTCP, false,
+			"carries datagrams, and a \"xtcp\" visitor carries a byte stream"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
