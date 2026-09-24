@@ -374,6 +374,13 @@ v3.7.3 的配置与二进制可以直接升级。这一版改面板、服务端�
   影响**：JSON 解码忽略多出来的键、缺失的键读作零值，自己实现的客户端不需要改。
 - **客户端日志开始区分一条流是访客来的还是走公网端口的**
   （`stream for "x" (from a visitor) finished ...`）。这只影响日志文本，不影响行为。
+- **同一个进程里的两个监听器不能再配成同一个地址**。`http_port`、`https_port`、
+  `dashboard.port`、`server.bind_port` 之间（以及客户端两个 visitor 的 `bind_port` 之间、
+  服务端 `p2p_port` 与 `dht.listen_addr` 之间）撞在同一个地址上的配置，现在会被 `--check`
+  拒绝并指出是哪两个键。此前它会先绑上一个、打印“listening”，再以
+  `bind: address already in use` 退出（客户端那一侧更糟：进程继续运行，其中一个 visitor
+  永远不工作）。**同一个端口号用在不同地址上仍然合法**（例如控制端口在 `127.0.0.1`、面板
+  在另一张网卡上）。
 - **`obfuscation.pad_to` 有了上限**。补齐发生在写出之前，而超过帧上限（1 MiB）的帧会被发送端
   自己拒收，所以 `pad_to` 大于上限的配置一条帧都发不出去（客户端连认证请求都发不出，服务端
   只看到 `handshake failed: EOF`）。现在这类配置会被 `--check` 拒绝并给出上限；`pad_to` 取到

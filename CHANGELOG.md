@@ -480,6 +480,35 @@
 
 - `docs/CONFIGURATION.md` 的 `pad_to` 一行补上上限与原因（两端不必一致，但都受同一个帧上限约束）。
 
+### 修复
+
+- **同一个进程里两个监听器撞在同一个地址上，`--check` 说配置有效，而失败信息指向别处**。实测四种
+  组合（改一个数字就能撞上，全是常见手误）：
+  - `http_port == bind_port`：服务端先绑好控制端口、打印
+    `listening on 127.0.0.1:17500`，紧接着
+    `server stopped: listen on 127.0.0.1:17500: bind: address already in use` 退出——信息里说的是
+    控制地址被占用，而真正冲突的是它自己的另一个监听器；
+  - `dashboard.port == bind_port`：面板先把端口抢走，于是同一条信息变成指控控制端口；
+  - `https_port == http_port`：两个共享监听器只能有一个起来；
+  - 客户端两个 visitor 用同一个 `bind_port`：`--check` 有效，运行时第一个监听成功、第二个只留一行
+    `visitor "two": cannot listen on ...`，客户端继续跑着，其中一个 visitor 永远不工作。
+  - 现在这些组合在 `--check` 阶段就被拒绝，信息把两个键都点出来
+    （`server.bind_port and server.http_port would both listen on tcp port 7001 (...)`），服务端
+    与客户端都不会带着一个注定失败的上线。判定规则是"同一个地址"而不是"同一个数字"：地址相同、
+    或者任一方是通配地址（`0.0.0.0`/`::`，即 `ip.IsUnspecified`）才算冲突，所以控制端口在
+    `127.0.0.1`、面板在 `192.0.2.1` 用同一个端口号仍然合法（有单测钉住这一点）。DHT 的 UDP
+    `listen_addr` 与 `server.p2p_port` 也一起检查。
+  - 单测两项：`TestTwoListenersOnOneAddressAreRejected`（7 个组合：控制端口与 http/https/面板、
+    http 与 https、通配对具体、打洞 UDP 对 DHT UDP、两个 visitor）与
+    `TestTheSamePortOnDifferentAddressesIsAccepted`（同端口不同地址仍然合法）。把这条校验改成永假
+    后，前者的 7 个子用例全部按预期失败。
+
+### 文档
+
+- `docs/CONFIGURATION.md`：`server.bind_port`、`server.http_port`、`server.p2p_port`、`dht.listen_addr`
+  与 visitor 的 `bind_port` 各行补上冲突判定（注明 `http_port` 绑的是 `server.bind_addr`，因此与
+  `bind_port` 同端口必然是冲突）。
+
 ---
 
 ## [3.7.3] — 2026-09-21

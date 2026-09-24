@@ -16,6 +16,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -840,6 +841,105 @@ func (c *Config) DashboardAddr() string {
 	return fmt.Sprintf("%s:%d", c.Dashboard.BindAddr, c.Dashboard.Port)
 }
 
+// boundListener is one address this process would bind, with the key that names it.
+type boundListener struct {
+	key  string
+	kind string // "tcp" or "udp"
+	host string
+	port int
+}
+
+// listenerConflict returns a problem when two of these listeners would bind the same
+// address, and false when none would.
+//
+// One process cannot listen on a port twice under the same address, and the failure
+// arrives late and beside the point: the server binds what it can, prints that it is
+// listening, and then exits with "bind: address already in use" naming an address
+// rather than the two keys that disagree. Both are in the file, so this is decided
+// before anything is bound.
+func listenerConflict(listeners []boundListener) (string, bool) {
+	for i := 0; i < len(listeners); i++ {
+		for j := i + 1; j < len(listeners); j++ {
+			first, second := listeners[i], listeners[j]
+			if first.kind != second.kind || first.port != second.port {
+				continue
+			}
+			if first.host != second.host && !isWildcardHost(first.host) && !isWildcardHost(second.host) {
+				continue
+			}
+			return fmt.Sprintf(
+				"%s and %s would both listen on %s port %d (%s and %s): one process cannot bind the same address twice",
+				first.key, second.key, first.kind, first.port,
+				net.JoinHostPort(first.host, strconv.Itoa(first.port)),
+				net.JoinHostPort(second.host, strconv.Itoa(second.port))), true
+		}
+	}
+	return "", false
+}
+
+// isWildcardHost reports whether a bind address means "every local address", which
+// overlaps whatever another listener binds on the same port.
+func isWildcardHost(host string) bool {
+	if host == "" {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsUnspecified()
+}
+
+// listeners lists every address this configuration would bind for the given role.
+func (c *Config) listeners(role string) []boundListener {
+	var listeners []boundListener
+	if role == RoleServer {
+		listeners = append(listeners, boundListener{
+			key: "server.bind_port", kind: "tcp", host: c.Server.BindAddr, port: c.Server.BindPort,
+		})
+		if c.Dashboard.Enabled {
+			listeners = append(listeners, boundListener{
+				key: "dashboard.port", kind: "tcp",
+				host: c.Dashboard.BindAddr, port: c.Dashboard.Port,
+			})
+		}
+		if c.Server.HTTPPort > 0 {
+			listeners = append(listeners, boundListener{
+				key: "server.http_port", kind: "tcp", host: c.Server.BindAddr, port: c.Server.HTTPPort,
+			})
+		}
+		if c.Server.HTTPSPort > 0 {
+			listeners = append(listeners, boundListener{
+				key: "server.https_port", kind: "tcp", host: c.Server.BindAddr, port: c.Server.HTTPSPort,
+			})
+		}
+		if c.DHT.Enabled {
+			if host, port, err := net.SplitHostPort(c.DHT.ListenAddr); err == nil {
+				if number, err := strconv.Atoi(port); err == nil {
+					listeners = append(listeners, boundListener{
+						key: "dht.listen_addr", kind: "udp", host: host, port: number,
+					})
+				}
+			}
+		}
+		if c.Server.P2PPort > 0 {
+			listeners = append(listeners, boundListener{
+				key: "server.p2p_port", kind: "udp", host: c.Server.BindAddr, port: c.Server.P2PPort,
+			})
+		}
+	}
+	if role == RoleClient {
+		for _, visitor := range c.Visitors {
+			host := visitor.BindAddr
+			if host == "" {
+				host = "127.0.0.1"
+			}
+			listeners = append(listeners, boundListener{
+				key:  fmt.Sprintf("visitor %q bind_port", visitor.Name),
+				kind: "tcp", host: host, port: visitor.BindPort,
+			})
+		}
+	}
+	return listeners
+}
+
 // Validate checks the configuration for the given role and returns every problem
 // it finds, so the user can fix them in one pass.
 //
@@ -970,6 +1070,9 @@ func (c *Config) Validate(role string) error {
 	}
 	if c.Server.GracefulShutdownSecs < 0 {
 		problems = append(problems, "server.graceful_shutdown_seconds cannot be negative")
+	}
+	if problem, conflict := listenerConflict(c.listeners(role)); conflict {
+		problems = append(problems, problem)
 	}
 	// A negative duration is not a smaller setting, and the program does not treat it
 	// as one. -1 second of dial timeout is an immediate timeout, so a client

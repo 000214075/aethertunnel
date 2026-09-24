@@ -18,7 +18,7 @@ aethertunnel-client --config client.toml --check
 | 键 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `bind_addr` | string | 必填 | 监听地址。`0.0.0.0` 表示所有网卡 |
-| `bind_port` | int | 必填 | 监听端口（1–65535）。控制连接与数据连接共用 |
+| `bind_port` | int | 必填 | 监听端口（1–65535）。控制连接与数据连接共用。同一个进程里两个监听器不能绑在同一个地址上：与 `http_port`/`https_port`/`dashboard.port` 冲突时 `--check` 直接拒绝 |
 | `auth_token` | string | 必填 | 与客户端共享的密钥。少于 16 位或形如占位符会**警告** |
 | `max_connections` | int | 512 | 同时在线客户端上限，超出的会被明确拒绝。负数被拒绝 |
 | `handshake_timeout_seconds` | int | 10 | 连接建立后必须在此时限内发出第一帧。负数被拒绝 |
@@ -34,12 +34,12 @@ aethertunnel-client --config client.toml --check
 | `ban_seconds` | int | 300 | 首次封禁的时长；再次封禁时按倍数增长 |
 | `ban_max_seconds` | int | 3600 | 封禁时长的上限 |
 | `ban_ignore_cidrs` | []string | 空 | 永不封禁的来源，负载均衡后面或监控主机需要填 |
-| `http_port` | int | 0 | `http` 代理的共享监听端口，0 表示不启用 |
+| `http_port` | int | 0 | `http` 代理的共享监听端口，0 表示不启用。与 `bind_port` 同端口时被拒绝：它绑的是 `server.bind_addr`，所以这个组合必然是同一个地址，而不是分到两张网卡上 |
 | `https_port` | int | 0 | `https` 代理的共享监听端口；非 0 时下面两项必须同时设置 |
 | `https_cert_file` | string | 空 | 共享 HTTPS 监听的证书 |
 | `https_key_file` | string | 空 | 共享 HTTPS 监听的私钥 |
 | `subdomain_host` | string | 空 | 设置后，没有显式 `domains` 的 `http`/`https` 代理以 `<代理名>.<该值>` 注册；为空时这类代理在注册阶段被服务端拒绝 |
-| `p2p_port` | int | 0 | `xtcp` 打洞的 UDP 会合端口，0 表示不支持打洞（xtcp 走中继） |
+| `p2p_port` | int | 0 | `xtcp` 打洞的 UDP 会合端口，0 表示不支持打洞（xtcp 走中继）。与 `dht.listen_addr` 撞在同一个 UDP 地址上时被拒绝 |
 | `load_balance` | string | `round-robin` | 代理池策略：`round-robin` `random` `latency` `failover` `adaptive` `bandit`。只对声明了 `group` 的代理有影响。`bandit` 是**在线学习**的多臂老虎机（UCB1）：每条流按应答速度记奖励（立即回答记 1，越慢越小），据此估计各成员的平均奖励并加一个探索项来选择成员；没有离线训练、没有模型文件，学习只来自这个池子实际服务过的流。每第 20 次选择会去测观测最少的成员，因此曾经很慢的成员在恢复后仍会被重新测量 |
 
 ## `[client]`（客户端）
@@ -111,7 +111,7 @@ SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` �
 | `secret_key` | string | 必填 | 必须与代理侧一致 |
 | `auth_method` | string | `secret` | `secret` 或 `nizk` |
 | `bind_addr` | string | `127.0.0.1` | 本机监听地址 |
-| `bind_port` | int | 必填 | 本机监听端口（1–65535） |
+| `bind_port` | int | 必填 | 本机监听端口（1–65535）。两个 visitor 绑同一个地址时被拒绝 |
 
 ## `[dashboard]`（服务端）
 
@@ -278,7 +278,7 @@ JSONL 格式写到标准输出（索引从 0 开始，越界或缺失时报错�
 | 键 | 类型 | 默认 | 端 | 说明 |
 |---|---|---|---|---|
 | `enabled` | bool | false | 两端 | 是否启动 DHT 节点 |
-| `listen_addr` | string | `0.0.0.0:7001` | 两端 | 节点绑定的 UDP 地址 |
+| `listen_addr` | string | `0.0.0.0:7001` | 两端 | 节点绑定的 UDP 地址。服务端上它与 `server.p2p_port` 撞同一个地址时被拒绝 |
 | `bootstrap` | []string | 空 | 两端 | 启动时要联系的其它节点，`host:port`。留空表示自成一个单节点网络 |
 | `node_id` | string | 空 | 两端 | 40 位十六进制标识；留空则随机生成，每次重启都会变 |
 | `namespace` | string | `aethertunnel` | 两端 | 键前缀，两套部署可以共用一个 DHT |

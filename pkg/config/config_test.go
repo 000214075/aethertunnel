@@ -381,6 +381,116 @@ pad_to = %d
 	}
 }
 
+// Two listeners of one process cannot share an address, and the failure arrives late and
+// beside the point: the server binds what it can, prints that it is listening, and then
+// exits with "bind: address already in use" naming an address rather than the two keys
+// that disagree. Every one of these pairs is visible in the file, so it is decided before
+// anything is bound.
+func TestTwoListenersOnOneAddressAreRejected(t *testing.T) {
+	serverHead := `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+`
+	clientHead := `
+[client]
+server_addr = "127.0.0.1:7001"
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[[proxies]]
+name = "private"
+type = "stcp"
+local_port = 9
+secret_key = "s3cret"
+`
+	cases := []struct {
+		name   string
+		body   string
+		client bool
+		want   string
+	}{
+		{"http_port on the control port", serverHead + "http_port = 7001\n",
+			false, "server.bind_port and server.http_port"},
+		{"https_port on the control port", serverHead + "https_port = 7001\nhttps_cert_file = \"/tmp/x.crt\"\nhttps_key_file = \"/tmp/x.key\"\n",
+			false, "server.bind_port and server.https_port"},
+		{"the dashboard on the control port",
+			serverHead + "\n[dashboard]\nenabled = true\nbind_addr = \"127.0.0.1\"\nport = 7001\n",
+			false, "server.bind_port and dashboard.port"},
+		{"the two shared listeners on one port",
+			serverHead + "http_port = 7002\nhttps_port = 7002\nhttps_cert_file = \"/tmp/x.crt\"\nhttps_key_file = \"/tmp/x.key\"\n",
+			false, "server.http_port and server.https_port"},
+		{"a wildcard control port against a specific dashboard",
+			"[server]\nbind_addr = \"0.0.0.0\"\nbind_port = 7001\nauth_token = \"0123456789abcdef0123456789abcdef\"\n" +
+				"\n[dashboard]\nenabled = true\nbind_addr = \"127.0.0.1\"\nport = 7001\n",
+			false, "server.bind_port and dashboard.port"},
+		{"the punching port on the DHT port",
+			serverHead + "p2p_port = 7003\n\n[dht]\nenabled = true\nlisten_addr = \"0.0.0.0:7003\"\n",
+			false, "dht.listen_addr and server.p2p_port"},
+		{"two visitors on one port",
+			clientHead + "\n[[visitors]]\nname = \"one\"\ntype = \"stcp\"\nserver_name = \"private\"\nsecret_key = \"s3cret\"\nbind_port = 7004\n" +
+				"\n[[visitors]]\nname = \"two\"\ntype = \"stcp\"\nserver_name = \"private\"\nsecret_key = \"s3cret\"\nbind_port = 7004\n",
+			true, `visitor "one" bind_port and visitor "two" bind_port`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeConfig(t, tc.body)
+			var err error
+			if tc.client {
+				_, err = LoadClient(path)
+			} else {
+				_, err = LoadServer(path)
+			}
+			if err == nil {
+				t.Fatalf("expected an error containing %q, got nil", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+// The rule is about the same address, not about the same number: two listeners on one
+// port are fine when they bind different local addresses, which is how a dashboard is
+// served on a second interface while the tunnel stays on the first. The shared http and
+// https listeners cannot be used as the example: they bind server.bind_addr, so a
+// matching http_port is a real conflict.
+func TestTheSamePortOnDifferentAddressesIsAccepted(t *testing.T) {
+	path := writeConfig(t, `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[dashboard]
+enabled = true
+bind_addr = "192.0.2.1"
+port = 7001
+`)
+	cfg, err := LoadServer(path)
+	if err != nil {
+		t.Fatalf("two listeners on one port but different addresses were refused: %v", err)
+	}
+	if cfg.Server.BindPort != 7001 || cfg.Dashboard.Port != 7001 {
+		t.Fatalf("the ports came out as %d and %d", cfg.Server.BindPort, cfg.Dashboard.Port)
+	}
+
+	// And the shared http listener on its own port, next to the control port, is of
+	// course fine.
+	path = writeConfig(t, `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+http_port = 7002
+`)
+	if _, err := LoadServer(path); err != nil {
+		t.Fatalf("a control port and a shared http port on different ports were refused: %v", err)
+	}
+}
+
 // The rule is "not negative", not "must be positive": zero keeps selecting the
 // documented default for every one of these keys.
 func TestZeroDurationsAndCountsStillSelectTheDefaults(t *testing.T) {
