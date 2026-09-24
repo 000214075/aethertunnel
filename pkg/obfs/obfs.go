@@ -90,6 +90,17 @@ type recordConn struct {
 	header    [recordHeaderLen]byte
 }
 
+// CloseWrite half-closes the underlying connection when it supports it, so a wrapped stream
+// keeps the half-close its caller asked for: the record layer adds a header to each write
+// and holds nothing that needs finalising, and the peer reads a clean end of stream at a
+// record boundary.
+func (c *recordConn) CloseWrite() error {
+	if hc, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return hc.CloseWrite()
+	}
+	return c.Conn.Close()
+}
+
 // Write sends the bytes as one or more records.
 func (c *recordConn) Write(p []byte) (int, error) {
 	c.writeMu.Lock()

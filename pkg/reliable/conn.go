@@ -254,20 +254,44 @@ func (c *stream) Write(p []byte) (int, error) {
 	return written, nil
 }
 
+// CloseWrite implements the half-close that net.Conn does not have: it sends the FIN that
+// tells the peer the byte stream is complete, and leaves the connection open so the peer's
+// reply still arrives. A relay ends each direction with CloseWrite when the connection has
+// one and closes the whole stream otherwise, so without this method a direct (punched) path
+// drops the reply that a service only sends after it has seen the end of the request — the
+// same truncation the relayed paths had.
+//
+// It is idempotent, and a Close afterwards still tears the connection down.
+func (c *stream) CloseWrite() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.stopped {
+		return nil
+	}
+	c.sendFinLocked()
+	return nil
+}
+
+// sendFinLocked queues the FIN once. mu must be held.
+func (c *stream) sendFinLocked() {
+	if c.sentFin {
+		return
+	}
+	c.sentFin = true
+	c.finSeq = c.sndNxt
+	c.finSent = time.Now()
+	c.finRTO = baseRTO
+	c.sendLocked(c.envelopeLocked(typeFin, c.finSeq, nil))
+	c.signal()
+}
+
 // Close implements net.Conn. It sends FIN, waits briefly for the peer to
 // acknowledge it, then releases the transport. Further calls return nil.
 func (c *stream) Close() error {
 	c.mu.Lock()
 	if !c.localClosed {
 		c.localClosed = true
-		if !c.sentFin {
-			c.sentFin = true
-			c.finSeq = c.sndNxt
-			c.finSent = time.Now()
-			c.finRTO = baseRTO
-			c.sendLocked(c.envelopeLocked(typeFin, c.finSeq, nil))
-		}
-		c.signal()
+		c.sendFinLocked()
 	}
 	c.mu.Unlock()
 

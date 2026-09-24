@@ -580,6 +580,35 @@
 - `docs/CONFIGURATION.md` 的 visitor `bind_addr` 一行与 `docs/SECURITY.md` 第 7 节的能力表各补上这条
   警告及其原因（该监听器没有认证、服务端名单看不到它后面的用户）。
 
+### 修复
+
+- **半关闭在每一层包装上都退化成"整条关闭"，于是"读完请求才回答"的协议被截断**。`flynet.Pipe`
+  每个方向结束时用 `CloseWrite` 半关闭，连接不支持时才退回整条关闭；而隧道的字节流在每一层都是
+  包装过的：服务端与客户端各有一层 `cryptoStreamConn`（加密记录层）、开着伪装时还有一层
+  `obfs.recordConn`、xtcp 直连走 `pkg/reliable` 的可靠流。**这些包装都没有实现 `CloseWrite`**，
+  于是每一次半关闭都变成整条关闭——README 与 `docs/ARCHITECTURE.md` 里"TCP 保留半关闭"那句
+  话，在三种包装上都不成立。
+  - 实测（真实进程：一个"读到 EOF 才回答字节数"的本地服务，客户端发布它，访问者发 4 KiB 后
+    `shutdown(SHUT_WR)`）：
+    - 修之前：公网 tcp 端口与 stcp 访问者**都只收到空回复**（回复确实产生了——客户端日志写着
+      `sent 15 bytes to the server, received 4096`——但服务端那侧的数据连接已经被关掉）；
+    - 修之后：两者都收到 `read 4096 bytes`，`[transport] enable_tls` 与
+      `disguise = "tls-record"` 两种配置下同样正确。
+  - 修复是四处 `CloseWrite`：`cryptoStreamConn`（`pkg/server/tunnel.go` 与 `client/main.go`
+    各一份）、`obfs.recordConn`（转交给下面那层）、以及 `pkg/reliable` 流的 `CloseWrite`
+    （只发 FIN、不释放传输层，所以对端的回复还能回来）。
+  - 单测四项，各自盯住一层，且都在把该层的 `CloseWrite` 改回"整条关闭"后按预期失败：
+    `pkg/server` 的 `TestAHalfClosedStreamStillCarriesTheReply`（端到端：公网端口半关闭后
+    仍要拿到回复）、`client` 的 `TestTheRelayedStreamHalfClosesInsteadOfClosing`、
+    `pkg/obfs` 的 `TestRecordConnHalfClosesTheConnectionUnderneath`、`pkg/reliable` 的
+    `TestCloseWriteHalfClosesTheStream`。
+  - 这一处此前**没有任何检查**：仓库里的脚本、逐平台套件、Go 测试都没有发过一次半关闭。
+
+### 文档
+
+- `docs/ARCHITECTURE.md` 第 4 节把"每一层包装都必须实现 `CloseWrite`"写成规则，并列出三个
+  包装与各自的位置，避免下次再漏一层。
+
 ---
 
 ## [3.7.3] — 2026-09-21

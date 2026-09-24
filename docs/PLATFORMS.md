@@ -7,20 +7,21 @@
 
 | 发布目标 | 本机（Linux 工作站） | CI | 功能检查 |
 |---|---|---|---|
-| linux/amd64 | 原生执行 | `ubuntu-latest`：gofmt、vet、单测、`-race`、真实 tun 设备的三层隧道、构建、示例配置、版本 | **69/69** |
-| linux/arm64 | qemu-aarch64（arm64 指令集） | 只做交叉编译（CI 里还没有 arm64 的执行作业） | **69/69** |
+| linux/amd64 | 原生执行 | `ubuntu-latest`：gofmt、vet、单测、`-race`、真实 tun 设备的三层隧道、构建、示例配置、版本 | **70/70** |
+| linux/arm64 | qemu-aarch64（arm64 指令集） | 只做交叉编译（CI 里还没有 arm64 的执行作业） | **70/70** |
 | windows/amd64 | Wine 10.0 执行真实 PE（**本轮未跑，见 3.1**） | `windows-latest`：vet、单测、构建、示例配置、版本、`scripts/smoke-test.ps1`（101 项） | 上一轮 67 项时为 **66/66** |
 | darwin/arm64 | **无法执行** | `macos-latest`（arm64）：vet、单测、构建、示例配置、版本 | 仅 CI |
 | darwin/amd64 | **无法执行** | 仅交叉编译（`macos-latest` 是 arm64 运行器） | 仅静态核对 |
 | windows/arm64 | **无法执行** | 仅交叉编译 | 仅静态核对 |
 
-功能检查是同一套 69 项，分六组，都在每个平台上真跑：
+功能检查是同一套 70 项，分六组，都在每个平台上真跑：
 
-**隧道（24 项）**：八种代理类型（`tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`）、
+**隧道（25 项）**：八种代理类型（`tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`）、
 共享 http/https 监听（含 TLS 与未知主机拒绝）、socks5 越界目标被拒、三个访问者
 （stcp/sudp/xtcp）、面板四个接口、指标与 `/api/status` 数字一致、审计里同时出现
-`proxy_registered` 与 `visitor_accepted`，以及**真实客户端进程的日志里两条到达路径各自的行**
-（一条流来自访问者、另一条来自公网端口，各一项）。
+`proxy_registered` 与 `visitor_accepted`、**真实客户端进程的日志里两条到达路径各自的行**
+（一条流来自访问者、另一条来自公网端口，各一项），以及**半关闭之后仍能收到应答**（一个
+"读到 EOF 才回答"的服务经 socks5 隧道访问：请求发出后半关闭，应答仍要回来）。
 
 **命令行（7 项）**：服务端与客户端的 `--version`（含协议版本）、两个二进制分别对随版本发布的
 `server.toml.example` 与 `client.toml.example` 做 `--check`、以及客户端 `--identity`
@@ -67,8 +68,8 @@
 
 | 服务端 | 客户端 | 结果 |
 |---|---|---|
-| linux/amd64 | linux/arm64 | **24/24** |
-| linux/arm64 | linux/amd64 | **24/24** |
+| linux/amd64 | linux/arm64 | **25/25** |
+| linux/arm64 | linux/amd64 | **25/25** |
 | linux/amd64 | windows/amd64 | **22/22**（上一轮，22 项那套） |
 | linux/arm64 | windows/amd64 | **22/22**（上一轮，22 项那套） |
 | windows/amd64 | linux/amd64 | **22/22**（上一轮，22 项那套） |
@@ -88,7 +89,7 @@
 这是同平台运行看不到的东西：证书校验走各平台自己的 TLS 实现、后量子与身份签名走各自的密码学
 实现、伪装走各自的套接字写入、加密走各自的字节序与对齐。
 
-隧道检查这一套从 22 项变成 24 项（新增的两项读客户端日志），表中涉及 `windows/amd64` 的行是
+隧道检查这一套从 22 项变成 25 项（读客户端日志的两项，加一项半关闭后仍要收到应答），表中涉及 `windows/amd64` 的行是
 **上一轮**跑出来的，本轮本机起不来 Wine（见 3.1），只重跑了上面两对 Linux 组合。
 
 ## 3. 模拟执行是怎么搭起来的

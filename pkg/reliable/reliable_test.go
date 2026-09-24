@@ -247,6 +247,60 @@ func TestPunchEstablishesStream(t *testing.T) {
 	}
 }
 
+// A half-close over a punched path has to behave like one over TCP: the peer reads the
+// request and then end of stream, and the reply still comes back. A relay ends each
+// direction with CloseWrite when the connection has one and closes the whole stream
+// otherwise, so without CloseWrite the reply that a service only sends after it has seen the
+// end of the request is lost on the direct path.
+func TestCloseWriteHalfClosesTheStream(t *testing.T) {
+	a, err := ListenConfig("127.0.0.1:0", testConfig())
+	if err != nil {
+		t.Fatalf("ListenConfig: %v", err)
+	}
+	t.Cleanup(func() { a.Close() })
+	b, err := ListenConfig("127.0.0.1:0", testConfig())
+	if err != nil {
+		t.Fatalf("ListenConfig: %v", err)
+	}
+	t.Cleanup(func() { b.Close() })
+	ca, cb := punch(t, a, b)
+
+	request := []byte("a request that half-closes")
+	if _, err := ca.Write(request); err != nil {
+		t.Fatalf("write the request: %v", err)
+	}
+	writer, ok := ca.(interface{ CloseWrite() error })
+	if !ok {
+		t.Fatalf("the punched stream does not offer CloseWrite: %T", ca)
+	}
+	if err := writer.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite: %v", err)
+	}
+
+	// The peer sees the request and then a clean end of stream.
+	got, err := io.ReadAll(cb)
+	if err != nil {
+		t.Fatalf("peer read to end of stream: %v", err)
+	}
+	if !bytes.Equal(got, request) {
+		t.Fatalf("peer read %q, want %q", got, request)
+	}
+
+	// And the reply still reaches the half-closed side.
+	reply := []byte("the reply after the half-close")
+	go func() {
+		_, _ = cb.Write(reply)
+		_ = cb.Close()
+	}()
+	back, err := io.ReadAll(ca)
+	if err != nil {
+		t.Fatalf("read the reply: %v", err)
+	}
+	if !bytes.Equal(back, reply) {
+		t.Fatalf("the reply came back as %q, want %q", back, reply)
+	}
+}
+
 func TestAcceptLearnsPeerAddress(t *testing.T) {
 	cfg := testConfig()
 	// A wildcard bind, like a peer behind a NAT that only knows its own port.

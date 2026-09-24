@@ -81,7 +81,11 @@ them on disconnect; every number the dashboard shows is read from those managers
 `flynet.Pipe` 的要点：
 
 - 两个方向各自独立，用 `CloseWrite` 半关闭，所以 HTTP/1.0、SSH 这类"先关一个方向"的
-  协议不会被截断。
+  协议不会被截断。**每一层包装都必须实现 `CloseWrite`**：`flynet.Pipe` 只对支持半关闭的
+  连接用 `CloseWrite`，不支持时退回整条关闭（见 `pkg/net/pipe.go` 的 `closeWrite`），
+  因此 `cryptoStreamConn`（加密记录层）、`obfs.recordConn`（伪装层）与 `pkg/reliable` 的
+  直连流各自实现了它。少一层，半关闭就在那一层退化成整条关闭："读完请求才回答"的协议
+  （HTTP/1.0、若干数据库协议）会在回答到达之前被截断。
 - 双向复制各带空闲超时（读超时），防止对端静默时永久占用 goroutine 与 fd。
 - 32 KiB 缓冲来自 `sync.Pool`。
 

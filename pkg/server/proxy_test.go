@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -900,6 +902,81 @@ func TestVisitorRefusesAnUnknownProxy(t *testing.T) {
 	}
 	if ack.OK {
 		t.Fatal("the server accepted a visitor for a proxy that does not exist")
+	}
+}
+
+// startCounterService runs a local service that reads until the peer half-closes and only
+// then answers with the number of bytes it read. It is the shape of HTTP/1.0, of several
+// database protocols and of anything that pipes into a filter: the reply cannot be produced
+// until the request has ended, and the request ends with a half-close.
+func startCounterService(t *testing.T) string {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				data, err := io.ReadAll(conn)
+				if err != nil {
+					return
+				}
+				_, _ = fmt.Fprintf(conn, "read %d bytes", len(data))
+			}()
+		}
+	}()
+	return listener.Addr().String()
+}
+
+// A half-close has to survive the whole relay: the visitor half-closes, and the reply the
+// local service produces *because* it saw the end of the request has to come back. Every hop
+// ends a direction with CloseWrite when the connection supports it and closes the whole
+// stream otherwise, and the stream is wrapped in cryptoStreamConn, which used to have no
+// CloseWrite: measured with real binaries, a 4 KiB request that half-closed came back empty
+// through both a public tcp port and an stcp visitor.
+func TestAHalfClosedStreamStillCarriesTheReply(t *testing.T) {
+	counter := startCounterService(t)
+	cfg := testConfig(t, false)
+	remotePort := freePort(t)
+	rs := startServer(t, cfg)
+
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"counter": streamHandler(counter)})
+	agent.register(protocol.ProxySpec{
+		Name: "counter", Type: protocol.ProxyTypeTCP, LocalAddr: counter, RemotePort: remotePort,
+	})
+	waitForListener(t, rs.server, "counter")
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(remotePort)), 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	tcp := conn.(*net.TCPConn)
+	_ = tcp.SetDeadline(time.Now().Add(10 * time.Second))
+
+	payload := bytes.Repeat([]byte("x"), 4096)
+	if _, err := tcp.Write(payload); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := tcp.CloseWrite(); err != nil {
+		t.Fatalf("half-close: %v", err)
+	}
+
+	reply, err := io.ReadAll(tcp)
+	if err != nil {
+		t.Fatalf("read the reply: %v", err)
+	}
+	if want := fmt.Sprintf("read %d bytes", len(payload)); string(reply) != want {
+		t.Fatalf("the reply after the half-close is %q, want %q", reply, want)
 	}
 }
 

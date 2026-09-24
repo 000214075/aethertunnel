@@ -196,6 +196,22 @@ func (c *cryptoStreamConn) SetDeadline(t time.Time) error      { return c.conn.S
 func (c *cryptoStreamConn) SetReadDeadline(t time.Time) error  { return c.conn.SetReadDeadline(t) }
 func (c *cryptoStreamConn) SetWriteDeadline(t time.Time) error { return c.conn.SetWriteDeadline(t) }
 
+// CloseWrite half-closes the underlying connection and leaves the read side open, which is
+// what a half-closed stream needs.
+//
+// flynet.Pipe finishes each direction with CloseWrite when the type has one and closes the
+// whole connection otherwise, so a wrapper without this method turns every half-close into
+// a full close: the direction that was still carrying bytes — the reply that a service only
+// sends after it has seen the end of the request, as HTTP/1.0 and several database
+// protocols do — is cut off before it arrives. The record layer holds no state that needs
+// flushing (see crypto.Stream.Close).
+func (c *cryptoStreamConn) CloseWrite() error {
+	if hc, ok := c.conn.(interface{ CloseWrite() error }); ok {
+		return hc.CloseWrite()
+	}
+	return c.conn.Close()
+}
+
 // --- the registry -------------------------------------------------------------
 
 // TunnelManager owns every published proxy on the server.

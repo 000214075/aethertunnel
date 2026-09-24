@@ -63,6 +63,44 @@ func recordPair(t *testing.T) (net.Conn, net.Conn) {
 
 // --- tests --------------------------------------------------------------------
 
+// CloseWrite has to reach the connection underneath the disguise. A relay ends each
+// direction with CloseWrite when the connection supports it and closes the whole stream
+// otherwise, so a wrapper without this method turns a half-close into a full close: the
+// bytes the peer was about to send back never arrive.
+func TestRecordConnHalfClosesTheConnectionUnderneath(t *testing.T) {
+	left, right := recordPair(t)
+
+	if _, err := left.Write([]byte("request")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := left.(interface{ CloseWrite() error }).CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite: %v", err)
+	}
+
+	// The peer reads the request and then a clean end of stream, which is what tells a
+	// service that reads until EOF that the request is complete.
+	got, err := io.ReadAll(right)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != "request" {
+		t.Fatalf("the peer read %q, want request", got)
+	}
+
+	// The half-closed side can still read the reply.
+	if _, err := right.Write([]byte("reply")); err != nil {
+		t.Fatalf("write the reply: %v", err)
+	}
+	reply := make([]byte, len("reply"))
+	_ = left.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.ReadFull(left, reply); err != nil {
+		t.Fatalf("read the reply after the half-close: %v", err)
+	}
+	if string(reply) != "reply" {
+		t.Fatalf("the reply came back as %q", reply)
+	}
+}
+
 func TestWrapLeavesTheConnectionAloneWhenTheDisguiseIsNone(t *testing.T) {
 	left, right := tcpPair(t)
 	for _, disguise := range []string{"", DisguiseNone} {

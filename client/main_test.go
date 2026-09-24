@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"log"
+	"net"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/aethertunnel/aethertunnel/pkg/config"
+	"github.com/aethertunnel/aethertunnel/pkg/crypto"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
 )
 
@@ -88,6 +91,70 @@ func TestOnlyAPrivateProxyRecordNamesTheControlPort(t *testing.T) {
 		if namesAControlPort(proxyType) {
 			t.Errorf("a %s record does not name the control port, so resolving one as a server address is a mistake the client should report", proxyType)
 		}
+	}
+}
+
+// The client wraps every relayed stream in cryptoStreamConn, and flynet.Pipe ends each
+// direction with CloseWrite when the connection has one and closes the whole stream
+// otherwise. Without CloseWrite here, a client that half-closes after sending a request
+// closes the whole stream instead, so a local service that answers only after it has seen
+// the end of the request — HTTP/1.0, several database protocols — answers into a closed
+// socket and the visitor gets nothing.
+func TestTheRelayedStreamHalfClosesInsteadOfClosing(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			accepted <- nil
+			return
+		}
+		accepted <- conn
+	}()
+	dialed, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	peer := <-accepted
+	if peer == nil {
+		t.Fatal("the listener stopped before accepting")
+	}
+	defer peer.Close()
+	defer dialed.Close()
+
+	// An empty cipher is the passthrough stream, which is what "encryption off" uses.
+	wrapped := &cryptoStreamConn{Stream: crypto.NewStream(dialed, &crypto.Cipher{}), conn: dialed}
+	if _, err := wrapped.Write([]byte("request")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := wrapped.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite: %v", err)
+	}
+
+	// The local service sees the request and then end of stream.
+	got, err := io.ReadAll(peer)
+	if err != nil {
+		t.Fatalf("the local service read: %v", err)
+	}
+	if string(got) != "request" {
+		t.Fatalf("the local service read %q, want request", got)
+	}
+	// And its reply still reaches the half-closed client.
+	if _, err := peer.Write([]byte("answer")); err != nil {
+		t.Fatalf("the local service could not answer: %v", err)
+	}
+	answer := make([]byte, len("answer"))
+	_ = wrapped.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.ReadFull(wrapped, answer); err != nil {
+		t.Fatalf("the reply did not reach the half-closed client: %v", err)
+	}
+	if string(answer) != "answer" {
+		t.Fatalf("the reply came back as %q", answer)
 	}
 }
 
