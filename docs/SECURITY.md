@@ -219,7 +219,8 @@ Unix 上以 0600 创建），签名覆盖名字、类型、地址、域名、发
 
 仍然有效的缓解手段：
 
-- 客户端显式配置 `client.server_addr`，不使用 `[dht] discover`；
+- 客户端显式配置 `client.server_addr`，不使用 `[dht] discover`；两者同时设置时也以
+  `server_addr` 为准——客户端不启动解析，这条缓解手段不会因为配置里同时留着 `discover` 而失效；
 - 只把 `bootstrap` 指向自己控制的节点；
 - 用 `namespace` 把两套部署分开，并用非默认值避免与陌生部署同名共享；
 - 在客户端设置 `trusted_keys`，这样即使键被投毒，指向别处的记录也会被拒绝。

@@ -91,6 +91,43 @@ func TestOnlyAPrivateProxyRecordNamesTheControlPort(t *testing.T) {
 	}
 }
 
+// A client that names its server is not redirected by the DHT. Measured with real
+// processes before this was fixed: with server_addr = 127.0.0.1:17703 and
+// dht.discover = "moved", where the record pointed at 127.0.0.1:17701, the client logged
+// "the configured address is used and the DHT is not consulted" and then dialled
+// 127.0.0.1:17701. The record is unsigned unless dht.trusted_keys says otherwise, so
+// following it means handing an auth_token to whoever answers for the name.
+func TestAConfiguredAddressIsNotOverriddenByDhtDiscover(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  *config.Config
+		want bool
+	}{
+		{"address and discover", &config.Config{
+			Client: config.ClientConfig{ServerAddr: "127.0.0.1:17703"},
+			DHT:    config.DHTConfig{Enabled: true, Discover: "moved"},
+		}, false},
+		{"discover only", &config.Config{
+			DHT: config.DHTConfig{Enabled: true, Discover: "moved"},
+		}, true},
+		{"address only", &config.Config{
+			Client: config.ClientConfig{ServerAddr: "127.0.0.1:17703"},
+			DHT:    config.DHTConfig{Enabled: true},
+		}, false},
+		{"discover without the dht section", &config.Config{
+			DHT: config.DHTConfig{Discover: "moved"},
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &client{cfg: tc.cfg}
+			if got := c.usesDiscoveredAddress(); got != tc.want {
+				t.Fatalf("usesDiscoveredAddress() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // The confirmation line is the client's only report of what the server published, and
 // the port it names is the one the server listens on: a member of a pool that was
 // already published asks for one port and gets another, and an operator who read the

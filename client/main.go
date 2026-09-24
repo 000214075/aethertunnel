@@ -107,6 +107,19 @@ func namesAControlPort(proxyType string) bool {
 	}
 }
 
+// usesDiscoveredAddress reports whether this client resolves [dht].discover instead of
+// dialling the configured address.
+//
+// It is one or the other, never both. A configured address is what the operator pinned,
+// and a DHT record is not signed unless dht.trusted_keys says so: whoever can answer for
+// the name could otherwise redirect a client that named its server to an address of their
+// choosing, and the client would hand that address its auth_token in the first frame.
+// A client that wants to follow the name leaves server_addr empty, which is what the
+// documentation for dht.discover describes.
+func (c *client) usesDiscoveredAddress() bool {
+	return c.cfg.DHT.Enabled && c.cfg.DHT.Discover != "" && c.cfg.Client.ServerAddr == ""
+}
+
 // refreshTarget re-resolves [dht].discover, so a proxy that moved to another server
 // is picked up on the next reconnect instead of requiring a restart.
 //
@@ -244,7 +257,7 @@ func main() {
 		logger.Printf("client identity %s (from %s)", identity.PublicKeyHex(), cfg.Identity.KeyFile)
 	}
 
-	if cfg.DHT.Enabled && cfg.DHT.Discover != "" {
+	if c.usesDiscoveredAddress() {
 		resolver, err := discovery.Start(cfg.DHTSettings(logger))
 		if err != nil {
 			logger.Fatalf("dht: %v", err)

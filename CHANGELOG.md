@@ -529,6 +529,36 @@
 
 - `docs/CONFIGURATION.md` 的 `remote_port` 一行补上这条规则（含"tcp 与 udp 可以共用一个端口号"）。
 
+### 修复
+
+- **同时设置 `client.server_addr` 与 `[dht] discover` 时，客户端会跟着 DHT 上的记录走——
+  与它自己打印的警告、以及文档里的说法完全相反**。实测（真实进程，两台服务器：一台是 DHT 上
+  发布 `moved` 这个名字的发布者 `127.0.0.1:17701`，另一台是配置里写明的 `127.0.0.1:17703`）：
+
+  ```
+  warning: client.server_addr is set to 127.0.0.1:17703 and dht.discover to "moved":
+           the configured address is used and the DHT is not consulted
+  dht: "moved" resolves to 127.0.0.1:17701 (type stcp), unsigned
+  connected to 127.0.0.1:17701 as session cb7694699c5f4c1e
+  ```
+
+  它先声明"用配置的地址、不查 DHT"，然后连到了 DHT 给的地址。这不只是措辞问题：DHT 上的记录
+  除 `dht.trusted_keys` 之外没有签名，**任何能应答这个名字的节点都能把已经写死服务器的客户端
+  改写到别处**，而客户端会把 `auth_token` 放进第一个帧交给那台服务器（默认不开加密时就是明文）。
+  `docs/SECURITY.md` 第 10 节把"显式配置 `client.server_addr`"列为 DHT 投毒的缓解手段，
+  `docs/CONFIGURATION.md` 的 `discover` 一行也写着"为空时才解析"——三处说法一致，只有代码不是。
+  - 现在客户端在 `server_addr` 非空时**不启动解析**（`usesDiscoveredAddress()` 一个条件决定），
+    与文档和警告一致。想要按名字跟随服务端迁移的部署照旧只需留空 `server_addr`。
+  - 修好之后同一个脚本的日志：`connected to 127.0.0.1:17703`，并且不再出现 `dht: node ... resolving`。
+  - 单测一项：`client` 包的 `TestAConfiguredAddressIsNotOverriddenByDhtDiscover`（四种组合：
+    两者都有 / 只有 discover / 只有地址 / 只有 discover 但没有 `[dht] enabled`）。把那个条件改回
+    `cfg.DHT.Enabled && cfg.DHT.Discover != ""` 后，第一、第三个用例按预期失败。
+
+### 文档
+
+- `docs/CONFIGURATION.md` 的 `discover` 一行、`docs/SECURITY.md` 第 10 节的缓解手段各补一句：
+  两者同时设置时以 `server_addr` 为准，以及为什么（无签名的记录等于让能应答这个名字的人改地址）。
+
 ---
 
 ## [3.7.3] — 2026-09-21
