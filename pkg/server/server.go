@@ -760,6 +760,14 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 		// The address is released after the session is closed, so the peer stops
 		// routing packets here before the lease disappears.
 		s.vpn.release(session.ID)
+		// A stream records its bytes on the tunnel when its pipe returns, and the ledger
+		// entry is written from those counters: a client that leaves while a stream is
+		// still finishing would otherwise have that stream's bytes left out of the entry
+		// entirely. The wait is bounded, because a stream that outlives its control
+		// connection is closed with it.
+		if s.ledger != nil {
+			s.waitForStreamsToFinish(session, ledgerSettle)
+		}
 		// The ledger entry is written after the member endpoints are gone, so it
 		// covers the whole life of the proxy and is written once.
 		s.recordSessionUsage(session)

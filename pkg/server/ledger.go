@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/aethertunnel/aethertunnel/pkg/config"
 	"github.com/aethertunnel/aethertunnel/pkg/ledger"
@@ -137,6 +138,26 @@ func (l *ledgerStore) Path() string {
 // It runs on the control connection's teardown path, after the proxy members have
 // been removed but before the process forgets them, so a client's usage is billed
 // exactly once even when the server is shutting down.
+// ledgerSettle bounds how long a session's teardown waits for its streams to finish before
+// the ledger entry is written. Streams that are still running when their control connection
+// goes away end within a round trip, so this only has to cover that, and it keeps a
+// misbehaving stream from holding a teardown open.
+const ledgerSettle = 2 * time.Second
+
+// waitForStreamsToFinish waits, up to limit, for the streams this session is still carrying
+// to release.
+//
+// A stream adds its bytes to the tunnel after its pipe returns, and recordSessionUsage reads
+// those counters, so writing the entry while a stream is in flight under-reports the session:
+// measured on macOS CI, where a test that leaves while a 29-byte stream is finishing recorded
+// 0 bytes in and 0 bytes out.
+func (s *Server) waitForStreamsToFinish(session *Session, limit time.Duration) {
+	deadline := time.Now().Add(limit)
+	for session.ActiveStreams() > 0 && time.Now().Before(deadline) {
+		time.Sleep(drainPollInterval)
+	}
+}
+
 func (s *Server) recordSessionUsage(session *Session) {
 	if s.ledger == nil {
 		return

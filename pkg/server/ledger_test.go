@@ -117,6 +117,118 @@ func waitForLedgerEntries(t *testing.T, path string, n int) []ledger.Entry {
 
 // --- tests --------------------------------------------------------------------
 
+// slowService reads exactly n bytes, signals that it has them, then answers after a delay
+// and closes. The signal is what makes the test deterministic: the stream is established and
+// the payload has travelled through it before the control connection goes away.
+func slowService(t *testing.T, n int, delay time.Duration, received chan<- int) string {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				data := make([]byte, n)
+				if _, err := io.ReadFull(conn, data); err != nil {
+					return
+				}
+				select {
+				case received <- len(data):
+				default:
+				}
+				time.Sleep(delay)
+				_, _ = conn.Write(data)
+			}()
+		}
+	}()
+	return listener.Addr().String()
+}
+
+// A client can leave while one of its streams is still finishing: the stream records its
+// bytes on the tunnel when its pipe returns, and the ledger entry is written from those
+// counters. Without a wait for the streams, the entry of such a session reports 0 bytes —
+// which is what macOS CI showed for the test below ("bytes_in is 0, want 29") once the
+// half-close work widened the window between the control connection ending and the stream
+// finishing.
+func TestTheLedgerEntryIncludesAStreamThatIsStillFinishing(t *testing.T) {
+	payload := []byte("twenty-eight bytes of traffic")
+	received := make(chan int, 1)
+	echoAddr := slowService(t, len(payload), 300*time.Millisecond, received)
+
+	cfg := ledgerConfig(t, false)
+	rs := startServer(t, cfg)
+
+	client, err := newTestClient(t, rs.addr, false)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if _, err := client.authenticate("test-client", testToken); err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	publicPort := freePort(t)
+	if err := client.register(protocol.ProxySpec{
+		Name: "echo", Type: protocol.ProxyTypeTCP, LocalAddr: echoAddr, RemotePort: publicPort,
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := client.framer.ReadFrame(); err != nil {
+		t.Fatalf("read proxy list: %v", err)
+	}
+	waitForListener(t, rs.server, "echo")
+
+	streamErr := make(chan error, 1)
+	go func() { streamErr <- client.serveOneStream(rs.addr, echoAddr, 10*time.Second) }()
+
+	visitor, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(publicPort)), 5*time.Second)
+	if err != nil {
+		t.Fatalf("visitor connect: %v", err)
+	}
+	defer visitor.Close()
+	_ = visitor.SetDeadline(time.Now().Add(10 * time.Second))
+	if _, err := visitor.Write(payload); err != nil {
+		t.Fatalf("visitor write: %v", err)
+	}
+	if err := visitor.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatalf("visitor half-close: %v", err)
+	}
+
+	// The stream is up and the payload has arrived at the service, which is about to answer
+	// in a moment. The control connection leaves right now, while the answer is on its way.
+	select {
+	case n := <-received:
+		if n != len(payload) {
+			t.Fatalf("the service read %d bytes, want %d", n, len(payload))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream never reached the local service")
+	}
+	client.close()
+
+	entries := waitForLedgerEntries(t, cfg.Ledger.Path, 1)
+	if got := entries[0].BytesIn; got != int64(len(payload)) {
+		t.Errorf("bytes_in is %d, want %d: the stream that was still finishing was left out",
+			got, len(payload))
+	}
+
+	select {
+	case err := <-streamErr:
+		if err != nil {
+			t.Fatalf("stream: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the stream did not finish")
+	}
+}
+
 func TestLedgerRecordsSessionUsageWhenTheClientLeaves(t *testing.T) {
 	echoAddr := startEcho(t)
 	cfg := ledgerConfig(t, false)
