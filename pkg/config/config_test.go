@@ -491,6 +491,60 @@ http_port = 7002
 	}
 }
 
+// Two tunnels of one client cannot share a public port: the server binds it for whichever
+// registers first, and the second is refused with "address already in use" — which names
+// the port but not the proxy holding it. Measured with real processes: the client logs the
+// refusal and only the first proxy is published. A tcp and a udp tunnel on one port number
+// are two sockets, and both work (checked the same way), so they only share the number.
+func TestTwoProxiesCannotAskForOnePublicPort(t *testing.T) {
+	head := `
+[client]
+server_addr = "127.0.0.1:7001"
+auth_token = "0123456789abcdef0123456789abcdef"
+`
+	proxy := func(name, kind string, local, remote int, extra string) string {
+		return fmt.Sprintf(`
+[[proxies]]
+name = %q
+type = %q
+local_port = %d
+remote_port = %d
+%s`, name, kind, local, remote, extra)
+	}
+	socks := "allow_targets = [\"127.0.0.1/32\"]\n"
+
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"two tcp tunnels", head + proxy("first", "tcp", 22, 7002, "") + proxy("second", "tcp", 22, 7002, ""),
+			`proxies "first" and "second" both ask for tcp port 7002`},
+		{"a tcp and a socks5 tunnel", head + proxy("first", "tcp", 22, 7002, "") +
+			proxy("second", "socks5", 0, 7002, socks),
+			`proxies "first" and "second" both ask for tcp port 7002`},
+		{"two udp tunnels", head + proxy("first", "udp", 53, 7002, "") + proxy("second", "udp", 53, 7002, ""),
+			`proxies "first" and "second" both ask for udp port 7002`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadClient(writeConfig(t, tc.body))
+			if err == nil {
+				t.Fatalf("expected an error containing %q, got nil", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tc.want)
+			}
+		})
+	}
+
+	// The number can be shared across protocols.
+	if _, err := LoadClient(writeConfig(t, head+
+		proxy("first", "tcp", 22, 7002, "")+proxy("second", "udp", 53, 7002, ""))); err != nil {
+		t.Fatalf("a tcp and a udp tunnel on one port number were refused: %v", err)
+	}
+}
+
 // The rule is "not negative", not "must be positive": zero keeps selecting the
 // documented default for every one of these keys.
 func TestZeroDurationsAndCountsStillSelectTheDefaults(t *testing.T) {

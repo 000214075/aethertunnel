@@ -62,7 +62,7 @@ aethertunnel-client --config client.toml --check
 | `type` | string | `tcp` | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5` |
 | `local_ip` | string | `127.0.0.1` | 本地服务地址 |
 | `local_port` | int | 必填 | 本地服务端口（1–65535） |
-| `remote_port` | int | 0 | 服务器上对外开放的端口。`tcp`/`udp` 用它；`http`/`https` 与私有类型必须为 0 |
+| `remote_port` | int | 0 | 服务器上对外开放的端口。`tcp`/`udp` 用它；`http`/`https` 与私有类型必须为 0。同一客户端里两个**同协议**的代理不能请求同一个端口（先注册的绑住它，第二个会被拒绝），`tcp` 与 `udp` 用同一个端口号是允许的：它们绑的是不同协议的两个套接字 |
 | `domains` | []string | 空 | `http`/`https` 的访问域名：精确域名、`*.通配`，或留空后由服务端 `subdomain_host` 拼出 `<代理名>.<该值>`。留空时客户端只给出警告，因为该设置属于服务端 |
 | `secret_key` | string | 空 | 私有类型必填，也是访客侧的凭据 |
 | `auth_method` | string | `secret` | `secret` 直接比对；`nizk` 用 Schnorr 证明，secret 不出现在线上 |

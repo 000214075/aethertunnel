@@ -509,6 +509,26 @@
   与 visitor 的 `bind_port` 各行补上冲突判定（注明 `http_port` 绑的是 `server.bind_addr`，因此与
   `bind_port` 同端口必然是冲突）。
 
+### 修复
+
+- **同一客户端里两个代理请求同一个 `remote_port` 时，`--check` 说配置有效，第二个代理永远发布
+  不了**。实测（真实进程，一个客户端两个 `tcp` 代理都要 17602）：服务端为第一个绑住端口，第二个
+  以 `cannot publish second on 127.0.0.1:17602: listen tcp ...: bind: address already in use`
+  被拒——消息里有端口号，却没有说端口在**它自己的另一个代理**手上；客户端那侧只看到一行
+  `server reported: ...`，审计里是一条 `proxy_rejected`。两份配置都在同一个文件里，这个冲突在
+  启动前就能判定。
+  - 现在同一客户端里同协议的两个代理请求同一个端口会被拒绝，信息把两个代理名都点出来
+    （`proxies "first" and "second" both ask for tcp port 7002, and only the first to register is published`）。
+    判定按协议分开：`tcp` 与 `socks5` 绑 TCP，`udp` 绑 UDP，所以 **`tcp` 与 `udp` 用同一个端口号
+    仍然合法**——这一点先起真实进程验证过（同一端口号上 tcp 与 udp 各自回显成功），再写成反例单测。
+    `http`/`https` 与私有类型本来就要求 `remote_port = 0`，不参与这条判定。
+  - 单测一项：`TestTwoProxiesCannotAskForOnePublicPort`（两个 tcp、tcp 与 socks5、两个 udp 各一例，
+    外加"tcp 与 udp 同端口号可用"的反例）。
+
+### 文档
+
+- `docs/CONFIGURATION.md` 的 `remote_port` 一行补上这条规则（含"tcp 与 udp 可以共用一个端口号"）。
+
 ---
 
 ## [3.7.3] — 2026-09-21

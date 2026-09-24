@@ -1305,6 +1305,12 @@ func (c *Config) Validate(role string) error {
 	}
 
 	seen := map[string]bool{}
+	// publishedPorts maps the protocol and port a proxy asks for to the proxy that asked
+	// for it first. The server binds that port for the first registration, so a second
+	// proxy of the same protocol asking for it is refused with "address already in use"
+	// — a message that names the port but not the proxy holding it. tcp and udp on one
+	// port number are two different sockets, so they only share the number.
+	publishedPorts := map[string]string{}
 	for _, p := range c.Proxies {
 		if p.Name == "" {
 			problems = append(problems, "every [[proxies]] entry needs a name")
@@ -1339,6 +1345,20 @@ func (c *Config) Validate(role string) error {
 		}
 		if p.RemotePort < 0 || p.RemotePort > 65535 {
 			problems = append(problems, fmt.Sprintf("proxy %q: remote_port must be 0-65535, got %d", p.Name, p.RemotePort))
+		}
+		if p.RemotePort > 0 {
+			protocol := "tcp"
+			if IsDatagramProxyType(p.Type) {
+				protocol = "udp"
+			}
+			key := fmt.Sprintf("%s/%d", protocol, p.RemotePort)
+			if holder, taken := publishedPorts[key]; taken {
+				problems = append(problems, fmt.Sprintf(
+					"proxies %q and %q both ask for %s port %d, and only the first to register is published",
+					holder, p.Name, protocol, p.RemotePort))
+			} else {
+				publishedPorts[key] = p.Name
+			}
 		}
 		for _, cidr := range append(append([]string{}, p.AllowCIDRs...), p.DenyCIDRs...) {
 			if _, _, err := net.ParseCIDR(cidr); err != nil {
