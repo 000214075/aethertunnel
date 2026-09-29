@@ -2,6 +2,7 @@ package vpn
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 )
 
@@ -49,8 +50,10 @@ func validateDeviceName(name string) error {
 		return fmt.Errorf("vpn: interface name %q contains a character that is not allowed", name)
 	}
 	// Linux caps interface names at 15 bytes; a longer one is refused by the kernel
-	// with a message that does not say why.
-	if len(name) > 15 {
+	// with a message that does not say why. The other platforms take longer names:
+	// a Wintun adapter name is an arbitrary string, and a macOS utun keeps the
+	// utunN shape this file checks for.
+	if runtime.GOOS == "linux" && len(name) > 15 {
 		return fmt.Errorf("vpn: interface name %q is %d bytes, longer than the 15 the kernel accepts", name, len(name))
 	}
 	return nil

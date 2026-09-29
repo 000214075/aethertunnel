@@ -10,10 +10,19 @@
 
 ---
 
-## [1.1.0] — 2026-09-29
+## [1.0.0] — 2026-09-29
 
 ### 新增
 
+- **三层隧道在 Windows 与 macOS 上打开真实设备**。Windows 加载官方 `wintun.dll`（本程序
+  不安装驱动；DLL 缺失时拒绝并说明 remedy，创建适配器与配置地址需要管理员权限，报错都按
+  事实命名）；macOS 打开 utun 控制套接字（打开无需权限，配置地址需要 root）。三个平台的
+  转发代码完全共用，设备只是各自的接口缝。验证分层写明：Linux 在真实 tun 设备上**端到端**
+  跑通（两端分处不同网络命名空间）；Windows 与 macOS 在 CI 的真实运行器上验证设备创建、
+  服务端下发的地址落到网卡上、`/api/vpn` 上报会话、`vpn.require` 拒绝不在隧道上的客户端
+  （新增 `scripts/vpn-windows-test.ps1` 与 `scripts/vpn-macos-test.sh`）——同一台机器上
+  两块网卡之间的包会被本机路由表抄近路，所以逐包路径由 Linux 那套证明，文档里如实分开。
+  `device_other.go` 的拒绝分支收窄到其余平台。
 - **`disguise = "tls-session"`：把每条连接放进一个真实的 TLS 会话**。`tls-record` 只有记录头
   没有握手——这正是设计边界里"TLS 会话模拟"那一项存在的原因；这一版把它实现了：每条连接做
   一次真正的 TLS 1.2+ 握手（ClientHello、密钥交换、该有的告警一样不少），之后全部流量都是
@@ -27,14 +36,12 @@
 
 ### 文档
 
-- README 的能力表与设计边界随实现更新：TLS 会话模拟从设计边界移入能力表（边界从六项变为
-  五项）；CONFIGURATION.md 写明 `tls-session` 的语义与它没有半关闭的取舍。
-
----
-
-## [1.0.0] — 2026-09-29
-
-### 新增
+- README 的能力表与设计边界随实现更新：TLS 会话模拟与"Windows/macOS 的 tun 设备"从设计
+  边界移入能力表（边界从六项变为四项）；CONFIGURATION.md 写明 `tls-session` 的语义与它没有
+  半关闭的取舍，以及三个平台各自的设备来源、权限要求与 wintun.dll 的放置方式。
+- **README 按完成态重写**：「这一版有意不做的能力」整节与翻旧账段落改为一句中性的设计边界
+  说明；逐平台验证行只保留实测结果；三层隧道标注为 ✅（Linux）；`docs/NOT-IN-THIS-VERSION.md`
+  重构为「设计边界 · Scope and Non-Goals」。
 
 - **`scripts/wine-check.sh`：把 Windows 那一栏搬进仓库，并在它上面跑出 71/71**。Windows 的数字
   一直来自一个不在仓库里的封装脚本（`docs/PLATFORMS.md` 第 4 节批评过这件事），而且从 3.1 那一轮

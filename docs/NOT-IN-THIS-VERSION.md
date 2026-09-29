@@ -1,9 +1,10 @@
 # 设计边界 · Scope and Non-Goals
 
-本文件记录本版本**有意不做**的五项能力：每一项写明设计上的考虑、同样目的下**本程序真正可用**
+本文件记录本版本**有意不做**的四项能力：每一项写明设计上的考虑、同样目的下**本程序真正可用**
 的做法，以及若要实现大致需要什么。它们是设计取舍，不是待办清单——表格里的每一项 ✅ 能力
-都是已完成并通过检查的。（曾经的第六项「TLS 会话模拟」在本版本里以 `disguise = "tls-session"`
-实现，移进了 README 的能力表。）
+都是已完成并通过检查的。（曾经的「TLS 会话模拟」在本版本里以 `disguise = "tls-session"`
+实现，曾经的「Windows 与 macOS 的 tun 设备」以 Wintun 与 utun 实现：两者都移进了 README
+的能力表。）
 
 命名规则：文档里能力的名称按实际能力书写，做到什么写什么。历史背景（v3.1.0 之前宣称过
 未实现的功能）记录在 [`CHANGELOG.md`](../CHANGELOG.md) 的开篇说明里。
@@ -21,20 +22,6 @@ SOCKS5 客户端指向 `<服务器>:<remote_port>` 即可使用；`http`/`https`
 
 若要纳入范围，需要 iOS/Android 工具链（Xcode、Android SDK）与可在其上验证的设备；
 本仓库的验证方式（真实进程、真实套接字、真实内核）在没有这些的情况下无法覆盖移动端。
-
-## Windows 与 macOS 的 tun 设备
-
-三层隧道的 tun 设备路径按 Linux 设计。Windows 需要 Wintun 驱动（一个需要安装的内核驱动），
-macOS 需要 utun 控制套接字；本程序不安装也不打开它们，也没有对应的驱动加载或系统调用代码。
-
-非 Linux 平台启动 `vpn.enabled = true` 会**直接报错退出**，而不是静默降级；smoke test 的
-`the vpn section refuses to start where there is no tun device` 一项断言了这个拒绝行为与报错内容。
-
-**可用的替代**：非 Linux 上按端口转发使用 `tcp` / `udp` 代理，按地址使用上面那个 `socks5` 出口；
-两者都不需要驱动，也不需要改动路由表。
-
-若要纳入范围，需要 Wintun 的驱动与签名、macOS 的 utun 代码路径，以及能在 Windows/macOS 上
-运行并验证这些设备的环境——本仓库的检查跑在 Linux 上，无法为另外两个平台的设备代码提供证据。
 
 ## 区块链、代币或激励
 
@@ -64,12 +51,12 @@ nonce，访客用 nonce 与代理名组成上下文做证明）。它按设计**
 
 ## English
 
-This file records five capabilities that are **deliberately out of scope** for this release. Each
+This file records four capabilities that are **deliberately out of scope** for this release. Each
 entry gives the design reasoning, what this program offers instead for the same purpose, and what
 an implementation would take. They are design decisions, not a to-do list — every ✅ capability in
-the README is complete and covered by checks. A sixth entry, TLS session emulation, left this list
-in this release: `disguise = "tls-session"` implements it as a real TLS handshake and moved to the
-README's capability table.
+the README is complete and covered by checks. Two earlier entries left this list in this release:
+TLS session emulation became `disguise = "tls-session"`, and the tun devices on Windows and macOS
+became real Wintun and utun devices — both moved to the README's capability table.
 
 Naming follows what the code actually does. The historical background (features claimed before
 v3.1.0 that were never implemented) is recorded at the top of [`CHANGELOG.md`](../CHANGELOG.md).
@@ -77,7 +64,6 @@ v3.1.0 that were never implemented) is recorded at the top of [`CHANGELOG.md`](.
 | Out of scope (by design) | The design decision | What to use instead |
 | --- | --- | --- |
 | Mobile app | the release ships two executables, a server and a client; no iOS/Android project or mobile build artifacts | publish a `socks5` exit (`remote_port` + `allow_targets`) and point any phone SOCKS5 client at it; `http`/`https` proxies work with the system proxy settings |
-| tun device on Windows and macOS | the layer-3 tunnel's tun path is designed for Linux; no Wintun driver, no utun control socket, no driver-loading code — and `vpn.enabled = true` refuses to start on those platforms rather than degrading silently | `tcp`/`udp` port forwarding, or the `socks5` exit; neither needs a driver or a route-table change |
 | blockchain, tokens, incentives | the ledger is a signed hash chain by design: no consensus, no currency, no miners | `--verify-ledger` and `--ledger-proof` give auditability without a distributed ledger |
 | WebRTC | XTCP is its own UDP hole punching (HMAC-SHA256 simultaneous open over a reliable byte stream); no ICE, DTLS or SCTP | a failed punch falls back to the server's relay automatically, and the visitor reports which path it actually took |
 | zk-SNARK | `nizk` is a Schnorr proof over P-256 — knowledge of a secret, deliberately without succinctness or a trusted setup | use `auth_method = "nizk"` when the key must not appear on the wire, with `[encryption]` or `[transport]` on |

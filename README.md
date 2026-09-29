@@ -5,11 +5,11 @@
 Server, client and a built-in web panel. Pure Go, no CGO, cross-compiled for six platforms.
 
 八种代理类型（`tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`）、代理池与负载均衡、
-可选的后量子加密、Prometheus 指标与 JSONL 审计日志；三层隧道**只在 Linux 上实现**，其他平台
-启动 `vpn.enabled = true` 会明确报错退出。
+可选的后量子加密、Prometheus 指标与 JSONL 审计日志；三层隧道在 Linux、Windows（Wintun）与
+macOS（utun）上打开真实设备，设备缺失时明确报错退出。
 Eight proxy types (`tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`), pooling with load
 balancing, optional post-quantum encryption, Prometheus metrics and a JSONL audit log; the
-layer-3 tunnel is **Linux only** and every other platform refuses to start with it enabled.
+layer-3 tunnel opens real devices on Linux, Windows (Wintun) and macOS (utun), and refuses to start with it enabled where no device can be opened.
 
 [![CI](https://github.com/000214075/aethertunnel/actions/workflows/ci.yml/badge.svg)](https://github.com/000214075/aethertunnel/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/tag/000214075/aethertunnel?label=release)](https://github.com/000214075/aethertunnel/releases)
@@ -92,7 +92,7 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 | 带宽账本 | ✅ 可用 | Ed25519 签名、哈希链式追加的用量记录（JSONL），`GET /api/ledger` 发布公钥、链头与条目，`--verify-ledger` 可离线校验，`--ledger-proof <文件> --proof-index <n>` 导出到第 n 条为止的前缀（只凭公钥即可校验，不必交出整条链）；改一个字节、换一串公钥、调换条目顺序或用别条的签名都会失败。面板的「账本」页显示同一份数据：是否启用、文件、条目数、链头、尚未入账的活动用量与公钥，以及按客户端汇总和最近条目两张表。**记的是服务端搬过的字节**：`xtcp` 打洞成功后两端直连，那段流量不经过服务端，因此不在账本里（见 [`docs/SECURITY.md`](docs/SECURITY.md) 第 9 节） |
 | 去中心化目录 | ✅ 可用 | 基于 Kademlia 的 DHT（160 位、k 桶、迭代查找）；服务端把已发布的代理写成记录，客户端可用 `dht.discover` 按名字找服务器，运维可用 `--dht-lookup` / `--discover` / `--dht-key`；面板的「目录」页显示同一份数据（节点标识、地址、命名空间、路由表节点数、对外主机名与通告签名公钥）与正在通告的名字 |
 | 通告签名 | ✅ 可用 | DHT 上任何节点都能写同一个键，所以服务端用 Ed25519 给每条通告签名；读取端 `require_signed` 拒绝无签名记录，`trusted_keys` 只认指定公钥。改一个字段或换一把key都会失败 |
-| 三层隧道 | ✅ 可用（Linux） | `[vpn]`：客户端从服务端领取地址，IP 包经控制连接转发；服务端是共享一张网卡的路由器。Linux 上打开或创建 tun 设备；其它平台**明确拒绝启动**并说明缺少什么，不会静默降级。Linux 路径已在真实 tun 设备上跑通（`scripts/vpn-linux-test.sh`，两端放在不同网络命名空间里互相 ping），`GET /api/vpn` 与面板的"三层隧道"一栏显示接口、地址池与包计数 |
+| 三层隧道 | ✅ 可用（Linux · Windows · macOS） | `[vpn]`：客户端从服务端领取地址，IP 包经控制连接转发；服务端是共享一张网卡的路由器。Linux 打开 `/dev/net/tun`；Windows 加载官方 `wintun.dll`（程序本身不装驱动，缺 DLL 就拒绝并说明）；macOS 打开 utun 控制套接字。三种平台都没有就**明确拒绝启动**，不会静默降级。Linux 路径在真实 tun 设备上端到端跑通（`scripts/vpn-linux-test.sh`，两端放在不同网络命名空间里互相 ping）；Windows 与 macOS 在 CI 的真实运行器上验证设备创建、地址落卡与 `/api/vpn` 状态（`scripts/vpn-windows-test.ps1`、`scripts/vpn-macos-test.sh`——同一台机器上两块网卡之间的包会被本机路由表抄近路，所以逐包路径由 Linux 那套证明，转发代码三个平台共用）。`GET /api/vpn` 与面板的"三层隧道"一栏显示接口、地址池与包计数 |
 | 流量混淆 | ✅ 可用 | `pad_to` 补齐帧长度、`jitter_millis` 加抖动；`disguise = "tls-record"` 把每个写入包进 TLS 1.2 应用数据记录（骗得过看首字节的识别，骗不过建模握手序列的）；`disguise = "tls-session"` 让每条连接做一次**真实的 TLS 握手**——真加密、每连接现签一张匿名自签证书，建模 TLS 会话的探测器看到的就是一个会话 |
 | 访问控制 | ✅ 可用 | `allow_cidrs` / `deny_cidrs` 在握手前执行；无法解析的来源在存在规则时按拒绝处理。单个代理还能再限定自己的访客来源（`[[proxies]]` 的 `allow_cidrs` / `deny_cidrs`）。服务端配置里的 `[[proxies]]` 是**按代理名的策略**：限定该名字能以什么类型、哪个对外端口发布，以及哪些来源可以访问，客户端注册时对不上就被拒。运维脚本用一台独立服务器把服务端级规则单独验了一遍：被拒来源在握手前断开、且不计入接入连接数 |
 | 连接限流 | ✅ 可用 | 按来源地址的令牌桶，在握手前执行；空闲桶会被回收。运维脚本分别验了桶内请求被放行、超出后被拒并写进审计与日志 |
@@ -110,7 +110,7 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 
 ### 设计边界
 
-移动端 App、Windows/macOS 的 tun 设备、区块链/代币、WebRTC、zk-SNARK 五项
+移动端 App、区块链/代币、WebRTC、zk-SNARK 四项
 是**有意的设计取舍**，不是待办事项；每一项的考虑、以及同样目的下本程序可用的做法，
 见 [`docs/NOT-IN-THIS-VERSION.md`](docs/NOT-IN-THIS-VERSION.md)。
 
@@ -377,7 +377,7 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 | Bandwidth ledger | ✅ works | Ed25519-signed, hash-chained usage records (JSONL); `GET /api/ledger` publishes the public key, the chain head and the entries, `--verify-ledger` checks them offline, and `--ledger-proof <file> --proof-index <n>` writes the prefix up to entry n, which verifies on its own so one period's usage can be shown without handing over the rest of the chain; one altered byte, a different key, two entries swapped or another entry's signature all fail. The dashboard's Ledger view shows the same data: whether it is on, the file, the entry count, the chain head, the live usage not yet in the chain and the public key, with tables for the per-client totals and the most recent entries. It bills the bytes the server carried: once an `xtcp` punch succeeds the two ends talk directly, and that traffic never reaches the server, so it is in no entry (see section 9 of [`docs/SECURITY.md`](docs/SECURITY.md)) |
 | Decentralised directory | ✅ works | a Kademlia DHT (160-bit, k-buckets, iterative lookup); the server publishes one record per proxy, a client resolves a name with `dht.discover`, and operators use `--dht-lookup`, `--discover` or `--dht-key`; the dashboard's Directory view shows the same data (node id, address, namespace, routing-table size, advertised host and announcement key) and the names being announced |
 | Signed announcements | ✅ works | any node can write to a proxy's key, so the server signs every record with Ed25519; a reader sets `require_signed` to refuse unsigned records and `trusted_keys` to believe named keys only. One altered field or a different key fails |
-| Layer-3 tunnel | ✅ works (Linux) | `[vpn]`: a client is given an address and its IP packets travel on the control connection; the server is a router over one shared interface. Linux opens or creates a tun device; every other platform **refuses to start** and says what is missing instead of degrading silently. The Linux path runs on a real tun device in `scripts/vpn-linux-test.sh`, with the two ends in separate network namespaces, and `GET /api/vpn` plus the dashboard's layer-3 panel report the interface, the pool and the packet counters |
+| Layer-3 tunnel | ✅ works (Linux · Windows · macOS) | `[vpn]`: a client is given an address and its IP packets travel on the control connection; the server is a router over one shared interface. Linux opens `/dev/net/tun`; Windows loads the official `wintun.dll` (the program never installs a driver and refuses, naming the remedy, when the DLL is missing); macOS opens a utun control socket. Where none of these is available the program **refuses to start** instead of degrading silently. The Linux path is verified end to end on real tun devices (`scripts/vpn-linux-test.sh`, the two ends in separate network namespaces); Windows and macOS are verified on CI runners for device creation, the addresses landing on the adapters, and the `/api/vpn` state (`scripts/vpn-windows-test.ps1`, `scripts/vpn-macos-test.sh` — a packet between two adapters on one machine is shortcut by the local routing table, so the per-packet path is proven on Linux, whose forwarding lines all three builds share). `GET /api/vpn` plus the dashboard's layer-3 panel report the interface, the pool and the packet counters |
 | Traffic obfuscation | ✅ works | `pad_to` rounds frame lengths, `jitter_millis` adds delay, and `disguise = "tls-record"` puts every write inside TLS 1.2 application-data records — enough for a detector that reads first bytes, not for one that models a handshake. `disguise = "tls-session"` gives every connection a **real TLS handshake** — real encryption, a freshly minted anonymous self-signed certificate per connection — so a detector that models TLS sessions sees a session that is one |
 | Access control | ✅ works | `allow_cidrs` / `deny_cidrs` before the handshake; an unparseable source is refused when any rule exists. A single proxy can restrict its own visitors further with `allow_cidrs` / `deny_cidrs` in its `[[proxies]]` block |
 | Rate limiting | ✅ works | a per-source token bucket before the handshake, with idle buckets reclaimed |
@@ -395,8 +395,8 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 
 ### Scope
 
-Five capabilities are **deliberate design decisions** rather than pending work: a mobile app, tun
-devices on Windows and macOS, a blockchain, WebRTC and zk-SNARKs. The
+Four capabilities are **deliberate design decisions** rather than pending work: a mobile app, a
+blockchain, WebRTC and zk-SNARKs. The
 reasoning behind each, and what this program offers instead for the same purpose, is in
 [`docs/NOT-IN-THIS-VERSION.md`](docs/NOT-IN-THIS-VERSION.md).
 

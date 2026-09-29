@@ -444,8 +444,9 @@ func TestVPNServerRefusesToStartWithoutAnInterface(t *testing.T) {
 		t.Fatal("the server started although the tunnel interface could not be opened")
 	}
 
-	// The real opener on this machine: on Windows and macOS this build has no tun
-	// implementation, so it must refuse rather than pretend.
+	// The real opener on this machine: where the platform has no tun device this
+	// build refuses rather than pretends. A platform that does have one succeeds,
+	// and both outcomes are fine here — the refusal path has its own checks.
 	if _, err := vpn.Open("test0", 1400); err != nil {
 		if !errors.Is(err, vpn.ErrNoDevice) {
 			t.Logf("opening a tun device failed with %v", err)

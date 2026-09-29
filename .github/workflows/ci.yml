@@ -120,6 +120,26 @@ jobs:
           go build -o bin/aethertunnel-client ./client
           sudo bash scripts/vpn-linux-test.sh bin/aethertunnel-server bin/aethertunnel-client
 
+      # The same layer-3 path on this runner's own kernel: both ends open real
+      # devices (Wintun on Windows, utun on macOS), the addresses the server hands
+      # out land on them, and /api/vpn reports the sessions. A packet between two
+      # devices on ONE machine cannot prove it entered the driver - the local
+      # routing table shortcuts it - so the packet path itself is proven on Linux,
+      # which shares every forwarding line with these builds.
+      - name: the layer-3 tunnel opens real devices on this runner
+        if: runner.os == 'Windows'
+        run: |
+          go build -o bin/aethertunnel-server.exe .
+          go build -o bin/aethertunnel-client.exe ./client
+          powershell -ExecutionPolicy Bypass -File scripts\vpn-windows-test.ps1 -Server bin\aethertunnel-server.exe -Client bin\aethertunnel-client.exe
+
+      - name: the layer-3 tunnel opens real devices on this runner
+        if: runner.os == 'macOS'
+        run: |
+          go build -o bin/aethertunnel-server .
+          go build -o bin/aethertunnel-client ./client
+          sudo bash scripts/vpn-macos-test.sh bin/aethertunnel-server bin/aethertunnel-client
+
       # -o with an explicit name does not append .exe on Windows, so the suffix is
       # part of the artifact name on every platform.
       - name: build
