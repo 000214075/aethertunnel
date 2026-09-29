@@ -98,7 +98,8 @@ $clientProc = Start-Process -FilePath $Client -ArgumentList "--config", "$work\c
 $deadline = (Get-Date).AddSeconds(30)
 do {
     Start-Sleep -Milliseconds 500
-    $clientUp = Select-String -Path "$work\client.log" -Pattern "tunnel interface $clientDevice" -Quiet
+    # The client logs to stderr, so the announcement can be in either file.
+    $clientUp = Select-String -Path "$work\client.log", "$work\client.err" -Pattern "tunnel interface $clientDevice" -Quiet
 } while (((Get-Date) -lt $deadline) -and (-not $clientUp))
 if ($clientUp) { Pass "the client opened its adapter and took the address the server handed out" } else { Fail "the client never configured a tunnel interface" ((Get-Content "$work\client.log" -Tail 3 -ErrorAction SilentlyContinue) + (Get-Content "$work\client.err" -Tail 3 -ErrorAction SilentlyContinue) -join " | ") }
 
