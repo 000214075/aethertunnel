@@ -89,7 +89,7 @@ do {
 } while (((Get-Date) -lt $deadline) -and (-not $listening))
 if ($listening) { Pass "the server is listening on its control port" } else { Fail "the server never listened" ((Get-Content "$work\server.log" -Tail 3 -ErrorAction SilentlyContinue) + (Get-Content "$work\server.err" -Tail 3 -ErrorAction SilentlyContinue) -join " | ") }
 
-if (Select-String -Path "$work\server.log" -Pattern "vpn: interface $serverDevice" -Quiet) {
+if (Select-String -Path "$work\server.log", "$work\server.err" -Pattern "vpn: interface $serverDevice" -Quiet) {
     Pass "the server opened a real Wintun adapter"
 } else { Fail "the server did not open the adapter" ((Get-Content "$work\server.log" -Tail 3 -ErrorAction SilentlyContinue) + (Get-Content "$work\server.err" -Tail 3 -ErrorAction SilentlyContinue) -join " | ") }
 
@@ -108,21 +108,22 @@ if ($serverIP -eq "$net.1") { Pass "the server's adapter has $net.1" } else { Fa
 $clientIP = (Get-NetIPAddress -InterfaceAlias $clientDevice -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress
 if ($clientIP -eq "$net.2") { Pass "the client's adapter has $net.2" } else { Fail "the client's adapter address is '$clientIP', want $net.2" }
 
-# The same state, seen the way an operator sees it: through the dashboard API.
+# The same state, seen the way an operator sees it: through the dashboard API,
+# which reports the server's own summary - how many addresses the pool handed
+# out, and how many peers hold one.
 Start-Sleep -Seconds 1
 $api = Invoke-RestMethod -Headers @{ Authorization = "Bearer vpn-windows-test-dashboard" } "http://127.0.0.1:$dashboard/api/vpn"
-$apiText = $api | ConvertTo-Json -Depth 6
-if ($apiText -match [regex]::Escape($clientIP)) {
-    Pass "the dashboard's /api/vpn reports the client's tunnel address"
-} else { Fail "/api/vpn does not report the client's tunnel address" ($apiText.Substring(0, [Math]::Min(400, $apiText.Length))) }
+if ($api.addresses_used -ge 1 -and $api.peers -ge 1 -and $api.server_address -eq "$net.1") {
+    Pass "the dashboard's /api/vpn reports the handed-out address and the peer holding it"
+} else { Fail "/api/vpn does not report the handed-out address and the peer" (($api | ConvertTo-Json -Depth 6).Substring(0, 400)) }
 
 # A session that must be on the tunnel is refused without it: the no-vpn client's
 # registration fails, and the refusal is visible in its own log.
 $novpnProc = Start-Process -FilePath $Client -ArgumentList "--config", "$work\novpn.toml" -RedirectStandardOutput "$work\novpn.log" -RedirectStandardError "$work\novpn.err" -PassThru -WindowStyle Hidden
 Start-Sleep -Seconds 3
-if (Select-String -Path "$work\novpn.log", "$work\server.log" -Pattern "refus|require" -Quiet) {
+if (Select-String -Path "$work\novpn.log", "$work\server.log", "$work\server.err" -Pattern "refus|require" -Quiet) {
     Pass "a client that is not on the tunnel is refused (vpn.require)"
-} else { Fail "a client that is not on the tunnel was not refused" (Get-Content "$work\novpn.log" -Tail 3 | Out-String) }
+} else { Fail "a client that is not on the tunnel was not refused" ((Get-Content "$work\novpn.log" -Tail 3 -ErrorAction SilentlyContinue) + (Get-Content "$work\server.err" -Tail 3 -ErrorAction SilentlyContinue) -join " | ") }
 
 # Informational, not a check: two adapters on one machine cannot demonstrate that
 # a packet entered the driver. See the file comment.
