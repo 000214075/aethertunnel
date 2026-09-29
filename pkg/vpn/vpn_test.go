@@ -880,19 +880,13 @@ func (plainDevice) Close() error              { return nil }
 func (plainDevice) Name() string              { return "plain" }
 func (plainDevice) MTU() int                  { return 1500 }
 
-// TestOpenReportsWhatThePlatformCanDo checks the platform boundary. On a platform
-// with no tun implementation in this build the call must fail with ErrNoDevice; on
-// Linux it either succeeds, or fails because opening the device needs CAP_NET_ADMIN.
+// TestOpenReportsWhatThePlatformCanDo checks the platform boundary. Every platform
+// in this build has a tun implementation, so Open either succeeds, or fails with
+// that platform's own reason — and the message has to name the platform either way.
 func TestOpenReportsWhatThePlatformCanDo(t *testing.T) {
 	device, err := Open("", 0)
 
-	if runtime.GOOS == "linux" {
-		if err != nil {
-			if !errors.Is(err, os.ErrPermission) && !strings.Contains(err.Error(), "operation not permitted") {
-				t.Fatalf("Open on Linux failed with %v, want success or a permission error", err)
-			}
-			t.Skipf("this process cannot open a tun device: %v", err)
-		}
+	if err == nil {
 		defer device.Close()
 		if device.Name() == "" {
 			t.Error("the opened device has no name")
@@ -903,15 +897,29 @@ func TestOpenReportsWhatThePlatformCanDo(t *testing.T) {
 		return
 	}
 
-	if err == nil {
-		_ = device.Close()
-		t.Fatalf("Open succeeded on %s, where this build has no tun implementation", runtime.GOOS)
-	}
-	if !errors.Is(err, ErrNoDevice) {
-		t.Fatalf("Open on %s failed with %v, want ErrNoDevice", runtime.GOOS, err)
-	}
-	if !strings.Contains(err.Error(), runtime.GOOS) {
-		t.Errorf("the error %v does not name the platform", err)
+	switch runtime.GOOS {
+	case "linux":
+		// The refusal here is the long-standing CAP_NET_ADMIN hint, which already
+		// names what to change; the platform name is not part of it.
+		if !errors.Is(err, os.ErrPermission) && !strings.Contains(err.Error(), "operation not permitted") {
+			t.Fatalf("Open on Linux failed with %v, want success or a permission error", err)
+		}
+		t.Skipf("this process cannot open a tun device: %v", err)
+	case "windows":
+		// The runner has no wintun.dll: the refusal is ErrNoDevice and names both
+		// the platform and the remedy.
+		if !errors.Is(err, ErrNoDevice) || !strings.Contains(err.Error(), "wintun.dll") || !strings.Contains(err.Error(), "windows") {
+			t.Fatalf("Open on Windows failed with %v, want ErrNoDevice naming windows and wintun.dll", err)
+		}
+	case "darwin":
+		// The runner's sandbox refuses the control socket; a name outside the
+		// utunN shape is refused before any syscall, and both messages say macOS.
+		if !strings.Contains(err.Error(), "operation not permitted") && !strings.Contains(err.Error(), "utun") {
+			t.Fatalf("Open on macOS failed with %v, want a control-socket or naming refusal", err)
+		}
+		if !strings.Contains(err.Error(), "macOS") {
+			t.Errorf("the error %v does not name the platform", err)
+		}
 	}
 }
 

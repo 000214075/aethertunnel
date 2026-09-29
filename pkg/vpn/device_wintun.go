@@ -79,7 +79,7 @@ func wintun() (*wintunAPI, error) {
 			}
 		}
 		if path == "" {
-			wintunErr = fmt.Errorf("vpn: wintun.dll was not found; put the official one from wintun.net beside the executable or point WINTUN_DLL at it")
+			wintunErr = fmt.Errorf("vpn: this windows build opens a tun device through wintun.dll, which was not found; put the official one from wintun.net beside the executable or point WINTUN_DLL at it")
 			return
 		}
 		dll := windows.NewLazyDLL(path)

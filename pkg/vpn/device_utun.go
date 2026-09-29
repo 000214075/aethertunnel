@@ -64,7 +64,7 @@ func openPlatformDevice(name string, mtu int) (Device, error) {
 	}
 	if err := unix.Connect(fd, &unix.SockaddrCtl{ID: info.Id, Unit: uint32(number) + 1}); err != nil {
 		_ = unix.Close(fd)
-		return nil, fmt.Errorf("vpn: open %s (it may already exist): %w", name, err)
+		return nil, fmt.Errorf("vpn: open %s on macOS (it may already exist): %w", name, err)
 	}
 
 	if mtu == 0 {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -498,10 +499,13 @@ func TestRouterWithoutADeviceOnThisPlatform(t *testing.T) {
 		_ = device.Close()
 		return
 	}
+	// This runner cannot open a device; the refusal is the platform's own reason —
+	// ErrNoDevice where the DLL/socket layer refuses, a permission error where the
+	// sandbox does.
 	if runtime.GOOS == "linux" {
 		t.Skipf("cannot open a tun device here: %v", err)
 	}
-	if !errors.Is(err, ErrNoDevice) {
-		t.Fatalf("Open failed with %v, want ErrNoDevice on %s", err, runtime.GOOS)
+	if !errors.Is(err, ErrNoDevice) && !strings.Contains(err.Error(), "operation not permitted") {
+		t.Fatalf("Open failed with %v, want ErrNoDevice or a permission refusal on %s", err, runtime.GOOS)
 	}
 }

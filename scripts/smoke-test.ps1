@@ -1716,8 +1716,8 @@ address = "10.7.0.0/24"
     }
 
     $output = Invoke-Binary -FilePath $serverExe -Arguments @('-config', $vpnToml) -AllowFailure
-    if ($output -notmatch 'no tun implementation') { throw "the server did not report the missing tun device: $output" }
-    if ($output -notmatch 'Wintun') { throw "the message does not say what a tun device on Windows needs: $output" }
+    if ($output -notmatch 'wintun\.dll') { throw "the server did not report the missing tun device: $output" }
+    if ($output -notmatch 'wintun\.net') { throw "the message does not say what a tun device on Windows needs: $output" }
     return $true
 }
 
