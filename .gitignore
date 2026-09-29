@@ -78,6 +78,10 @@ temp/
 # === 证书和密钥 ===
 *.pem
 *.key
+# The visitor-auth circuit's Groth16 keys are public parameters, not secrets:
+# the proving key proves, the verifying key verifies, neither opens anything.
+!pkg/snarkauth/proving.key
+!pkg/snarkauth/verifying.key
 *.crt
 *.cer
 *.der
