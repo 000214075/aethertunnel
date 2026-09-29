@@ -368,6 +368,85 @@ func TestLookupProxyReportsAnUnknownName(t *testing.T) {
 	}
 }
 
+// nonLoopbackIPv4 is an address of this machine that a second machine could send a
+// datagram back to, or "" when the machine has nothing but loopback.
+func nonLoopbackIPv4(t *testing.T) string {
+	t.Helper()
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Fatalf("interface addresses: %v", err)
+	}
+	for _, addr := range addrs {
+		ipnet, ok := addr.(*net.IPNet)
+		if !ok || ipnet.IP.IsLoopback() {
+			continue
+		}
+		if ip4 := ipnet.IP.To4(); ip4 != nil {
+			return ip4.String()
+		}
+	}
+	return ""
+}
+
+// A peer answers the address the request arrived from, so a query bound to loopback is
+// answered only by a node on this same machine. The bare socket here is the observer: it
+// records where the request came from and never answers.
+func TestLookupProxyQueriesFromAnAddressTheAnswerCanReach(t *testing.T) {
+	routable := nonLoopbackIPv4(t)
+	if routable == "" {
+		t.Skip("this machine has no address other than loopback to send from")
+	}
+
+	observer, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero})
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer observer.Close()
+	_, port, err := net.SplitHostPort(observer.LocalAddr().String())
+	if err != nil {
+		t.Fatalf("split %q: %v", observer.LocalAddr(), err)
+	}
+
+	requests := make(chan *net.UDPAddr, 1)
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			_, from, err := observer.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			select {
+			case requests <- from:
+			default:
+			}
+		}
+	}()
+
+	lookupCfg := &config.Config{}
+	lookupCfg.DHT.Enabled = true
+	lookupCfg.DHT.ListenAddr = "127.0.0.1:0"
+	lookupCfg.DHT.Bootstrap = []string{net.JoinHostPort(routable, port)}
+	lookupCfg.DHT.LookupTimeoutSeconds = 1
+	if err := lookupCfg.Validate(""); err != nil {
+		t.Fatalf("lookup config invalid: %v", err)
+	}
+
+	// Nobody answers, so the lookup fails. What it leaves behind is the address its
+	// request carried, which is the answer a peer would have sent.
+	if _, err := LookupProxy(lookupCfg, discardLogger(), "ssh"); err == nil {
+		t.Fatal("a lookup against a socket that never answers resolved")
+	}
+
+	select {
+	case from := <-requests:
+		if from.IP.IsLoopback() {
+			t.Fatalf("the request came from %s, an address only a node on this machine answers", from)
+		}
+	default:
+		t.Fatal("the observer saw no request")
+	}
+}
+
 // --- signed announcements ------------------------------------------------------
 
 // signingConfig is dhtConfig with announcements signed by a key file, which is the

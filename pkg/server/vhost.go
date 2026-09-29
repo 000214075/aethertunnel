@@ -1,18 +1,23 @@
 package server
 
 import (
+	"bufio"
 	"crypto/tls"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aethertunnel/aethertunnel/pkg/config"
 	"github.com/aethertunnel/aethertunnel/pkg/crypto"
+	flynet "github.com/aethertunnel/aethertunnel/pkg/net"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
 )
 
@@ -314,7 +319,7 @@ func (v *vhostRouter) handler(w http.ResponseWriter, r *http.Request) {
 func (v *vhostRouter) start(addr string, tlsCert *tls.Certificate) error {
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", addr, err)
+		return flynet.ListenError(addr, err)
 	}
 	if tlsCert != nil {
 		listener = tls.NewListener(listener, &tls.Config{
@@ -385,10 +390,20 @@ func (c *tunnelHTTPConn) Close() error {
 	return err
 }
 
-// countingResponseWriter records how many bytes went back to the visitor.
+// countingResponseWriter records how many bytes went back to the visitor. For a
+// normal response that is the Write path; for a protocol switch the connection is
+// hijacked, so the bytes moved after the switch are counted separately.
 type countingResponseWriter struct {
 	http.ResponseWriter
 	written int64
+
+	// hijackRead counts bytes read from the hijacked visitor connection, which is
+	// the request direction. hijackSent counts bytes written to it, the response
+	// direction. Both are atomic because the reverse proxy moves those bytes from
+	// two copy goroutines, and the serving goroutine reads them once the request
+	// is over.
+	hijackRead atomic.Int64
+	hijackSent atomic.Int64
 }
 
 func (w *countingResponseWriter) Write(p []byte) (int, error) {
@@ -397,9 +412,62 @@ func (w *countingResponseWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// Unwrap exposes the underlying writer so http.ResponseController can reach the
+// interfaces this wrapper does not implement itself.
+func (w *countingResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// Hijack hands the connection over for a protocol switch, wrapping it so the
+// bytes carried after the switch still reach the metrics and the ledger. Without
+// this the switch works but its traffic disappears from every counter.
+func (w *countingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("the underlying response writer cannot be hijacked")
+	}
+	conn, brw, err := hijacker.Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	return &hijackedConn{Conn: conn, counter: w}, brw, nil
+}
+
 // Flush keeps streaming responses streaming through the wrapper.
 func (w *countingResponseWriter) Flush() {
 	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}
+}
+
+// hijackedConn counts the bytes a protocol switch moves after the response has
+// been handed over, on top of a raw net.Conn.
+type hijackedConn struct {
+	net.Conn
+	counter *countingResponseWriter
+}
+
+func (c *hijackedConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	c.counter.hijackRead.Add(int64(n))
+	return n, err
+}
+
+func (c *hijackedConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	c.counter.hijackSent.Add(int64(n))
+	return n, err
+}
+
+// countingReadCloser records how many request body bytes were actually read, so a
+// chunked body — whose ContentLength is -1 — is billed like a body of known
+// length. The read counter is atomic because the HTTP transport drains the body
+// from its own goroutine.
+type countingReadCloser struct {
+	io.ReadCloser
+	read atomic.Int64
+}
+
+func (c *countingReadCloser) Read(p []byte) (int, error) {
+	n, err := c.ReadCloser.Read(p)
+	c.read.Add(int64(n))
+	return n, err
 }

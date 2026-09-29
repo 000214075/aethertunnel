@@ -4,12 +4,12 @@ import (
 	crand "crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"log"
 	"net"
 	"sync"
 	"time"
 
+	flynet "github.com/aethertunnel/aethertunnel/pkg/net"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
 )
 
@@ -61,7 +61,7 @@ func newP2PRendezvous(logger *log.Logger) *p2pRendezvous {
 func (p *p2pRendezvous) Start(addr string) error {
 	conn, err := net.ListenPacket("udp", addr)
 	if err != nil {
-		return fmt.Errorf("listen on %s/udp: %w", addr, err)
+		return flynet.ListenError(addr+"/udp", err)
 	}
 	p.conn = conn
 	p.logger.Printf("xtcp rendezvous listening on %s/udp", conn.LocalAddr())

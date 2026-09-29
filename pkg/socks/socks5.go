@@ -1,10 +1,10 @@
 // Package socks implements the parts of SOCKS5 (RFC 1928) that a tunnel endpoint
-// needs: reading a CONNECT request from a visitor, answering it, and deciding
-// which targets the client behind the tunnel may dial.
+// needs: reading a CONNECT or UDP ASSOCIATE request from a visitor, answering it,
+// carrying UDP datagrams in the protocol's wrapping, and deciding which targets
+// the client behind the tunnel may dial.
 //
-// Only the CONNECT command is implemented. UDP ASSOCIATE and BIND are refused
-// with the reply code the protocol defines for them, so a client that asks for
-// one gets a clear answer instead of a hang.
+// BIND is refused with the reply code the protocol defines for it, so a client
+// that asks for it gets a clear answer instead of a hang.
 package socks
 
 import (
@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -44,20 +45,48 @@ const (
 
 // Errors reported while reading a request.
 var (
-	ErrNotSOCKS5      = errors.New("socks: the client did not offer SOCKS5")
-	ErrNoAuthMethod   = errors.New("socks: the client offered no method this server accepts")
-	ErrUnsupported    = errors.New("socks: only the CONNECT command is supported")
-	ErrAddressTooLong = errors.New("socks: the requested domain name is too long")
-	ErrUnknownAddress = errors.New("socks: the request uses an address type this server does not know")
-	ErrPortMissing    = errors.New("socks: the request has no port")
+	ErrNotSOCKS5        = errors.New("socks: the client did not offer SOCKS5")
+	ErrNoAuthMethod     = errors.New("socks: the client offered no method this server accepts")
+	ErrUnsupported      = errors.New("socks: only CONNECT and UDP ASSOCIATE are supported")
+	ErrAddressTooLong   = errors.New("socks: the requested domain name is too long")
+	ErrUnknownAddress   = errors.New("socks: the request uses an address type this server does not know")
+	ErrBadAddress       = errors.New("socks: the requested host cannot be written as host:port")
+	ErrPortMissing      = errors.New("socks: the request has no port")
+	ErrShortUDPDatagram = errors.New("socks: the UDP datagram is truncated")
+	ErrFragment         = errors.New("socks: the UDP datagram asks for fragmentation")
 )
 
-// Request is one accepted CONNECT request.
+// joinHostPort renders a target as host:port, refusing a host that would not
+// survive being taken apart again.
+//
+// A target crosses the tunnel as one string and every consumer reads it with
+// net.SplitHostPort: the server compares it against the proxy's allow list, the
+// client resolves and dials what it parsed, and the same string comes back the
+// other way. A domain name carrying a bracket breaks that — net.JoinHostPort only
+// brackets a host containing a colon, so "a[" becomes "a[:80", which
+// net.SplitHostPort refuses — and the request would reach the client as a string
+// it can only turn down with a complaint about its own parsing. Neither '[' nor
+// ']' can appear in a host name, so refusing them here cannot refuse a target a
+// visitor meant.
+func joinHostPort(host string, port int) (string, error) {
+	if strings.ContainsAny(host, "[]") {
+		return "", fmt.Errorf("%w: the host %q carries a bracket", ErrBadAddress, host)
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port)), nil
+}
+
+// Request is one accepted request.
 type Request struct {
-	// Target is the address the visitor asked for, as host:port. A domain name is
-	// kept as a name: the client behind the tunnel resolves it, so the visitor
-	// does not have to.
+	// Command is CmdConnect or CmdAssoc.
+	Command byte
+	// Target is the address the visitor asked to reach, as host:port. It is set
+	// for a CONNECT request; a domain name is kept as a name so the client behind
+	// the tunnel resolves it, not the visitor.
 	Target string
+	// ClientAddr is the address the visitor says it will send UDP datagrams
+	// from, as host:port. It is set for a UDP ASSOCIATE request and is commonly
+	// 0.0.0.0:0, which means "any address".
+	ClientAddr string
 }
 
 // ReadRequest performs the method negotiation and reads one request, answering
@@ -104,7 +133,10 @@ func ReadRequest(conn net.Conn, timeout time.Duration) (Request, error) {
 	if request[0] != Version {
 		return Request{}, ErrNotSOCKS5
 	}
-	if request[1] != CmdConnect {
+	command := request[1]
+	switch command {
+	case CmdConnect, CmdAssoc:
+	default:
 		_ = WriteReply(conn, ReplyCommandNotSupported)
 		return Request{}, ErrUnsupported
 	}
@@ -119,17 +151,47 @@ func ReadRequest(conn net.Conn, timeout time.Duration) (Request, error) {
 	if _, err := io.ReadFull(conn, port); err != nil {
 		return Request{}, fmt.Errorf("socks: read the port: %w", err)
 	}
-	if binary.BigEndian.Uint16(port) == 0 {
+	number := binary.BigEndian.Uint16(port)
+	// A CONNECT request names a service to reach, so port 0 has no meaning. A
+	// UDP ASSOCIATE request names the address the visitor will send datagrams
+	// from, and 0.0.0.0:0 is the standard "any address".
+	if command == CmdConnect && number == 0 {
 		return Request{}, ErrPortMissing
 	}
 
-	return Request{Target: net.JoinHostPort(host, fmt.Sprint(binary.BigEndian.Uint16(port)))}, nil
+	parsed := Request{Command: command}
+	address, err := joinHostPort(host, int(number))
+	if err != nil {
+		_ = WriteReply(conn, ReplyAddressNotSupported)
+		return Request{}, err
+	}
+	if command == CmdConnect {
+		parsed.Target = address
+	} else {
+		parsed.ClientAddr = address
+	}
+	return parsed, nil
 }
 
 // WriteReply answers a request. The bound address is reported as 0.0.0.0:0, which
 // is what a client that only cares about the reply code expects.
 func WriteReply(conn net.Conn, code byte) error {
-	reply := []byte{Version, code, 0x00, AtypIPv4, 0, 0, 0, 0, 0, 0}
+	return WriteReplyBound(conn, code, net.IPv4zero, 0)
+}
+
+// WriteReplyBound answers a request with a reply that names a real bound
+// address, which is what a UDP ASSOCIATE reply needs: the visitor has to know
+// where to send its datagrams.
+func WriteReplyBound(conn net.Conn, code byte, ip net.IP, port int) error {
+	reply := []byte{Version, code, 0x00}
+	if v4 := ip.To4(); v4 != nil {
+		reply = append(reply, AtypIPv4)
+		reply = append(reply, v4...)
+	} else {
+		reply = append(reply, AtypIPv6)
+		reply = append(reply, ip.To16()...)
+	}
+	reply = binary.BigEndian.AppendUint16(reply, uint16(port))
 	_, err := conn.Write(reply)
 	return err
 }
@@ -193,5 +255,107 @@ func readAddress(conn net.Conn, atyp byte) (string, error) {
 		return string(name), nil
 	default:
 		return "", ErrUnknownAddress
+	}
+}
+
+// WrapUDPDatagram builds one SOCKS5 UDP datagram (RFC 1928 section 7): two
+// reserved zero bytes, a zero fragment byte, the address and port the data is
+// bound to, and the data. The address is the destination for an outbound
+// datagram and the source for a reply.
+func WrapUDPDatagram(addr string, data []byte) ([]byte, error) {
+	host, portText, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("socks: %q is not host:port: %w", addr, err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 0 || port > 65535 {
+		return nil, fmt.Errorf("socks: %q has no usable port: %w", addr, err)
+	}
+
+	atyp, address, err := encodeAddress(host)
+	if err != nil {
+		return nil, err
+	}
+
+	packet := make([]byte, 0, 4+len(address)+len(data))
+	packet = append(packet, 0, 0, 0, atyp) // reserved, reserved, fragment, atyp
+	packet = append(packet, address...)
+	packet = binary.BigEndian.AppendUint16(packet, uint16(port))
+	packet = append(packet, data...)
+	return packet, nil
+}
+
+// ParseUDPDatagram reads one SOCKS5 UDP datagram back into the address it names
+// and the data it carries. It refuses a non-zero reserved field and a non-zero
+// fragment field, because this relay does not reassemble fragments.
+func ParseUDPDatagram(packet []byte) (string, []byte, error) {
+	if len(packet) < 4 {
+		return "", nil, ErrShortUDPDatagram
+	}
+	if packet[0] != 0 || packet[1] != 0 {
+		return "", nil, errors.New("socks: the UDP datagram's reserved bytes are not zero")
+	}
+	if packet[2] != 0 {
+		return "", nil, ErrFragment
+	}
+
+	host, length, err := decodeAddress(packet[3], packet[4:])
+	if err != nil {
+		return "", nil, err
+	}
+	rest := packet[4+length:]
+	if len(rest) < 2 {
+		return "", nil, ErrShortUDPDatagram
+	}
+	port := int(binary.BigEndian.Uint16(rest[:2]))
+	address, err := joinHostPort(host, port)
+	if err != nil {
+		return "", nil, err
+	}
+	return address, rest[2:], nil
+}
+
+// encodeAddress turns a host into the SOCKS5 address type and its bytes.
+func encodeAddress(host string) (byte, []byte, error) {
+	if ip := net.ParseIP(host); ip != nil {
+		if v4 := ip.To4(); v4 != nil {
+			return AtypIPv4, v4, nil
+		}
+		return AtypIPv6, ip.To16(), nil
+	}
+	if len(host) == 0 || len(host) > 255 {
+		return 0, nil, ErrAddressTooLong
+	}
+	out := make([]byte, 1, 1+len(host))
+	out[0] = byte(len(host))
+	out = append(out, host...)
+	return AtypDomain, out, nil
+}
+
+// decodeAddress reads a SOCKS5 address out of buf, returning the host and how
+// many bytes it consumed.
+func decodeAddress(atyp byte, buf []byte) (string, int, error) {
+	switch atyp {
+	case AtypIPv4:
+		if len(buf) < net.IPv4len {
+			return "", 0, ErrShortUDPDatagram
+		}
+		return net.IP(buf[:net.IPv4len]).String(), net.IPv4len, nil
+	case AtypIPv6:
+		if len(buf) < net.IPv6len {
+			return "", 0, ErrShortUDPDatagram
+		}
+		return net.IP(buf[:net.IPv6len]).String(), net.IPv6len, nil
+	case AtypDomain:
+		if len(buf) < 1 {
+			return "", 0, ErrShortUDPDatagram
+		}
+		length := int(buf[0])
+		if length == 0 || len(buf) < 1+length {
+			return "", 0, ErrShortUDPDatagram
+		}
+		return string(buf[1 : 1+length]), 1 + length, nil
+	default:
+		return "", 0, ErrUnknownAddress
 	}
 }

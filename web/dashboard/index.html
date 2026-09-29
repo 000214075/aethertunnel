@@ -389,11 +389,13 @@ a { color: var(--accent); }
     </div>
   </header>
 
-  <nav id="sidebar" class="sidebar" aria-label="Sections">
+  <nav id="sidebar" class="sidebar" data-i18n-label="nav.sections">
     <ul class="nav-list">
       <li><button type="button" class="nav-item" id="navOverview" data-view="overview" data-i18n="nav.overview" aria-current="page">Overview</button></li>
       <li><button type="button" class="nav-item" id="navProxies"  data-view="proxies"  data-i18n="nav.proxies">Proxies</button></li>
       <li><button type="button" class="nav-item" id="navClients"  data-view="clients"  data-i18n="nav.clients">Clients</button></li>
+      <li><button type="button" class="nav-item" id="navLedger"   data-view="ledger"   data-i18n="nav.ledger">Ledger</button></li>
+      <li><button type="button" class="nav-item" id="navDirectory" data-view="directory" data-i18n="nav.directory">Directory</button></li>
       <li><button type="button" class="nav-item" id="navConfig"   data-view="config"   data-i18n="nav.config">Configuration</button></li>
     </ul>
     <div class="sidebar-foot">
@@ -533,6 +535,107 @@ a { color: var(--accent); }
       </div>
     </section>
 
+    <!-- ================= Ledger ================= -->
+    <section class="view" id="view-ledger" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          <h3 data-i18n="ledger.title">Bandwidth ledger</h3>
+          <span class="spacer"></span>
+          <button type="button" class="btn btn-sm" id="ledgerRefresh" data-i18n="ledger.refresh">Refresh</button>
+        </div>
+        <dl class="kv">
+          <div><dt data-i18n="ledger.state">State</dt><dd id="ledgerState">—</dd></div>
+          <div><dt data-i18n="ledger.path">File</dt><dd id="ledgerPath">—</dd></div>
+          <div><dt data-i18n="ledger.count">Entries in the chain</dt><dd id="ledgerCount">—</dd></div>
+          <div><dt data-i18n="ledger.head">Chain head</dt><dd id="ledgerHead">—</dd></div>
+          <div><dt data-i18n="ledger.unbilled">Not yet billed (live sessions)</dt><dd id="ledgerUnbilled">—</dd></div>
+          <div><dt data-i18n="ledger.publicKey">Verification key</dt><dd id="ledgerPublicKey">—</dd></div>
+        </dl>
+        <p class="panel-note" data-i18n="ledger.note">Each entry is Ed25519-signed and chained to the one before it, so the file verifies offline with the key above, without access to this server. Only the bytes this server carried are billed: an xtcp stream that punched a direct path never comes back through here, so it is in no entry.</p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h3 data-i18n="ledger.totalsTitle">Usage by client</h3></div>
+        <div class="table-wrap">
+          <table class="table" id="ledgerTotalsTable">
+            <thead>
+              <tr>
+                <th data-i18n="ledger.col.client">Client</th>
+                <th data-i18n="ledger.col.entries">Entries</th>
+                <th data-i18n="ledger.col.bytesIn">Bytes in</th>
+                <th data-i18n="ledger.col.bytesOut">Bytes out</th>
+              </tr>
+            </thead>
+            <tbody id="ledgerTotalsBody"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="ledgerTotalsEmpty" hidden></p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3 data-i18n="ledger.entriesTitle">Recent entries</h3>
+          <span class="count" id="ledgerShown"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="ledgerEntriesTable">
+            <thead>
+              <tr>
+                <th data-i18n="ledger.col.index">Index</th>
+                <th data-i18n="ledger.col.time">Time</th>
+                <th data-i18n="ledger.col.client">Client</th>
+                <th data-i18n="ledger.col.proxy">Proxy</th>
+                <th data-i18n="ledger.col.bytesIn">Bytes in</th>
+                <th data-i18n="ledger.col.bytesOut">Bytes out</th>
+                <th data-i18n="ledger.col.hash">Hash</th>
+              </tr>
+            </thead>
+            <tbody id="ledgerEntriesBody"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="ledgerEntriesEmpty" hidden></p>
+      </div>
+    </section>
+
+    <!-- ================= Directory ================= -->
+    <section class="view" id="view-directory" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          <h3 data-i18n="dht.title">Decentralized directory</h3>
+          <span class="spacer"></span>
+          <button type="button" class="btn btn-sm" id="directoryRefresh" data-i18n="dht.refresh">Refresh</button>
+        </div>
+        <dl class="kv">
+          <div><dt data-i18n="dht.state">State</dt><dd id="dhtState">—</dd></div>
+          <div><dt data-i18n="dht.nodeId">Node ID</dt><dd id="dhtNodeId">—</dd></div>
+          <div><dt data-i18n="dht.addr">Bound address</dt><dd id="dhtAddr">—</dd></div>
+          <div><dt data-i18n="dht.namespace">Key namespace</dt><dd id="dhtNamespace">—</dd></div>
+          <div><dt data-i18n="dht.contacts">Peers in the routing table</dt><dd id="dhtContacts">—</dd></div>
+          <div><dt data-i18n="dht.advertiseAs">Advertises itself as</dt><dd id="dhtAdvertiseAs">—</dd></div>
+          <div><dt data-i18n="dht.key">Announcement key</dt><dd id="dhtKey">—</dd></div>
+        </dl>
+        <p class="panel-note" data-i18n="dht.note">A client can resolve these names instead of being told which server serves them. Announcements are signed with the key above when it is set; a reader configured with trusted_keys only accepts records signed by it.</p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3 data-i18n="dht.announcedTitle">Announced names</h3>
+          <span class="count" id="dhtAnnouncedCount"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="dhtAnnouncedTable">
+            <thead>
+              <tr>
+                <th data-i18n="dht.col.name">Name</th>
+              </tr>
+            </thead>
+            <tbody id="dhtAnnouncedBody"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="dhtAnnouncedEmpty" hidden></p>
+      </div>
+    </section>
+
     <!-- ================= Configuration ================= -->
     <section class="view" id="view-config" hidden>
       <div class="panel">
@@ -605,8 +708,11 @@ a { color: var(--accent); }
       'nav.overview': 'Overview',
       'nav.proxies': 'Proxies',
       'nav.clients': 'Clients',
+      'nav.ledger': 'Ledger',
+      'nav.directory': 'Directory',
       'nav.config': 'Configuration',
       'lang.label': 'Language',
+      'nav.sections': 'Sections',
       'state.connecting': 'connecting…',
       'state.connected': 'connected',
       'state.disconnected': 'disconnected — retrying',
@@ -631,6 +737,8 @@ a { color: var(--accent); }
       'err.clients': 'Failed to load /api/clients: {msg}',
       'err.proxies': 'Failed to load /api/proxies: {msg}',
       'err.config': 'Failed to load /api/config: {msg}',
+      'err.ledger': 'Failed to load /api/ledger: {msg}',
+      'err.dht': 'Failed to load /api/dht: {msg}',
       'err.disconnect': 'Failed to disconnect client {id}: {msg}',
       'err.unauthorized': 'The API answered 401 — the dashboard token is missing or invalid.',
       'status.title': 'Server status',
@@ -723,6 +831,45 @@ a { color: var(--accent); }
       'vpn.toDevice': 'Packets delivered to the interface',
       'vpn.dropped': 'Packets dropped or unroutable',
       'vpn.note': 'These counters come from the tunnel inside this process. When the tunnel is disabled the table stays empty.',
+      'ledger.title': 'Bandwidth ledger',
+      'ledger.refresh': 'Refresh',
+      'ledger.state': 'State',
+      'ledger.path': 'File',
+      'ledger.count': 'Entries in the chain',
+      'ledger.head': 'Chain head',
+      'ledger.unbilled': 'Not yet billed (live sessions)',
+      'ledger.publicKey': 'Verification key',
+      'ledger.note': 'Each entry is Ed25519-signed and chained to the one before it, so the file verifies offline with the key above, without access to this server. Only the bytes this server carried are billed: an xtcp stream that punched a direct path never comes back through here, so it is in no entry.',
+      'ledger.off': 'The ledger is off ([ledger] enabled = false): no usage is recorded.',
+      'ledger.empty': 'No entries yet — one is written for each proxy a client published when that session ends.',
+      'ledger.noUsage': 'No billed usage yet.',
+      'ledger.totalsTitle': 'Usage by client',
+      'ledger.entriesTitle': 'Recent entries',
+      'ledger.shown': '{n} of {total} shown',
+      'ledger.col.client': 'Client',
+      'ledger.col.entries': 'Entries',
+      'ledger.col.bytesIn': 'Bytes in',
+      'ledger.col.bytesOut': 'Bytes out',
+      'ledger.col.index': 'Index',
+      'ledger.col.time': 'Time',
+      'ledger.col.proxy': 'Proxy',
+      'ledger.col.hash': 'Hash',
+      'dht.title': 'Decentralized directory',
+      'dht.refresh': 'Refresh',
+      'dht.state': 'State',
+      'dht.nodeId': 'Node ID',
+      'dht.addr': 'Bound address',
+      'dht.namespace': 'Key namespace',
+      'dht.contacts': 'Peers in the routing table',
+      'dht.advertiseAs': 'Advertises itself as',
+      'dht.key': 'Announcement signing key',
+      'dht.unsigned': 'unsigned',
+      'dht.note': 'A client can resolve these names instead of being told which server serves them. When a signing key is set every announcement is signed with it, and a reader configured with trusted_keys accepts nothing else.',
+      'dht.off': 'The directory is off ([dht] enabled = false): no name is announced, and lookups are not served.',
+      'dht.none': 'No name is announced yet — a proxy is announced when its first client registers it.',
+      'dht.announcedTitle': 'Announced names',
+      'dht.count': '{n} announced',
+      'dht.col.name': 'Name',
       'rel.justNow': 'just now',
       'rel.seconds': '{n}s ago',
       'rel.minutes': '{n}m ago',
@@ -740,8 +887,11 @@ a { color: var(--accent); }
       'nav.overview': '概览',
       'nav.proxies': '代理',
       'nav.clients': '客户端',
+      'nav.ledger': '账本',
+      'nav.directory': '目录',
       'nav.config': '配置',
       'lang.label': '语言',
+      'nav.sections': '栏目',
       'state.connecting': '连接中…',
       'state.connected': '已连接',
       'state.disconnected': '连接断开 — 正在重试',
@@ -766,6 +916,8 @@ a { color: var(--accent); }
       'err.clients': '加载 /api/clients 失败：{msg}',
       'err.proxies': '加载 /api/proxies 失败：{msg}',
       'err.config': '加载 /api/config 失败：{msg}',
+      'err.ledger': '加载 /api/ledger 失败：{msg}',
+      'err.dht': '加载 /api/dht 失败：{msg}',
       'err.disconnect': '断开客户端 {id} 失败：{msg}',
       'err.unauthorized': 'API 返回 401 — 控制台令牌缺失或无效。',
       'status.title': '服务端状态',
@@ -858,6 +1010,45 @@ a { color: var(--accent); }
       'vpn.toDevice': '送入接口的包',
       'vpn.dropped': '丢弃或无法路由的包',
       'vpn.note': '这些计数来自本进程内的隧道。隧道未启用时表格保持为空。',
+      'ledger.title': '带宽账本',
+      'ledger.refresh': '刷新',
+      'ledger.state': '状态',
+      'ledger.path': '文件',
+      'ledger.count': '链上的条目数',
+      'ledger.head': '链头',
+      'ledger.unbilled': '尚未入账（活动会话）',
+      'ledger.publicKey': '校验公钥',
+      'ledger.note': '每条记录都用 Ed25519 签名并与前一条串成哈希链，因此只凭上面的公钥就能离线校验这个文件，不需要访问本服务器。账只记服务端搬过的字节：xtcp 打洞后走直连的那条流不再回到这里，因此不在任何一条记录里。',
+      'ledger.off': '账本未启用（[ledger] enabled = false）：没有记录任何用量。',
+      'ledger.empty': '还没有记录——每个客户端已发布的代理会在该会话结束时各写入一条。',
+      'ledger.noUsage': '还没有已入账的用量。',
+      'ledger.totalsTitle': '按客户端汇总',
+      'ledger.entriesTitle': '最近的记录',
+      'ledger.shown': '显示 {n} / {total}',
+      'ledger.col.client': '客户端',
+      'ledger.col.entries': '条目数',
+      'ledger.col.bytesIn': '入站字节',
+      'ledger.col.bytesOut': '出站字节',
+      'ledger.col.index': '序号',
+      'ledger.col.time': '时间',
+      'ledger.col.proxy': '代理',
+      'ledger.col.hash': '哈希',
+      'dht.title': '去中心化目录',
+      'dht.refresh': '刷新',
+      'dht.state': '状态',
+      'dht.nodeId': '节点标识',
+      'dht.addr': '监听地址',
+      'dht.namespace': '键的命名空间',
+      'dht.contacts': '路由表中的节点数',
+      'dht.advertiseAs': '对外通告的主机名',
+      'dht.key': '通告签名公钥',
+      'dht.unsigned': '未签名',
+      'dht.note': '客户端可以用这些名字找到服务器，而不必先被告知是哪台。设置了签名公钥时每条通告都用它签名，配置了 trusted_keys 的读取方只接受这种记录。',
+      'dht.off': '目录未启用（[dht] enabled = false）：不通告任何名字，也不响应查询。',
+      'dht.none': '还没有通告任何名字——某个代理的第一个客户端注册它时才会通告。',
+      'dht.announcedTitle': '已通告的名字',
+      'dht.count': '已通告 {n} 个',
+      'dht.col.name': '名字',
       'rel.justNow': '刚刚',
       'rel.seconds': '{n} 秒前',
       'rel.minutes': '{n} 分钟前',
@@ -884,6 +1075,10 @@ a { color: var(--accent); }
     lastStatus: null,
     lastClients: null,
     lastProxies: null,
+    lastLedger: null,
+    lastDirectory: null,
+    lastConfig: null,   // redrawn on a language switch, like the other payloads
+    lastError: null,    // {key, params} of the banner on screen, so it can be redrawn
     lastSuccessAt: 0,   // browser clock, used only to age-stamp our own fetches
     uptimeBaseSeconds: null,
     uptimeBaseAt: 0     // performance.now() when uptimeBaseSeconds arrived
@@ -1117,14 +1312,20 @@ a { color: var(--accent); }
   }
 
   /* ---------- Error banner + connection state ---------- */
-  function showError(message) {
+  // The key and its parameters are kept rather than the sentence they produced: the
+  // banner stays on screen across a language switch, and a failure that is not on the
+  // polling path — loading the configuration — would otherwise keep the old language
+  // until the next attempt. hideError() clears it again.
+  function showError(key, params) {
     var banner = el('errorBanner');
     if (!banner) return;
-    setText(el('errorBannerText'), message);
+    state.lastError = { key: key, params: params || null };
+    setText(el('errorBannerText'), t(key, params));
     banner.hidden = false;
   }
 
   function hideError() {
+    state.lastError = null;
     var banner = el('errorBanner');
     if (banner) banner.hidden = true;
   }
@@ -1143,19 +1344,27 @@ a { color: var(--accent); }
     if (ok) {
       state.lastSuccessAt = Date.now();
       setConnState('ok', t('state.connected'));
-      var banner = el('connBanner');
-      if (banner) banner.hidden = true;
     } else {
       setConnState('err', reason === 'unauthorized' ? t('state.unauthorized') : t('state.disconnected'));
-      var b = el('connBanner');
-      if (b) {
-        b.hidden = false;
-        setText(el('connBannerText'), t('conn.bannerDisconnected', {
-          s: POLL_MS / 1000,
-          ago: state.lastSuccessAt ? fmtRelative(new Date(state.lastSuccessAt).toISOString()) : t('footer.never')
-        }));
-      }
     }
+    renderConnBanner();
+  }
+
+  // renderConnBanner draws the "disconnected — retrying" strip from the state, so the
+  // language switch can redraw it without touching lastSuccessAt the way a successful
+  // fetch does.
+  function renderConnBanner() {
+    var banner = el('connBanner');
+    if (!banner) return;
+    if (state.connected) {
+      banner.hidden = true;
+      return;
+    }
+    setText(el('connBannerText'), t('conn.bannerDisconnected', {
+      s: POLL_MS / 1000,
+      ago: state.lastSuccessAt ? fmtRelative(new Date(state.lastSuccessAt).toISOString()) : t('footer.never')
+    }));
+    banner.hidden = false;
   }
 
   function renderLastUpdated() {
@@ -1207,7 +1416,7 @@ a { color: var(--accent); }
   function handleUnauthorized() {
     setConnected(false, 'unauthorized');
     setUnauthorized(true);
-    showError(t('err.unauthorized'));
+    showError('err.unauthorized');
   }
 
   function submitToken(value) {
@@ -1524,7 +1733,7 @@ a { color: var(--accent); }
       ['cfgBindAddr', 'cfgBindPort', 'cfgMaxConn', 'cfgEncEnabled', 'cfgEncAlgorithm', 'cfgAuthRequired', 'cfgProxies']
         .concat(VPN_FIELDS)
         .forEach(function (id) { setText(el(id), null); });
-      showError(t('err.config', { msg: errorMessage }));
+      showError('err.config', { msg: errorMessage });
       return;
     }
     var cfg = payload || {};
@@ -1544,20 +1753,232 @@ a { color: var(--accent); }
     renderVPN(cfg.vpn);
   }
 
+  /* ---------- Bandwidth ledger ---------- */
+  // A hex digest shown in a table is abbreviated; the full value stays in the cell's
+  // title, because a hash that cannot be read is not much use to an auditor.
+  function shortHex(value) {
+    var text = (value === null || value === undefined) ? '' : String(value);
+    if (!text) return t('common.na');
+    return text.length <= 20 ? text : text.slice(0, 12) + '…' + text.slice(-6);
+  }
+
+  function loadLedger() {
+    var btn = el('ledgerRefresh');
+    if (btn) btn.disabled = true;
+    return request('/api/ledger').then(function (res) {
+      if (btn) btn.disabled = false;
+      if (res.unauthorized) { handleUnauthorized(); return; }
+      if (res.error) { renderLedger(null, res.error); return; }
+      hideError();
+      state.lastLedger = res.data;
+      renderLedger(res.data, null);
+    });
+  }
+
+  /* The ledger is read on demand (opening the view, or Refresh) instead of on the
+     two-second poll: it is a file, and its numbers move only when a session ends. A
+     ledger that is off answers {"enabled": false}, which is a state of its own — the
+     rows then say so rather than showing zeroes that would read as "nothing was used". */
+  function renderLedger(payload, errorMessage) {
+    var fields = ['ledgerState', 'ledgerPath', 'ledgerCount', 'ledgerHead', 'ledgerUnbilled', 'ledgerPublicKey'];
+    var totalsBody = el('ledgerTotalsBody'), totalsTable = el('ledgerTotalsTable'), totalsEmpty = el('ledgerTotalsEmpty');
+    var entriesBody = el('ledgerEntriesBody'), entriesTable = el('ledgerEntriesTable'), entriesEmpty = el('ledgerEntriesEmpty');
+    var shown = el('ledgerShown');
+
+    if (totalsBody) clearNode(totalsBody);
+    if (entriesBody) clearNode(entriesBody);
+    if (shown) shown.textContent = '';
+
+    // empty() clears everything and leaves the two tables with one explanation each.
+    function empty(totalsText, entriesText) {
+      fields.forEach(function (id) {
+        var node = el(id);
+        setText(node, null);
+        if (node) node.title = '';
+      });
+      if (totalsTable) totalsTable.hidden = true;
+      if (entriesTable) entriesTable.hidden = true;
+      if (totalsEmpty) { totalsEmpty.hidden = false; totalsEmpty.textContent = totalsText; }
+      if (entriesEmpty) { entriesEmpty.hidden = false; entriesEmpty.textContent = entriesText; }
+    }
+
+    if (errorMessage) {
+      var failed = t('common.loadFailed', { msg: errorMessage });
+      empty(failed, failed);
+      showError('err.ledger', { msg: errorMessage });
+      return;
+    }
+    if (!payload) { empty(t('common.na'), t('common.na')); return; }
+
+    if (payload.enabled !== true) {
+      empty(t('ledger.off'), t('ledger.off'));
+      setText(el('ledgerState'), t('common.no'));
+      setText(el('ledgerPath'), payload.path);
+      return;
+    }
+
+    setText(el('ledgerState'), t('common.yes'));
+    setText(el('ledgerPath'), payload.path);
+    setText(el('ledgerCount'), fmtInt(payload.count));
+    var head = el('ledgerHead');
+    setText(head, shortHex(payload.head));
+    if (head) head.title = payload.head || '';
+
+    // Live sessions are not in the chain yet: their bytes become entries when the
+    // session ends, so this is the part of the total the file does not account for.
+    var live = payload.unbilled_live || {};
+    var unbilled = 0;
+    Object.keys(live).forEach(function (id) { unbilled += Number(live[id]) || 0; });
+    setText(el('ledgerUnbilled'), fmtBytes(unbilled));
+
+    var key = el('ledgerPublicKey');
+    setText(key, payload.public_key);
+    if (key) key.title = payload.public_key || '';
+
+    var totals = payload.totals || {};
+    var ids = Object.keys(totals).sort();
+    if (ids.length) {
+      if (totalsTable) totalsTable.hidden = false;
+      if (totalsEmpty) totalsEmpty.hidden = true;
+      ids.forEach(function (id) {
+        var sum = totals[id] || {};
+        var tr = document.createElement('tr');
+        tr.appendChild(makeCell(id, 'ledger.col.client', 'id'));
+        tr.appendChild(makeCell(fmtInt(sum.entries), 'ledger.col.entries', 'num'));
+        tr.appendChild(makeCell(fmtBytes(sum.bytes_in), 'ledger.col.bytesIn', 'num'));
+        tr.appendChild(makeCell(fmtBytes(sum.bytes_out), 'ledger.col.bytesOut', 'num'));
+        totalsBody.appendChild(tr);
+      });
+    } else {
+      if (totalsTable) totalsTable.hidden = true;
+      if (totalsEmpty) { totalsEmpty.hidden = false; totalsEmpty.textContent = t('ledger.noUsage'); }
+    }
+
+    var entries = payload.entries || [];
+    if (shown) {
+      shown.textContent = t('ledger.shown', {
+        n: fmtInt(payload.returned === undefined ? entries.length : payload.returned),
+        total: fmtInt(payload.count)
+      });
+    }
+    if (entries.length) {
+      if (entriesTable) entriesTable.hidden = false;
+      if (entriesEmpty) entriesEmpty.hidden = true;
+      entries.forEach(function (e) {
+        var entry = e || {};
+        var tr = document.createElement('tr');
+        tr.appendChild(makeCell(fmtInt(entry.index), 'ledger.col.index', 'num'));
+        tr.appendChild(makeCell(entry.time ? fmtAbsolute(entry.time) : null, 'ledger.col.time'));
+        tr.appendChild(makeCell(entry.client_id, 'ledger.col.client', 'id'));
+        tr.appendChild(makeCell(entry.proxy, 'ledger.col.proxy', 'id'));
+        tr.appendChild(makeCell(fmtBytes(entry.bytes_in), 'ledger.col.bytesIn', 'num'));
+        tr.appendChild(makeCell(fmtBytes(entry.bytes_out), 'ledger.col.bytesOut', 'num'));
+        var hash = makeCell(shortHex(entry.hash), 'ledger.col.hash', 'id');
+        hash.title = entry.hash || '';
+        tr.appendChild(hash);
+        entriesBody.appendChild(tr);
+      });
+    } else {
+      if (entriesTable) entriesTable.hidden = true;
+      if (entriesEmpty) { entriesEmpty.hidden = false; entriesEmpty.textContent = t('ledger.empty'); }
+    }
+  }
+
+  /* ---------- Decentralized directory ---------- */
+  function loadDirectory() {
+    var btn = el('directoryRefresh');
+    if (btn) btn.disabled = true;
+    return request('/api/dht').then(function (res) {
+      if (btn) btn.disabled = false;
+      if (res.unauthorized) { handleUnauthorized(); return; }
+      if (res.error) { renderDirectory(null, res.error); return; }
+      hideError();
+      state.lastDirectory = res.data;
+      renderDirectory(res.data, null);
+    });
+  }
+
+  /* The directory is read on demand like the ledger, and for the same reason: nothing
+     in it changes between two polls unless a client registers or leaves. With the DHT
+     off the API answers {"enabled": false}, which is a state of its own — the view says
+     so instead of drawing an empty node. */
+  function renderDirectory(payload, errorMessage) {
+    var fields = ['dhtState', 'dhtNodeId', 'dhtAddr', 'dhtNamespace', 'dhtContacts', 'dhtAdvertiseAs', 'dhtKey'];
+    var body = el('dhtAnnouncedBody'), table = el('dhtAnnouncedTable'), empty = el('dhtAnnouncedEmpty');
+    var count = el('dhtAnnouncedCount');
+
+    if (body) clearNode(body);
+    if (count) count.textContent = '';
+
+    function say(totalsText) {
+      fields.forEach(function (id) {
+        var node = el(id);
+        setText(node, null);
+        if (node) node.title = '';
+      });
+      if (table) table.hidden = true;
+      if (empty) { empty.hidden = false; empty.textContent = totalsText; }
+    }
+
+    if (errorMessage) {
+      say(t('common.loadFailed', { msg: errorMessage }));
+      showError('err.dht', { msg: errorMessage });
+      return;
+    }
+    if (!payload) { say(t('common.na')); return; }
+
+    if (payload.enabled !== true) {
+      say(t('dht.off'));
+      setText(el('dhtState'), t('common.no'));
+      return;
+    }
+
+    setText(el('dhtState'), t('common.yes'));
+    var id = el('dhtNodeId');
+    setText(id, shortHex(payload.node_id));
+    if (id) id.title = payload.node_id || '';
+    setText(el('dhtAddr'), payload.addr);
+    setText(el('dhtNamespace'), payload.namespace);
+    setText(el('dhtContacts'), payload.contacts === undefined ? null : fmtInt(payload.contacts));
+    setText(el('dhtAdvertiseAs'), payload.advertise_as);
+    var key = el('dhtKey');
+    // An empty key is a fact about this node rather than a missing value: its records
+    // are published unsigned, and a reader that requires a signature ignores them.
+    var signed = payload.signing_key ? payload.signing_key : t('dht.unsigned');
+    setText(key, signed);
+    if (key) key.title = payload.signing_key || '';
+
+    var names = payload.announced || [];
+    if (count) count.textContent = names.length ? t('dht.count', { n: fmtInt(names.length) }) : '';
+    if (!names.length) {
+      if (table) table.hidden = true;
+      if (empty) { empty.hidden = false; empty.textContent = t('dht.none'); }
+      return;
+    }
+
+    if (table) table.hidden = false;
+    if (empty) empty.hidden = true;
+    names.forEach(function (name) {
+      var tr = document.createElement('tr');
+      tr.appendChild(makeCell(name, 'dht.col.name', 'id'));
+      body.appendChild(tr);
+    });
+  }
+
   function disconnectClient(id, button) {
     if (!window.confirm(t('clients.confirm', { id: id }))) return;
     if (button) button.disabled = true;
     request('/api/clients/' + encodeURIComponent(id), { method: 'DELETE' }).then(function (res) {
       if (button) button.disabled = false;
       if (res.unauthorized) { handleUnauthorized(); return; }
-      if (res.error) { showError(t('err.disconnect', { id: id, msg: res.error })); return; }
+      if (res.error) { showError('err.disconnect', { id: id, msg: res.error }); return; }
       hideError();
       poll();
     });
   }
 
   /* ---------- Navigation ---------- */
-  var VIEWS = ['overview', 'proxies', 'clients', 'config'];
+  var VIEWS = ['overview', 'proxies', 'clients', 'ledger', 'directory', 'config'];
 
   function setView(name) {
     if (VIEWS.indexOf(name) === -1) name = 'overview';
@@ -1572,6 +1993,8 @@ a { color: var(--accent); }
       }
     });
     if (name === 'config') loadConfig();
+    if (name === 'ledger') loadLedger();
+    if (name === 'directory') loadDirectory();
     closeSidebar();
   }
 
@@ -1641,7 +2064,7 @@ a { color: var(--accent); }
 
       if (statusRes.error) {
         setConnected(false);
-        showError(t('err.status', { msg: statusRes.error }));
+        showError('err.status', { msg: statusRes.error });
       } else {
         setConnected(true);
         applyStatus(statusRes.data);
@@ -1652,7 +2075,7 @@ a { color: var(--accent); }
 
       if (clientsRes.error) {
         renderClients(null, clientsRes.error);
-        showError(t('err.clients', { msg: clientsRes.error }));
+        showError('err.clients', { msg: clientsRes.error });
       } else {
         state.lastClients = clientsRes.data;
         renderClients(clientsRes.data, null);
@@ -1660,7 +2083,7 @@ a { color: var(--accent); }
 
       if (proxiesRes.error) {
         renderProxies(null, proxiesRes.error);
-        showError(t('err.proxies', { msg: proxiesRes.error }));
+        showError('err.proxies', { msg: proxiesRes.error });
       } else {
         state.lastProxies = proxiesRes.data;
         renderProxies(proxiesRes.data, null);
@@ -1676,6 +2099,7 @@ a { color: var(--accent); }
       if (res.unauthorized) { handleUnauthorized(); return; }
       if (res.error) { renderConfig(null, res.error); return; }
       hideError();
+      state.lastConfig = res.data;
       renderConfig(res.data, null);
     });
   }
@@ -1704,11 +2128,20 @@ a { color: var(--accent); }
         renderStatus(state.lastStatus);
         renderClients(state.lastClients, null);
         renderProxies(state.lastProxies, null);
+        if (state.lastLedger) renderLedger(state.lastLedger, null);
+        if (state.lastDirectory) renderDirectory(state.lastDirectory, null);
+        // The configuration view draws yes/no through t(), so its values have to be
+        // redrawn too: the labels follow on their own (data-i18n), the values do not.
+        if (state.lastConfig) renderConfig(state.lastConfig, null);
         renderLastUpdated();
         setUnauthorized(state.unauthorized);
         setConnState(state.connected ? 'ok' : 'err',
                      state.connected ? t('state.connected')
                                      : (state.unauthorized ? t('state.unauthorized') : t('state.disconnected')));
+        // Both banners are sentences, so they are redrawn from what they were built
+        // from rather than left in the language they were drawn in.
+        renderConnBanner();
+        if (state.lastError) setText(el('errorBannerText'), t(state.lastError.key, state.lastError.params));
       });
     }
 
@@ -1740,6 +2173,12 @@ a { color: var(--accent); }
 
     var cfgBtn = el('configRefresh');
     if (cfgBtn) cfgBtn.addEventListener('click', loadConfig);
+
+    var ledgerBtn = el('ledgerRefresh');
+    if (ledgerBtn) ledgerBtn.addEventListener('click', loadLedger);
+
+    var dirBtn = el('directoryRefresh');
+    if (dirBtn) dirBtn.addEventListener('click', loadDirectory);
 
     setView('overview');
     applyI18n();

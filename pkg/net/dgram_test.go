@@ -375,3 +375,111 @@ func TestDatagramPumpKeepsWorkingAfterAnOpenFailure(t *testing.T) {
 		t.Fatalf("received %q after the failure", got)
 	}
 }
+
+// TestDatagramPumpIgnoresDatagramsAfterShutdown covers the delivery side of the
+// shutdown race: a datagram that reaches deliver once the pump is closed must not
+// open a session, because the shutdown that is already running has listed the
+// sessions it will release and would never close this one. A session opened here
+// keeps a data connection and leaves the session gauge one too high for good.
+func TestDatagramPumpIgnoresDatagramsAfterShutdown(t *testing.T) {
+	socket, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = socket.Close() })
+
+	var opened, sessions atomic.Int64
+	pump := &DatagramPump{
+		Socket:      socket,
+		IdleTimeout: time.Minute,
+		Logger:      log.New(io.Discard, "", 0),
+		OnSession:   func(delta int) { sessions.Add(int64(delta)) },
+		Open: func(addr net.Addr) (*protocol.Framer, func(), error) {
+			opened.Add(1)
+			pumpSide, peerSide := net.Pipe()
+			return protocol.NewFramer(pumpSide, nil, 0), func() {
+				_ = pumpSide.Close()
+				_ = peerSide.Close()
+			}, nil
+		},
+	}
+	pump.Start()
+	pump.Shutdown()
+
+	pump.deliver(&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5555}, []byte("late"))
+	time.Sleep(50 * time.Millisecond)
+
+	if got := pump.Sessions(); got != 0 {
+		t.Errorf("%d sessions were kept for a datagram that arrived after the shutdown", got)
+	}
+	if got := sessions.Load(); got != 0 {
+		t.Errorf("the session gauge is %d after a datagram arrived post-shutdown, want 0", got)
+	}
+	if got := opened.Load(); got != 0 {
+		t.Errorf("%d data connections were opened after the shutdown, want 0", got)
+	}
+}
+
+// TestDatagramPumpClosesThePathsOfASessionThatEndedWhileTheyOpened covers the other
+// side of that race: opening a path runs on its own goroutine, so a session can end
+// — a shutdown, the reaper, a failed write — before its first path comes up. By then
+// closeFramers has run and seen no paths, so the paths that arrive afterwards have to
+// be closed where they are opened. Leaving them to closeFramers leaks the data
+// connection and the goroutine that would read it.
+func TestDatagramPumpClosesThePathsOfASessionThatEndedWhileTheyOpened(t *testing.T) {
+	socket, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = socket.Close() })
+
+	var sessions atomic.Int64
+	started := make(chan struct{})
+	proceed := make(chan struct{})
+	released := make(chan struct{}, 1)
+
+	pump := &DatagramPump{
+		Socket:      socket,
+		IdleTimeout: time.Minute,
+		Logger:      log.New(io.Discard, "", 0),
+		OnSession:   func(delta int) { sessions.Add(int64(delta)) },
+		Open: func(addr net.Addr) (*protocol.Framer, func(), error) {
+			close(started)
+			<-proceed
+			pumpSide, peerSide := net.Pipe()
+			return protocol.NewFramer(pumpSide, nil, 0), func() {
+				_ = pumpSide.Close()
+				_ = peerSide.Close()
+				released <- struct{}{}
+			}, nil
+		},
+	}
+	pump.Start()
+	t.Cleanup(pump.Shutdown)
+
+	// The first datagram opens the session; its single path is held inside Open.
+	pump.deliver(&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5556}, []byte("first"))
+	<-started
+
+	if got := sessions.Load(); got != 1 {
+		t.Fatalf("the session gauge is %d while the path is being opened, want 1", got)
+	}
+
+	// The pump shuts down before the path comes up, so the session ends first.
+	pump.Shutdown()
+	if got := sessions.Load(); got != 0 {
+		t.Fatalf("the session gauge is %d after the shutdown, want 0", got)
+	}
+
+	// Let Open return now that the session it belongs to is already gone.
+	close(proceed)
+
+	select {
+	case <-released:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the path opened for a session that had already ended was never released")
+	}
+	if got := sessions.Load(); got != 0 {
+		t.Errorf("the session gauge is %d after the late path came up, want 0", got)
+	}
+}

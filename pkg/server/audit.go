@@ -27,6 +27,12 @@ type AuditEvent struct {
 const (
 	EventControlAccepted = "control_accepted"
 	EventControlRejected = "control_rejected"
+	// EventHandshakeFailed is recorded when no usable first frame could be read
+	// at all: a disguise, encryption or TLS mismatch that leaves the bytes
+	// undecodable, or a peer that closed or went quiet before sending one. The
+	// connection is closed without an answer, so this record is what makes the
+	// reason attributable afterwards.
+	EventHandshakeFailed = "handshake_failed"
 	EventAuthFailed      = "auth_failed"
 	EventClientGone      = "client_disconnected"
 	EventProxyRegistered = "proxy_registered"

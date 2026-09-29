@@ -17,6 +17,7 @@ import (
 
 	"github.com/aethertunnel/aethertunnel/pkg/config"
 	"github.com/aethertunnel/aethertunnel/pkg/crypto"
+	flynet "github.com/aethertunnel/aethertunnel/pkg/net"
 	"github.com/aethertunnel/aethertunnel/pkg/obfs"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
 )
@@ -237,7 +238,7 @@ func (l *disguisedListener) Accept() (net.Conn, error) {
 func (s *Server) Run(ctx context.Context) error {
 	listener, err := net.Listen("tcp", s.cfg.ListenAddr())
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", s.cfg.ListenAddr(), err)
+		return flynet.ListenError(s.cfg.ListenAddr(), err)
 	}
 	if s.tlsConfig != nil || s.cfg.ObfuscationDisguise() != obfs.DisguiseNone {
 		listener = &disguisedListener{
@@ -544,7 +545,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		// failure on the first frame is what a passphrase, salt or algorithm that differs
 		// between the two ends looks like from here, and an operator reading it should not
 		// have to know that.
-		s.logger.Printf("handshake from %s failed: %v%s", conn.RemoteAddr(), err, handshakeFailureHint(err))
+		s.refuseHandshake(conn, err)
 		_ = conn.Close()
 		return
 	}
@@ -557,13 +558,63 @@ func (s *Server) handleConn(conn net.Conn) {
 	case protocol.TypeVisitorConnect:
 		s.handleVisitor(conn, framer, msg)
 	default:
-		s.logger.Printf("unexpected first frame %s from %s", msg.Type, conn.RemoteAddr())
+		// An answered refusal, not a dead connection: the peer is told what a first
+		// frame has to be, so this is recorded like every other refusal. It used to
+		// be a log line only, which left a scan of the control port with nothing
+		// (malformed) or a line nobody watches (this one) in the counters and the
+		// audit log.
+		s.refuseFirstFrame(conn, fmt.Sprintf("first frame is %s, which cannot start a connection", msg.Type))
 		_ = framer.WriteJSON(protocol.TypeError, protocol.ErrorPayload{
 			Error: fmt.Sprintf("first frame must be %s, %s or %s, got %s",
 				protocol.TypeAuthRequest, protocol.TypeDataOpen, protocol.TypeVisitorConnect, msg.Type),
 		})
 		_ = conn.Close()
 	}
+}
+
+// refuseFirstFrame books a connection whose first frame was not a usable request:
+// the aggregate rejection counter, the series that names this reason, and the audit
+// log. The connection is closed by the caller, after it has been answered.
+func (s *Server) refuseFirstFrame(conn net.Conn, detail string) {
+	s.metrics.unusableFrames.Add(1)
+	s.refuseControl(conn, EventControlRejected, detail)
+}
+
+// refuseHandshake books a connection whose first frame could not be read at all,
+// which is what a disguise, encryption or TLS mismatch looks like, and also what a
+// peer that connected and went away without sending one looks like.
+//
+// This is the counterpart of refuseFirstFrame for bytes that never became a frame,
+// and it is booked the same way for the same reason: the connection is closed
+// without an answer, so the counters and the audit log are the only record an
+// operator has. It used to be a log line only, which left a fleet whose passphrase
+// had been changed on one side — or a scan of the control port — invisible in
+// GET /metrics and in the audit trail.
+func (s *Server) refuseHandshake(conn net.Conn, err error) {
+	detail := fmt.Sprintf("%v%s", err, handshakeFailureHint(err))
+	s.metrics.handshakeFailures.Add(1)
+	// The aggregate the alerts watch, so a refusal here is not the one answer
+	// missing from it.
+	s.metrics.controlRejected.Add(1)
+	s.auditor.Record(AuditEvent{
+		Event: EventHandshakeFailed, Remote: conn.RemoteAddr().String(),
+		Outcome: "denied", Detail: detail,
+	})
+	s.logger.Printf("handshake from %s failed: %s", conn.RemoteAddr(), detail)
+}
+
+// refuseControl books a control connection the server answered with a refusal
+// rather than dropping. The aggregate rejection counter is the one an alert watches
+// when the reason does not matter, so every answered refusal has to move it, and
+// the audit record is what makes the reason attributable afterwards; the connection
+// is closed by the caller after it has been answered.
+func (s *Server) refuseControl(conn net.Conn, event, detail string) {
+	s.metrics.controlRejected.Add(1)
+	s.auditor.Record(AuditEvent{
+		Event: event, Remote: conn.RemoteAddr().String(),
+		Outcome: "denied", Detail: detail,
+	})
+	s.logger.Printf("refusing %s: %s", conn.RemoteAddr(), detail)
 }
 
 // refuseVPN tears down a session whose tunnel request could not be met. The session
@@ -591,6 +642,10 @@ func (s *Server) refuseVPN(session *Session, conn net.Conn, reason string) {
 func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *protocol.Message) {
 	var req protocol.AuthRequest
 	if len(msg.Payload) == 0 || json.Unmarshal(msg.Payload, &req) != nil {
+		// The peer is answered rather than dropped, so this counts as a refusal: the
+		// only trace of someone speaking the wrong protocol to the control port used
+		// to be the answer they got, which the server itself never wrote down.
+		s.refuseFirstFrame(conn, "malformed auth request")
 		_ = framer.WriteJSON(protocol.TypeAuthResponse, protocol.AuthResponse{
 			OK: false, ServerVersion: s.version, Protocol: protocol.ProtocolVersion,
 			Encryption: s.Cipher(), Error: "malformed auth request",
@@ -650,21 +705,22 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 	var sessionKey, kexResponse []byte
 	if s.cfg.PostQuantum() {
 		if len(req.KEX) == 0 {
+			s.refuseControl(conn, EventControlRejected,
+				"this server requires a post-quantum key exchange (encryption.post_quantum)")
 			reject("this server requires a post-quantum key exchange (encryption.post_quantum)", false)
 			return
 		}
 		response, key, err := crypto.HybridServerFinish(req.KEX)
 		if err != nil {
 			s.metrics.authFailures.Add(1)
-			s.metrics.controlRejected.Add(1)
-			s.logger.Printf("post-quantum key agreement with %s failed: %v", conn.RemoteAddr(), err)
+			s.refuseControl(conn, EventAuthFailed, fmt.Sprintf("post-quantum key agreement failed: %v", err))
 			s.recordAuthFailure(conn)
 			reject("post-quantum key agreement failed", false)
 			return
 		}
 		sessionCipher, err = crypto.NewCipherFromKey(s.cfg.Encryption.Algorithm, key)
 		if err != nil {
-			s.logger.Printf("post-quantum session key for %s is unusable: %v", conn.RemoteAddr(), err)
+			s.refuseControl(conn, EventControlRejected, fmt.Sprintf("post-quantum session key is unusable: %v", err))
 			reject("post-quantum key agreement failed", false)
 			return
 		}
@@ -894,6 +950,13 @@ func (s *Server) sendProxyList(session *Session) {
 func (s *Server) handleData(conn net.Conn, framer *protocol.Framer, msg *protocol.Message) {
 	var open protocol.DataOpen
 	if len(msg.Payload) == 0 || json.Unmarshal(msg.Payload, &open) != nil {
+		// A data-open is dispatched before anything is authenticated, so a payload that
+		// does not parse is a garbage frame aimed at this port; it is counted on the
+		// series that names that reason. Not a control refusal, though: this connection
+		// never became a session, and the aggregate rejection counter is about the ones
+		// that tried to.
+		s.metrics.unusableFrames.Add(1)
+		s.logger.Printf("data connection from %s rejected: malformed data-open", conn.RemoteAddr())
 		_ = framer.WriteJSON(protocol.TypeDataOpenAck, protocol.DataOpenAck{OK: false, Error: "malformed data-open"})
 		_ = conn.Close()
 		return
@@ -908,12 +971,21 @@ func (s *Server) handleData(conn net.Conn, framer *protocol.Framer, msg *protoco
 
 	session, ok := s.sessions.Get(open.Session)
 	if !ok {
+		// A well-formed data-open naming a session this server is not holding. The answer
+		// is a refusal like any other the server writes, so it is counted: this frame
+		// type is dispatched before anything is authenticated, and the log line below was
+		// the only trace it used to leave.
+		s.metrics.dataUnmatched.Add(1)
 		fail("unknown or expired session")
 		return
 	}
 
 	waiting, ok := session.TakePending(open.StreamID)
 	if !ok {
+		// Counted with the same reason class: the connection could not be paired. A
+		// client that cannot reach its own local service is not counted here — it reports
+		// that in the frame itself, and the visitor waiting for the stream is told.
+		s.metrics.dataUnmatched.Add(1)
 		fail("no public connection is waiting for that stream")
 		return
 	}

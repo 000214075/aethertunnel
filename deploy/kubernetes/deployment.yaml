@@ -58,7 +58,7 @@ spec:
               containerPort: 7002
               protocol: UDP
             - name: dht
-              containerPort: 7001
+              containerPort: 7003
               protocol: UDP
           # The control port cannot answer an HTTP probe, so liveness and readiness
           # are taken from the dashboard's own probes. Both are public and cheap.
@@ -90,23 +90,33 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
-          # To use the [vpn] section, uncomment the capability and the device mount
-          # below, set vpn.enabled and vpn.address in the ConfigMap, and run the pod
-          # with a tun device on the node. Without them the server refuses to start
-          # when vpn.enabled is true, rather than running without a tunnel.
+          # To use the [vpn] section, set vpn.enabled and vpn.address in the ConfigMap
+          # and make four edits. Each one changes a list or a map that is already here,
+          # so none of them can be pasted as a block: a second securityContext or
+          # volumeMounts on this container is a duplicate key, and a parser that keeps
+          # the last copy silently drops readOnlyRootFilesystem,
+          # allowPrivilegeEscalation: false and the state mount.
           #
-          # securityContext:
-          #   capabilities:
-          #     drop: ["ALL"]
-          #     add: ["NET_ADMIN"]
-          # volumeMounts:
-          #   - name: tun
-          #     mountPath: /dev/net/tun
-          # volumes:
-          #   - name: tun
-          #     hostPath:
-          #       path: /dev/net/tun
-          #       type: CharDevice
+          #   1. under this container's securityContext.capabilities, add NET_ADMIN
+          #   2. under this container's volumeMounts, add
+          #        - {name: tun, mountPath: /dev/net/tun}
+          #   3. under the pod's volumes below, add
+          #        - name: tun
+          #          hostPath: {path: /dev/net/tun, type: CharDevice}
+          #   4. drop the pod's runAsNonRoot and runAsUser. A process whose uid is not
+          #      0 does not receive a capability the container adds, so TUNSETIFF is
+          #      refused with EPERM even with NET_ADMIN present. Measured against
+          #      docker 20.10.24, 28.4.0 and 29.2.1: with --user 65532:65532
+          #      --cap-add NET_ADMIN --device /dev/net/tun the ioctl was refused,
+          #      while the same run as uid 0 opened the device.
+          #
+          # The server refuses to start with [vpn] enabled until both the device and
+          # the capability are there, and names which is missing: "open /dev/net/tun:
+          # no such file or directory" or "TUNSETIFF ... operation not permitted".
+          #
+          # The server refuses to start with [vpn] enabled until both the device and
+          # the capability are there, and names which is missing: "open /dev/net/tun:
+          # no such file or directory" or "TUNSETIFF ... operation not permitted".
           volumeMounts:
             - name: config
               mountPath: /etc/aethertunnel

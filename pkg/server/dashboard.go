@@ -14,6 +14,7 @@ import (
 
 	"github.com/aethertunnel/aethertunnel/pkg/config"
 	"github.com/aethertunnel/aethertunnel/pkg/crypto"
+	flynet "github.com/aethertunnel/aethertunnel/pkg/net"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
 	"github.com/aethertunnel/aethertunnel/web"
 )
@@ -114,7 +115,7 @@ func (d *Dashboard) withMetricsAuth(next http.HandlerFunc) http.HandlerFunc {
 		presented := strings.TrimPrefix(header, "Bearer ")
 		if presented == header ||
 			(!crypto.EqualTokens(presented, metricsToken) && !crypto.EqualTokens(presented, dashboardToken)) {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			d.refuseUnauthorized(w)
 			return
 		}
 		next(w, r)
@@ -163,7 +164,7 @@ func (d *Dashboard) handle(pattern string, handler http.HandlerFunc) {
 func (d *Dashboard) Start() error {
 	listener, err := net.Listen("tcp", d.cfg.DashboardAddr())
 	if err != nil {
-		return err
+		return flynet.ListenError(d.cfg.DashboardAddr(), err)
 	}
 	d.setListener(listener)
 	d.httpServer = &http.Server{
@@ -203,12 +204,25 @@ func (d *Dashboard) withAuth(required bool, next http.HandlerFunc) http.HandlerF
 			header := r.Header.Get("Authorization")
 			token := strings.TrimPrefix(header, "Bearer ")
 			if token == header || !crypto.EqualTokens(token, d.cfg.Dashboard.Token) {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+				d.refuseUnauthorized(w)
 				return
 			}
 		}
 		next(w, r)
 	}
+}
+
+// refuseUnauthorized answers a request on this listener whose credential was missing
+// or wrong, and books it on the counter for that.
+//
+// It is counted rather than audited on purpose. The dashboard is polled: the page
+// asks several endpoints every few seconds, so a client holding a stale token would
+// write an audit line per request and could bury the trail it is trying to hide in.
+// The count is what makes the attempts visible; which address they come from is the
+// network's business, because nothing here is authenticated before this check.
+func (d *Dashboard) refuseUnauthorized(w http.ResponseWriter) {
+	d.server.metrics.dashboardRefused.Add(1)
+	writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -230,6 +244,7 @@ func (d *Dashboard) apiHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Dashboard) apiStatus(w http.ResponseWriter, r *http.Request) {
+
 	in, out := d.server.totalBytes()
 	activeStreams := int64(0)
 	registered := 0

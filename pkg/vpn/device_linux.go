@@ -3,6 +3,7 @@
 package vpn
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -25,9 +26,18 @@ type tunDevice struct {
 // openPlatformDevice opens or creates the named tun interface. An empty name asks
 // the kernel for the next available name (tun0, tun1, ...).
 func openPlatformDevice(name string, mtu int) (Device, error) {
-	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_CLOEXEC, 0)
+	return openTunDevice("/dev/net/tun", name, mtu)
+}
+
+// openTunDevice opens path and configures the named interface on it.
+//
+// The path is a parameter so that the failure a container produces can be exercised
+// without a container: a machine that has /dev/net/tun cannot otherwise reach the
+// branch that explains a device it was never given.
+func openTunDevice(path, name string, mtu int) (Device, error) {
+	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, fmt.Errorf("vpn: open /dev/net/tun: %w", err)
+		return nil, tunOpenError(path, os.Geteuid(), err)
 	}
 
 	ifr, err := unix.NewIfreq(name)
@@ -40,7 +50,7 @@ func openPlatformDevice(name string, mtu int) (Device, error) {
 	ifr.SetUint16(unix.IFF_TUN | unix.IFF_NO_PI)
 	if err := unix.IoctlIfreq(fd, unix.TUNSETIFF, ifr); err != nil {
 		_ = unix.Close(fd)
-		return nil, fmt.Errorf("vpn: TUNSETIFF for %q: %w", name, err)
+		return nil, tunIoctlError(name, os.Geteuid(), err)
 	}
 
 	// The kernel chooses the name when the request was empty, so it is read back
@@ -62,6 +72,51 @@ func openPlatformDevice(name string, mtu int) (Device, error) {
 		effective = readBack
 	}
 	return &tunDevice{file: os.NewFile(uintptr(fd), "/dev/net/tun"), name: actual, mtu: effective}, nil
+}
+
+// tunOpenError describes a failure to open /dev/net/tun.
+//
+// A container that was never given the device reports ENOENT, which reads like a
+// missing kernel module, and one whose device cgroup refuses it reports EPERM. Both
+// are the container's configuration, so the message names the setting to change
+// rather than leaving an operator with the errno. An errno that says nothing about
+// either gets no hint, which would send the operator to the wrong place.
+func tunOpenError(path string, uid int, err error) error {
+	var hint string
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		hint = "; a container has to be given the device: --device /dev/net/tun in docker, a hostPath CharDevice volume in Kubernetes"
+	case errors.Is(err, unix.EPERM), errors.Is(err, unix.EACCES):
+		hint = tunCapabilityHint(uid)
+	}
+	return fmt.Errorf("vpn: open %s: %w%s", path, err, hint)
+}
+
+// tunIoctlError describes a TUNSETIFF the kernel refused.
+func tunIoctlError(name string, uid int, err error) error {
+	var hint string
+	if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) {
+		hint = tunCapabilityHint(uid)
+	}
+	return fmt.Errorf("vpn: TUNSETIFF for %q: %w%s", name, err, hint)
+}
+
+// tunCapabilityHint names what grants the capability TUNSETIFF needs, and, for a
+// process that is not uid 0, the reason adding it to a container is not enough.
+//
+// The kernel clears the permitted and effective sets when a process becomes a
+// non-root user, and the container runtimes do not add the capability to the ambient
+// set, so a capability the container was told to add never reaches such a process.
+// Measured with docker 20.10.24, 28.4.0 and 29.2.1: `--user 65532:65532 --cap-add
+// NET_ADMIN --device /dev/net/tun` answered EPERM, while the same run as uid 0 opened
+// the device. Kubernetes reaches the same kernel through the same runc, so the hint
+// names the uid it saw rather than only the capability.
+func tunCapabilityHint(uid int) string {
+	const remedy = "--cap-add NET_ADMIN in docker, securityContext.capabilities in Kubernetes"
+	if uid == 0 {
+		return "; opening a tun device needs CAP_NET_ADMIN (" + remedy + ")"
+	}
+	return fmt.Sprintf("; opening a tun device needs CAP_NET_ADMIN (%s), and a process whose uid is %d rather than 0 does not receive a capability the container adds, so run the tunnel as uid 0", remedy, uid)
 }
 
 // setInterfaceMTU sets the interface MTU with SIOCSIFMTU.

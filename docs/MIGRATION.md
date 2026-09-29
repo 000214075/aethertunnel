@@ -73,7 +73,7 @@ remote_port = 6022
 
 | 旧写法 | 现在的行为 |
 |---|---|
-| `[vpn] bind_addr` / `port` / `auth_token` / `protocol` | **未知键**：启动时列出、`--check` 失败。`[vpn]` 的键改为 `enabled`、`device`、`address`、`mtu`、`require`。三层隧道走的仍是已经认证过的控制连接，没有单独的监听端口与凭据 |
+| `[vpn] bind_addr` / `port` / `auth_token` / `protocol` | **未知键**：启动时列出，`--check` 会报出来（默认只是警告、退出码 0；加 `--reject-unknown-keys` 才会失败）。`[vpn]` 的键改为 `enabled`、`device`、`address`、`mtu`、`require`。三层隧道走的仍是已经认证过的控制连接，没有单独的监听端口与凭据 |
 | `[vpn]` 段本身 | v3.1.0 会解析但忽略并警告；现在真的会打开 tun 设备，非 Linux 平台启动即报错 |
 | `[obfuscation]` 段 | v3.1.0 会解析但忽略并警告；现在按 `pad_to`、`jitter_millis`、`disguise` 生效 |
 | `[obfuscation] default_type` | 已删除。它从未被任何代码读取，`--check` 现在会把它当未知键报出来 |
@@ -166,7 +166,8 @@ aethertunnel-server v3.2.0 (protocol 4, built 2026-09-20T07:12:44Z, commit 12345
 ## 4.1 从 v3.3.0 到 v3.4.0
 
 - **删除 `[obfuscation] default_type`**：它从未被读取，配置里写了它不会报错也不会有任何效果。
-  现在会被当作未知键，`--check` 会失败并指出该行；删掉这一行即可。
+  现在会被当作未知键，`--check` 会把它报出来并指出该行；删掉这一行即可。（默认只是警告：要让
+  这类残留直接失败，跑 `--check --reject-unknown-keys`。）
 - `[server] graceful_shutdown_seconds` 从"写了没用"变成真实行为：收到停止信号后先停止接受新连接，
   给正在传输的流最多这么多秒完成，然后才断开客户端。默认 5 秒；这个值现在也参与校验，负数会被拒绝。
 - 面板与 `/api/clients` 里每个客户端的 `active_streams` 与 `total_streams` 之前恒为 0，
@@ -406,7 +407,9 @@ v3.7.3 的配置与二进制可以直接升级。这一版改面板、服务端�
   的负值等于把对应的限制关掉（心跳窗口、流的空闲上限、握手时限、连接数上限，
   `rate_limit_burst` 则被静默当作 1）。升级前跑一次 `--check`：配置里若有这类值（多半是手误或
   占位符），现在会被明确拒绝并指出是哪一个键；`max_reconnect_seconds` 小于
-  `reconnect_seconds` 也会被拒绝。**0 的含义不变**，仍是"取默认值"。
+  `reconnect_seconds` 也会被拒绝。**范围检查与所在段是否 `enabled` 无关**（`[obfuscation]`、
+  `[vpn]`、`[dht]` 里那些没启用的段同样会被查），因为值写错是文件的问题，不该等到打开那个段才
+  暴露。**0 的含义不变**，仍是"取默认值"。
 - **审计日志不再漏掉"会话结束"的记录**。`proxy_removed` 此前只在客户端自己断开时写：服务端
   自己关闭会话（优雅关闭就是这条路径）时，成员已经先被摘掉，写记录的代码找不到它，于是一条
   都不留；`client_disconnected` 也会因为在拆除完成之前关闭日志而丢掉。停下来的服务器在审计
@@ -418,7 +421,8 @@ v3.7.3 的配置与二进制可以直接升级。这一版改面板、服务端�
   `announce_ttl_seconds / 3`）有了 1 秒下限：短于 3 秒的 TTL 之前会把派生值算成 0，而 0 被
   DHT 节点读作"没设置"，回退到它自己的 30 秒默认值——**通告会在失效之前不被重写**，一个仍在
   运行的服务端的名字会停止解析。另外 `announce_ttl_seconds` 小于 2 秒的配置现在会被
-  `--check` 拒绝：间隔以整秒计，1 秒的 TTL 没有可能在失效前被重写。**若你的配置里
+  `--check` 拒绝：间隔以整秒计，1 秒的 TTL 没有可能在失效前被重写——**这条与 `[dht]` 是否
+  `enabled` 无关**，所以即使你的 DHT 现在是关的也会被查出来。**若你的配置里
   `announce_ttl_seconds` 是 1，升级前先把它改成 2 或更大**（默认值 90 不受影响）；只写
   `republish_seconds` 且它小于 TTL 的配置一律照常。
 - **`server.toml.example`、`client.toml.example` 首行的版本号**从 `v3.3.0` 改为当前版本，
@@ -449,7 +453,8 @@ v3.7.3 的配置与二进制可以直接升级。这一版改面板、服务端�
 ## 5. 升级检查清单
 
 1. 两端一起换成 v3.2.0 的二进制。
-2. 用 `--check` 校验新配置，把报出的未知键逐个处理掉；`[vpn]` 的旧键必须删掉。
+2. 用 `--check --reject-unknown-keys` 校验新配置，让残留的未知键直接失败（不加这个开关时它们
+   只是警告），再逐个处理掉；`[vpn]` 的旧键必须删掉。
 3. 决定是否开启 `[encryption]` 与 `[transport]`；加密的两端必须填写**完全相同**的
    `algorithm`、`salt` 与 `passphrase`，TLS 的客户端必须能校验服务端证书。
 4. 若面板需要对外访问，设置 `[dashboard].token`；对外暴露 `/metrics` 时设置 `[metrics].token`。
@@ -461,5 +466,5 @@ v3.7.3 的配置与二进制可以直接升级。这一版改面板、服务端�
    服务端按代理名的策略、服务端级拒绝与限流、审计轮转与保留代数、审计写不进去与恢复、
    空闲超时、自动封禁、宽限期内的拒绝与探针、代理池、多路径与打洞结果、面板与指标的一致
    性、客户端在服务端重启后的恢复）。Linux 上再用
-   `sudo scripts/vpn-linux-test.sh bin/aethertunnel-server bin/aethertunnel-client`
+   `sudo bash scripts/vpn-linux-test.sh bin/aethertunnel-server bin/aethertunnel-client`
    验一次三层隧道。

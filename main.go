@@ -40,6 +40,7 @@ func main() {
 		showVersion = flag.Bool("version", false, "print the version and exit")
 		configPath  = flag.String("config", "", "path to the server configuration file (default server.toml)")
 		checkConfig = flag.Bool("check", false, "validate the configuration and exit")
+		strictKeys  = flag.Bool("reject-unknown-keys", false, "fail instead of warning when the configuration holds a key this version does not understand")
 		verifyPath  = flag.String("verify-ledger", "", "verify a bandwidth ledger file against a public key and exit")
 		verifyKey   = flag.String("ledger-key", "", "verification key for -verify-ledger: a hex Ed25519 public key or a signing key file")
 		proofPath   = flag.String("ledger-proof", "", "write the ledger entries up to -proof-index to stdout and exit")
@@ -100,13 +101,17 @@ func main() {
 	if *dhtLookup != "" {
 		role = ""
 	}
-	cfg, err := config.Load(path, config.ValidateOptions{Role: role})
+	cfg, err := config.Load(path, config.ValidateOptions{Role: role, RejectUnknownKeys: *strictKeys})
+	// Reported before the error is acted on, and even when there is one: the warnings
+	// are what Load could not put in the error, and a run of --check that names the
+	// unknown keys and the validation failures together saves a second round trip.
+	if cfg != nil {
+		for _, warning := range cfg.Warnings {
+			logger.Printf("warning: %s", warning)
+		}
+	}
 	if err != nil {
 		logger.Fatalf("%v", err)
-	}
-
-	for _, warning := range cfg.Warnings {
-		logger.Printf("warning: %s", warning)
 	}
 
 	if *checkConfig {

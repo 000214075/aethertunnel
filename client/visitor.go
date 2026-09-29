@@ -62,7 +62,7 @@ func (c *client) serveVisitor(ctx context.Context, cfg config.VisitorConfig) {
 func (c *client) serveStreamVisitor(ctx context.Context, cfg config.VisitorConfig) {
 	listener, err := net.Listen("tcp", cfg.ListenAddr())
 	if err != nil {
-		c.logger.Printf("visitor %q: cannot listen on %s: %v", cfg.Name, cfg.ListenAddr(), err)
+		c.logger.Printf("visitor %q: %v", cfg.Name, flynet.ListenError(cfg.ListenAddr(), err))
 		return
 	}
 	c.logger.Printf("visitor %q (%s) listening on %s -> %s/%s",
@@ -103,7 +103,7 @@ func (c *client) handleVisitorTCP(ctx context.Context, cfg config.VisitorConfig,
 func (c *client) serveUDPVisitor(ctx context.Context, cfg config.VisitorConfig) {
 	socket, err := net.ListenPacket("udp", cfg.ListenAddr())
 	if err != nil {
-		c.logger.Printf("visitor %q: cannot listen on %s: %v", cfg.Name, cfg.ListenAddr(), err)
+		c.logger.Printf("visitor %q: %v", cfg.Name, flynet.ListenError(cfg.ListenAddr(), err))
 		return
 	}
 	c.logger.Printf("visitor %q (%s) listening on %s -> %s/%s",

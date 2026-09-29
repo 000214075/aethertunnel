@@ -124,8 +124,15 @@ Schnorr 证明在 NIST P-256 上，用 Fiat-Shamir 去交互；上下文含服�
 规则在握手**之前**执行，被拒绝的连接不会消耗会话槽位，也不会读取任何帧。白名单或黑名单
 非空时，来源地址无法解析的连接按拒绝处理。
 
-封禁只统计**认证失败**（令牌错误、身份断言无效、抗量子密钥协商失败），且按**来源地址**记账，
-不区分是哪个客户端触发的：一个地址被封后，同一地址上任何凭据都会被拒。失败计数在 10 分钟
+访客被拒走的也是这个控制端口，因此按同一套方式记账：令牌或身份不通过、代理不存在、代理不是
+私有的、传输类型不匹配、抗量子协商失败、`secret_key` 或 NIZK 证明不通过，都会计入
+`aethertunnel_control_rejected_total` 并留下审计记录，和普通客户端的拒绝一样。只有**接受之后**
+才发生的失败（中继建不起来）不算拒绝——那一步连接已经计数为已接受。
+
+封禁只统计**认证失败**（令牌错误、身份断言无效、抗量子密钥协商失败，以及访客在私有代理上的
+`secret_key` 或 NIZK 证明不通过），且按**来源地址**记账，不区分是哪个客户端触发的：一个地址被
+封后，同一地址上任何凭据都会被拒。两条入口都算：控制连接的 `AuthRequest` 与访客的
+`VisitorConnect` 检查同样的令牌与身份，用后者去猜令牌并不会绕过封禁。失败计数在 10 分钟
 的窗口内累积，成功认证会清零；重复被封的地址时长按倍数增长（`ban_seconds`、2 倍、4 倍…），
 到 `ban_max_seconds` 为止。倍数要能增长，服务端就必须记得被封过的地址：封禁期间它的连接在
 握手前就被拒，没有机会再累积失败，所以一个地址在**封禁结束后仍保留一个 10 分钟窗口**；
@@ -134,7 +141,7 @@ Schnorr 证明在 NIST P-256 上，用 Fiat-Shamir 去交互；上下文含服�
 
 按代理的 ACL 只匹配**来源地址**，不做目标地址或用户的判断。
 
-审计 `event` 取值：`control_accepted`、`control_rejected`、`auth_failed`、
+审计 `event` 取值：`control_accepted`、`control_rejected`、`handshake_failed`、`auth_failed`、
 `client_disconnected`、`proxy_registered`、`proxy_rejected`、`proxy_removed`、`acl_denied`、
 `rate_limited`、`source_banned`、`ban_refused`、`proxy_visitor_denied`、
 `dashboard_action`、`visitor_accepted`、`visitor_rejected`、
@@ -167,8 +174,15 @@ Schnorr 证明在 NIST P-256 上，用 Fiat-Shamir 去交互；上下文含服�
   两者都要通过面板 token 鉴权。
 - `/metrics`（`[metrics] enabled = true`）由面板监听器提供，接受 `[metrics] token` 或
   面板 token；两个 token 都为空时 `/metrics` 不需要鉴权。
+- 令牌缺失或错误的请求计入 `aethertunnel_dashboard_unauthorized_total`（不写审计，见该指标的
+  说明）。**这个监听器没有任何限流**：控制端口那边的令牌桶、封禁与 `max_connections` 都只作用于
+  控制端口，所以一个猜令牌的客户端可以一直猜下去，这一条计数是它唯一的痕迹——这也是面板默认
+  只监听回环、以及下面那条建议的理由。
 - 面板只读 + 一个 `DELETE /api/clients/{id}`（断开客户端）。没有登录会话、没有多用户、
   没有 CSRF token —— 因此**不要把面板暴露到公网**，用 SSH 端口转发或 WireGuard 访问。
+  `deploy/kubernetes/service.yaml` 把 7500 一并发布在 LoadBalancer 上：那是为了让集群外的
+  运维能直连面板，而面板本身只有明文 HTTP 加一个 Bearer 令牌，**部署方需要自己在这一层加上
+  TLS 与来源限制**，否则这个令牌是明文过网的。
 
 ## 9. 带宽账本
 
@@ -184,8 +198,14 @@ Schnorr 证明在 NIST P-256 上，用 Fiat-Shamir 去交互；上下文含服�
 - 哈希链会把任何改动暴露成后续条目的哈希不匹配；删掉末尾若干条不会破坏链，因此**发现截断
   需要把链头哈希另外发布并在校验时比对**（`GET /api/ledger` 会给出当前链头）。
 - 记账发生在客户端断开时，写入该会话在各代理上累计的字节数：`tcp` 与 `stcp` 按流、
-  `udp` 与 `sudp` 按数据报会话、`xtcp` 按直连或中继的流、`http` 与 `https` 按每个完成的
-  请求。这是**用量声明**，不做流量分析级别的核对。
+  `udp` 与 `sudp` 按数据报会话、`http` 与 `https` 按每个完成的请求、`xtcp` 按**经服务端中继**
+  的那条流。这是**用量声明**，不做流量分析级别的核对。
+- 账本只覆盖服务端真正搬过的字节，**打洞直连的流量不在其中**：`xtcp` 打洞成功后两端直接对话，
+  那个方向的流量不再经过服务端，服务端既看不到这些字节、也没有任何回报机制会把它补上（客户端
+  只有上线、注册、心跳、数据与打洞这几类帧，没有上报用量的帧）。因此那条直连流的账本条目是
+  0 字节，指标的双向字节与按隧道的字节同样不含它；服务端记下的是这次尝试与它的结果
+  （`aethertunnel_p2p_direct_total`、`p2p_direct` 审计事件）。若要靠账本计费，这一点必须先讲
+  清楚：直连省下的正是账本看不到的那部分，而不是"记为 0 的免费额度"。
 
 ### 9.1 私钥文件的权限
 
@@ -252,7 +272,7 @@ Unix 上以 0600 创建），签名覆盖名字、类型、地址、域名、发
 | 心跳静默 | 连续 3 个心跳周期未收到心跳即断开 |
 | 隧道流挂死 | `read_timeout_seconds` / `idle_timeout_seconds` 作为读期限 |
 | 连接洪水 | `max_connections` 上限，超出者收到明确拒绝 |
-| 单连接 panic 拖垮进程 | 每个连接的处理器带 `recover`，panic 只关掉那条连接 |
+| 单连接 panic 拖垮进程 | 每个连接的处理器都带 `recover`：控制连接在 `Server.handleConn`，代理公开端口上的每个访客在 `ProxyGroup.serveVisit`——两者各跑在自己的协程上，一个 panic 只关掉那一条连接。三层路由的读循环（`Router.Run`）与每个对端的收发方向也带同样的防护，panic 只终结那个对端并释放它的地址 |
 | 短写导致数据截断 | 所有写入检查返回值；帧写入用单次 `Write` + 互斥锁 |
 | 慢客户端拖住三层转发 | 每个对端有独立队列，队列满即丢包并计数，不阻塞设备读循环 |
 | UDP 会话堆积 | 空闲超过 `IdleTimeout`（默认 2 分钟）的会话被回收 |

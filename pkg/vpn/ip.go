@@ -162,6 +162,13 @@ func Validate(packet []byte, mtu int) error {
 		}
 		return nil
 	default:
+		// An empty packet has no first byte to name: the version reader reports 0 for
+		// it, and this branch must not index into it. It is reachable — a peer can
+		// send a tunnel frame with no payload — and the caller runs on the path that
+		// carries every other session, so a panic here takes the whole process down.
+		if len(packet) == 0 {
+			return fmt.Errorf("%w: the packet is empty", ErrMalformedPacket)
+		}
 		return fmt.Errorf("%w: the first byte is %#02x, which is neither IPv4 nor IPv6", ErrMalformedPacket, packet[0])
 	}
 }

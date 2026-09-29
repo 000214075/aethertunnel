@@ -197,13 +197,15 @@ func (d *directory) Lookup(name string) (discovery.Record, error) {
 //
 // The query node binds an ephemeral port rather than the configured one, so this can
 // be run on the host that is already running the server described by the same file.
+// The host stays unspecified: a peer answers the address the request came from, so a
+// query bound to loopback is only ever answered by a node on this same machine.
 func LookupProxy(cfg *config.Config, logger *log.Logger, name string) (discovery.Record, error) {
 	if !cfg.DHT.Enabled {
 		return discovery.Record{}, fmt.Errorf("the DHT is not enabled: set [dht] enabled = true and a bootstrap address")
 	}
 
 	settings := cfg.DHTSettings(logger)
-	settings.ListenAddr = "127.0.0.1:0"
+	settings.ListenAddr = "0.0.0.0:0"
 
 	// With no bootstrap list configured, the node at the configured listen address is
 	// asked instead. That is the server a deployment starts from this same file, so a

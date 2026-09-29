@@ -2,6 +2,7 @@ package socks
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net"
 	"strings"
@@ -114,13 +115,30 @@ func TestReadRequestRefusesAnUnacceptableMethod(t *testing.T) {
 	}
 }
 
-func TestReadRequestRefusesBindAndAssociate(t *testing.T) {
-	for _, command := range []byte{CmdBind, CmdAssoc} {
-		script := []byte{Version, 1, MethodNoReq, Version, command, 0x00, AtypIPv4, 127, 0, 0, 1, 0x00, 0x50}
-		_, _, err := serve(t, script)
-		if err == nil {
-			t.Fatalf("command %d was accepted", command)
-		}
+func TestReadRequestRefusesBind(t *testing.T) {
+	script := []byte{Version, 1, MethodNoReq, Version, CmdBind, 0x00, AtypIPv4, 127, 0, 0, 1, 0x00, 0x50}
+	if _, _, err := serve(t, script); err == nil {
+		t.Fatal("a BIND command was accepted")
+	}
+}
+
+func TestReadRequestAcceptsAUDPAssociateRequest(t *testing.T) {
+	script := []byte{Version, 1, MethodNoReq, Version, CmdAssoc, 0x00, AtypIPv4, 0, 0, 0, 0, 0x00, 0x00}
+	request, written, err := serve(t, script)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if request.Command != CmdAssoc {
+		t.Errorf("the command is %d, want %d", request.Command, CmdAssoc)
+	}
+	if request.Target != "" {
+		t.Errorf("a UDP ASSOCIATE request must not set the CONNECT target: %q", request.Target)
+	}
+	if request.ClientAddr != "0.0.0.0:0" {
+		t.Errorf("the client address is %q, want 0.0.0.0:0", request.ClientAddr)
+	}
+	if !bytes.Equal(written, []byte{Version, MethodNoReq}) {
+		t.Errorf("the negotiation answered %v, want 05 00", written)
 	}
 }
 
@@ -135,6 +153,60 @@ func TestReadRequestRefusesPortZero(t *testing.T) {
 	script := []byte{Version, 1, MethodNoReq, Version, CmdConnect, 0x00, AtypIPv4, 127, 0, 0, 1, 0x00, 0x00}
 	if _, _, err := serve(t, script); err == nil {
 		t.Fatal("a request for port 0 was accepted")
+	}
+}
+
+// TestReadRequestRefusesADomainThatCannotBeHostPort covers a name a visitor can
+// put in the domain address type that no consumer of a target can take apart:
+// net.JoinHostPort leaves "a[" alone because it only brackets a host holding a
+// colon, and net.SplitHostPort then refuses the stray bracket. Every target is
+// read with SplitHostPort — the allow list, the client's dial, the reply — so the
+// request is refused here rather than handed on as a string only the client's own
+// parser can reject.
+func TestReadRequestRefusesADomainThatCannotBeHostPort(t *testing.T) {
+	for _, command := range []byte{CmdConnect, CmdAssoc} {
+		for _, name := range []string{"a[", "[a", "a]b", "ho[st.example"} {
+			script := []byte{Version, 1, MethodNoReq, Version, command, 0x00, AtypDomain, byte(len(name))}
+			script = append(script, []byte(name)...)
+			script = append(script, 0x01, 0xBB)
+
+			_, _, err := serve(t, script)
+			if !errors.Is(err, ErrBadAddress) {
+				t.Errorf("command %d with domain %q: err = %v, want %v", command, name, err, ErrBadAddress)
+			}
+		}
+	}
+}
+
+// TestReadRequestResolvesTheAmbiguousDomainForms covers the forms that look
+// suspicious and are not: a colon is bracketed by net.JoinHostPort and comes back
+// out of net.SplitHostPort unchanged, so a target that names one is still a usable
+// host:port and is not refused for its shape. Whether such a name resolves is the
+// client's business, not the parser's.
+func TestReadRequestResolvesTheAmbiguousDomainForms(t *testing.T) {
+	cases := []struct {
+		name string
+		want string
+	}{
+		{"a:b", "[a:b]:443"},
+		{"example.com", "example.com:443"},
+		{"xn--bcher-kva.example", "xn--bcher-kva.example:443"},
+	}
+	for _, tc := range cases {
+		script := []byte{Version, 1, MethodNoReq, Version, CmdConnect, 0x00, AtypDomain, byte(len(tc.name))}
+		script = append(script, []byte(tc.name)...)
+		script = append(script, 0x01, 0xBB)
+
+		request, _, err := serve(t, script)
+		if err != nil {
+			t.Fatalf("domain %q: %v", tc.name, err)
+		}
+		if request.Target != tc.want {
+			t.Errorf("domain %q became %q, want %q", tc.name, request.Target, tc.want)
+		}
+		if _, _, err := net.SplitHostPort(request.Target); err != nil {
+			t.Errorf("domain %q became %q, which is not host:port: %v", tc.name, request.Target, err)
+		}
 	}
 }
 
@@ -181,6 +253,102 @@ func TestWriteReply(t *testing.T) {
 	want := []byte{Version, ReplyConnectionRefused, 0x00, AtypIPv4, 0, 0, 0, 0, 0, 0}
 	if !bytes.Equal(got, want) {
 		t.Errorf("reply is %v, want %v", got, want)
+	}
+}
+
+func TestWriteReplyBoundNamesTheRelayAddress(t *testing.T) {
+	client, server := net.Pipe()
+	t.Cleanup(func() { client.Close(); server.Close() })
+
+	done := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 10)
+		_ = client.SetDeadline(time.Now().Add(2 * time.Second))
+		n, _ := io.ReadFull(client, buf)
+		done <- buf[:n]
+	}()
+
+	if err := WriteReplyBound(server, ReplySucceeded, net.IPv4(127, 0, 0, 1), 4100); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got := <-done
+	want := []byte{Version, ReplySucceeded, 0x00, AtypIPv4, 127, 0, 0, 1, 0x10, 0x04}
+	if !bytes.Equal(got, want) {
+		t.Errorf("reply is %v, want %v", got, want)
+	}
+}
+
+// --- UDP datagrams ------------------------------------------------------------
+
+func TestUDPDatagramRoundTripsForEveryAddressType(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:53", "[2001:db8::1]:53", "example.com:53"} {
+		packet, err := WrapUDPDatagram(addr, []byte("payload"))
+		if err != nil {
+			t.Fatalf("%s: wrap: %v", addr, err)
+		}
+		got, data, err := ParseUDPDatagram(packet)
+		if err != nil {
+			t.Fatalf("%s: parse: %v", addr, err)
+		}
+		if got != addr {
+			t.Errorf("parsed address is %q, want %q", got, addr)
+		}
+		if string(data) != "payload" {
+			t.Errorf("parsed data is %q, want payload", data)
+		}
+	}
+}
+
+func TestParseUDPDatagramRefusesFragmentsAndGarbage(t *testing.T) {
+	packet, err := WrapUDPDatagram("127.0.0.1:53", []byte("data"))
+	if err != nil {
+		t.Fatalf("wrap: %v", err)
+	}
+
+	// A non-zero fragment byte is refused: this relay does not reassemble.
+	fragmented := append([]byte(nil), packet...)
+	fragmented[2] = 1
+	if _, _, err := ParseUDPDatagram(fragmented); err != ErrFragment {
+		t.Errorf("a fragmented datagram failed with %v, want %v", err, ErrFragment)
+	}
+
+	// A non-zero reserved byte is refused too.
+	reserved := append([]byte(nil), packet...)
+	reserved[0] = 1
+	if _, _, err := ParseUDPDatagram(reserved); err == nil {
+		t.Error("a datagram with a non-zero reserved byte was accepted")
+	}
+
+	// A truncated datagram has no address or port to read.
+	if _, _, err := ParseUDPDatagram(packet[:3]); err == nil {
+		t.Error("a truncated datagram was accepted")
+	}
+}
+
+func TestWrapUDPDatagramRejectsAnUnusableAddress(t *testing.T) {
+	if _, err := WrapUDPDatagram("no-port", []byte("x")); err == nil {
+		t.Error("an address without a port was accepted")
+	}
+	if _, err := WrapUDPDatagram("127.0.0.1:not-a-number", []byte("x")); err == nil {
+		t.Error("an address with a non-numeric port was accepted")
+	}
+}
+
+// TestParseUDPDatagramRefusesADomainThatCannotBeHostPort covers the datagram form
+// of the same gap: the target a relayed datagram names is dialled by the client
+// behind the tunnel, which takes it apart with net.SplitHostPort, so the parser
+// refuses a domain that would not survive that join.
+func TestParseUDPDatagramRefusesADomainThatCannotBeHostPort(t *testing.T) {
+	for _, name := range []string{"a[", "[a", "a]b"} {
+		packet := []byte{0, 0, 0, AtypDomain, byte(len(name))}
+		packet = append(packet, []byte(name)...)
+		packet = append(packet, 0x00, 0x50)
+		packet = append(packet, []byte("data")...)
+
+		address, _, err := ParseUDPDatagram(packet)
+		if !errors.Is(err, ErrBadAddress) {
+			t.Errorf("domain %q: address %q, err = %v, want %v", name, address, err, ErrBadAddress)
+		}
 	}
 }
 

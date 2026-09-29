@@ -23,6 +23,7 @@ func TestMetricsRenderExposesDocumentedSeries(t *testing.T) {
 	m.controlAccepted.Add(3)
 	m.authFailures.Add(1)
 	m.bytesFromClients.Add(2048)
+	m.dataUnmatched.Add(2)
 	m.streamOpened("ssh")
 	m.recordStream("ssh", 100, 200)
 	m.streamClosed("ssh")
@@ -34,6 +35,8 @@ func TestMetricsRenderExposesDocumentedSeries(t *testing.T) {
 		"aethertunnel_control_connections_total 3",
 		"# TYPE aethertunnel_auth_failures_total counter",
 		"aethertunnel_auth_failures_total 1",
+		"# TYPE aethertunnel_data_connections_unmatched_total counter",
+		"aethertunnel_data_connections_unmatched_total 2",
 		"# TYPE aethertunnel_bytes_from_clients_total counter",
 		"aethertunnel_bytes_from_clients_total 2248",
 		"# TYPE aethertunnel_streams_active gauge",

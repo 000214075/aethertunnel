@@ -195,7 +195,7 @@ func (p ProxyConfig) LocalAddr() string {
 	if host == "" {
 		host = "127.0.0.1"
 	}
-	return fmt.Sprintf("%s:%d", host, p.LocalPort)
+	return net.JoinHostPort(host, strconv.Itoa(p.LocalPort))
 }
 
 // VisitorConfig is one [[visitors]] entry. A visitor reaches a private proxy
@@ -224,7 +224,7 @@ func (v VisitorConfig) ListenAddr() string {
 	if host == "" {
 		host = "127.0.0.1"
 	}
-	return fmt.Sprintf("%s:%d", host, v.BindPort)
+	return net.JoinHostPort(host, strconv.Itoa(v.BindPort))
 }
 
 // VisitorTypes lists the proxy types a visitor may ask for.
@@ -613,7 +613,6 @@ const (
 // MaxMultipath bounds [[proxies]].multipath.
 const MaxMultipath = 8
 
-// Defaults for the [dht] section. The listen address is a fixed port so that a
 // node can be bootstrapped by address without first being told which port it
 // chose.
 const (
@@ -752,7 +751,7 @@ func (c *Config) Cipher(role string) (*crypto.Cipher, error) {
 
 // ListenAddr is the address the server binds.
 func (c *Config) ListenAddr() string {
-	return fmt.Sprintf("%s:%d", c.Server.BindAddr, c.Server.BindPort)
+	return net.JoinHostPort(c.Server.BindAddr, strconv.Itoa(c.Server.BindPort))
 }
 
 // PostQuantum reports whether sessions should agree a key with X25519 and
@@ -790,7 +789,7 @@ func (c *Config) ClientTLSConfig() (*tls.Config, error) {
 	}
 	if c.Transport.ServerName != "" {
 		config.ServerName = c.Transport.ServerName
-	} else if host, _, err := splitHostPort(c.Client.ServerAddr); err == nil {
+	} else if host, _, err := net.SplitHostPort(c.Client.ServerAddr); err == nil {
 		config.ServerName = host
 	}
 
@@ -823,22 +822,22 @@ func (c *Config) AllowedIdentities() ([]ed25519.PublicKey, error) {
 
 // HTTPAddr is the address of the shared virtual-host listener for http proxies.
 func (c *Config) HTTPAddr() string {
-	return fmt.Sprintf("%s:%d", c.Server.BindAddr, c.Server.HTTPPort)
+	return net.JoinHostPort(c.Server.BindAddr, strconv.Itoa(c.Server.HTTPPort))
 }
 
 // HTTPSAddr is the address of the shared TLS virtual-host listener.
 func (c *Config) HTTPSAddr() string {
-	return fmt.Sprintf("%s:%d", c.Server.BindAddr, c.Server.HTTPSPort)
+	return net.JoinHostPort(c.Server.BindAddr, strconv.Itoa(c.Server.HTTPSPort))
 }
 
 // P2PAddr is the UDP rendezvous address used for hole punching.
 func (c *Config) P2PAddr() string {
-	return fmt.Sprintf("%s:%d", c.Server.BindAddr, c.Server.P2PPort)
+	return net.JoinHostPort(c.Server.BindAddr, strconv.Itoa(c.Server.P2PPort))
 }
 
 // DashboardAddr is the address the dashboard binds.
 func (c *Config) DashboardAddr() string {
-	return fmt.Sprintf("%s:%d", c.Dashboard.BindAddr, c.Dashboard.Port)
+	return net.JoinHostPort(c.Dashboard.BindAddr, strconv.Itoa(c.Dashboard.Port))
 }
 
 // boundListener is one address this process would bind, with the key that names it.
@@ -970,7 +969,7 @@ func (c *Config) Validate(role string) error {
 		if c.Client.ServerAddr == "" && c.DHT.Discover == "" {
 			problems = append(problems, "client.server_addr is required, unless dht.enabled and dht.discover resolve the server address from the DHT")
 		} else if c.Client.ServerAddr != "" {
-			if _, _, err := splitHostPort(c.Client.ServerAddr); err != nil {
+			if _, _, err := net.SplitHostPort(c.Client.ServerAddr); err != nil {
 				problems = append(problems, fmt.Sprintf("client.server_addr %q is not host:port", c.Client.ServerAddr))
 			}
 		}
@@ -1040,7 +1039,7 @@ func (c *Config) Validate(role string) error {
 		}
 	}
 
-	if c.Obfuscation.Enabled && c.Obfuscation.PadTo < 0 {
+	if c.Obfuscation.PadTo < 0 {
 		problems = append(problems, "obfuscation.pad_to cannot be negative")
 	}
 	// Padding happens before the frame is written, and a frame larger than the limit is
@@ -1166,10 +1165,17 @@ func (c *Config) Validate(role string) error {
 			problems = append(problems, fmt.Sprintf("server.ban_ignore_cidrs entry %q is not a CIDR: %v", cidr, err))
 		}
 	}
+	// A range check on a single value is made whether or not its section is enabled: a
+	// negative or absurd number is a mistake in the file, and the point of --check is to
+	// name it before the section is switched on rather than the moment it is. What stays
+	// behind the gates below is what only means something while the section is in use:
+	// addresses and keys that have to parse, and relations between two values whose
+	// defaults are only filled in once the section is on (dht.republish_seconds = 0
+	// means "derive it", so it cannot be compared with announce_ttl_seconds).
+	if c.VPN.MTU != 0 && (c.VPN.MTU < vpn.MinMTU || c.VPN.MTU > vpn.MaxMTU) {
+		problems = append(problems, fmt.Sprintf("vpn.mtu must be %d-%d, got %d", vpn.MinMTU, vpn.MaxMTU, c.VPN.MTU))
+	}
 	if c.VPN.Enabled {
-		if c.VPN.MTU != 0 && (c.VPN.MTU < vpn.MinMTU || c.VPN.MTU > vpn.MaxMTU) {
-			problems = append(problems, fmt.Sprintf("vpn.mtu must be %d-%d, got %d", vpn.MinMTU, vpn.MaxMTU, c.VPN.MTU))
-		}
 		switch role {
 		case RoleServer:
 			if c.VPN.Address == "" {
@@ -1196,6 +1202,21 @@ func (c *Config) Validate(role string) error {
 		}
 	}
 
+	if c.DHT.AnnounceTTLSeconds < 0 {
+		problems = append(problems, "dht.announce_ttl_seconds cannot be negative")
+	}
+	if c.DHT.AnnounceTTLSeconds > 0 && c.DHT.AnnounceTTLSeconds < 2 {
+		problems = append(problems, fmt.Sprintf(
+			"dht.announce_ttl_seconds (%d) is too short: an announcement has to be rewritten before it lapses, and the interval is a whole number of seconds",
+			c.DHT.AnnounceTTLSeconds))
+	}
+	if c.DHT.RepublishSeconds < 0 {
+		problems = append(problems, "dht.republish_seconds cannot be negative")
+	}
+	if c.DHT.TTLSeconds < 0 {
+		problems = append(problems, "dht.ttl_seconds cannot be negative")
+	}
+
 	if c.DHT.Enabled {
 		if _, _, err := net.SplitHostPort(c.DHT.ListenAddr); err != nil {
 			problems = append(problems, fmt.Sprintf("dht.listen_addr %q is not host:port", c.DHT.ListenAddr))
@@ -1210,24 +1231,10 @@ func (c *Config) Validate(role string) error {
 				problems = append(problems, fmt.Sprintf("dht.bootstrap entry %q is not host:port", addr))
 			}
 		}
-		if c.DHT.AnnounceTTLSeconds < 0 {
-			problems = append(problems, "dht.announce_ttl_seconds cannot be negative")
-		}
-		if c.DHT.AnnounceTTLSeconds > 0 && c.DHT.AnnounceTTLSeconds < 2 {
-			problems = append(problems, fmt.Sprintf(
-				"dht.announce_ttl_seconds (%d) is too short: an announcement has to be rewritten before it lapses, and the interval is a whole number of seconds",
-				c.DHT.AnnounceTTLSeconds))
-		}
-		if c.DHT.RepublishSeconds < 0 {
-			problems = append(problems, "dht.republish_seconds cannot be negative")
-		}
 		if c.DHT.RepublishSeconds > 0 && c.DHT.RepublishSeconds >= c.DHT.AnnounceTTLSeconds {
 			problems = append(problems, fmt.Sprintf(
 				"dht.republish_seconds (%d) must be shorter than dht.announce_ttl_seconds (%d), otherwise an announcement lapses before it is rewritten",
 				c.DHT.RepublishSeconds, c.DHT.AnnounceTTLSeconds))
-		}
-		if c.DHT.TTLSeconds < 0 {
-			problems = append(problems, "dht.ttl_seconds cannot be negative")
 		}
 		if c.DHT.TTLSeconds > 0 && c.DHT.TTLSeconds < c.DHT.AnnounceTTLSeconds {
 			problems = append(problems, fmt.Sprintf(
@@ -1254,7 +1261,10 @@ func (c *Config) Validate(role string) error {
 			if len(c.DHT.TrustedKeys) > 0 {
 				c.Warnings = append(c.Warnings, "dht.trusted_keys has no effect in a server configuration: it lists the publishers this node accepts when it resolves a name")
 			}
-			if strings.Contains(c.DHT.AdvertiseHost, ":") {
+			// A bare IPv6 address contains colons, so "contains a colon" would
+			// refuse it for the wrong reason; parse as host:port instead, which
+			// only succeeds when a port really is present.
+			if _, _, err := net.SplitHostPort(c.DHT.AdvertiseHost); err == nil {
 				problems = append(problems, fmt.Sprintf(
 					"dht.advertise_host %q contains a port: give the host only, because the port is the one that serves each proxy",
 					c.DHT.AdvertiseHost))
@@ -1628,15 +1638,13 @@ func isWeakToken(token string) bool {
 	return false
 }
 
-func splitHostPort(addr string) (string, string, error) {
-	idx := strings.LastIndex(addr, ":")
-	if idx <= 0 || idx == len(addr)-1 {
-		return "", "", fmt.Errorf("missing port")
-	}
-	return addr[:idx], addr[idx+1:], nil
-}
-
 // Load reads and validates a configuration file.
+//
+// On a validation failure it returns both the configuration it built and the error,
+// unlike the other failure paths, so the caller can still report what was collected
+// on the way: an unknown key and a missing required value are usually part of the
+// same mistake, and they belong in the same report. The configuration must not be
+// used in that case — it only carries the warnings.
 func Load(filename string, opts ValidateOptions) (*Config, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
@@ -1674,7 +1682,11 @@ func Load(filename string, opts ValidateOptions) (*Config, error) {
 	}
 
 	if err := cfg.Validate(opts.Role); err != nil {
-		return nil, err
+		// Returned with the error, not instead of it: warnings collected above are
+		// only reachable through this value, and dropping them would make an operator
+		// fix the validation failures before learning about the typos that are
+		// usually the same edit.
+		return &cfg, err
 	}
 	return &cfg, nil
 }

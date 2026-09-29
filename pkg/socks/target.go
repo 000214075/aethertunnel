@@ -122,3 +122,14 @@ func (p *TargetPolicy) Dial(target string, timeout time.Duration) (net.Conn, err
 	}
 	return net.DialTimeout("tcp", address, timeout)
 }
+
+// DialUDP checks a target and connects to it over UDP, which is what a socks5
+// UDP ASSOCIATE relay needs. The allow list applies exactly as it does to a
+// CONNECT request.
+func (p *TargetPolicy) DialUDP(target string, timeout time.Duration) (net.Conn, error) {
+	address, err := p.Check(target, timeout)
+	if err != nil {
+		return nil, err
+	}
+	return net.DialTimeout("udp", address, timeout)
+}

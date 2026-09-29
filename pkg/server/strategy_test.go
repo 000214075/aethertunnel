@@ -81,3 +81,74 @@ func TestLatencyStrategyKeepsChoosingTheFasterMember(t *testing.T) {
 		t.Fatalf("the unmeasured member was skipped, reply %q", reply)
 	}
 }
+
+// A member whose local service is down never answers, so it never gets a
+// measurement, and a strategy that reads "no measurement" as "free" hands it every
+// visit. Measured through the real binaries against one live member, the latency
+// strategy spent 31 of 30 attempts on the dead one and the adaptive strategy 30 of 30,
+// against 15 for round-robin and 4 for the bandit. A failed attempt is what tells such
+// a member apart from one that has merely not been measured yet.
+//
+// What the strategies hand out is asserted here by asking them: a visit cannot show it,
+// because the data path retries a member that fails and a fake member that cannot reach
+// its service closes the connection silently rather than reporting the failure the way
+// a real client does. The observable end of this lives in scripts/functional-linux.sh,
+// where both ends are real processes.
+//
+// The two properties the strategies have to hold at once are that the member that
+// answers gets the visits and that the member that never answered is still probed, so
+// that a service which comes back is found again.
+func TestAMemberThatFailedWithoutAnsweringWaitsBehindTheOthers(t *testing.T) {
+	for _, strategy := range []string{config.LoadBalanceLatency, config.LoadBalanceAdaptive} {
+		t.Run(strategy, func(t *testing.T) {
+			cfg := loadBalancedConfig(t, strategy)
+			rs := startServer(t, cfg)
+			port := freePort(t)
+
+			// Nothing listens on this address: this is the member whose service is
+			// down, and it registers first, so it is not merely the later one.
+			deadAddress := net.JoinHostPort("127.0.0.1", fmt.Sprint(freePort(t)))
+			liveAddress := countingEcho(t, "live")
+			joinPool(t, rs, "pooled", deadAddress, "pool", "", port)
+			joinPool(t, rs, "pooled", liveAddress, "pool", "", port)
+
+			group, err := rs.server.tunnels.Get("pooled")
+			if err != nil {
+				t.Fatalf("lookup: %v", err)
+			}
+			dead := memberFor(t, group, deadAddress)
+			live := memberFor(t, group, liveAddress)
+
+			// The state one failed attempt leaves behind: a failure, and still no
+			// measurement of this member. The member that answers has been measured.
+			dead.failures.Store(1)
+			dead.dialLatency.Store(0)
+			live.dialLatency.Store(int64(2 * time.Millisecond))
+
+			// Forty picks: the dead member is the one the probe exists for, and the
+			// probe runs one pick in twenty, so it gets two of them and the member
+			// that answers gets the rest.
+			const picks = 40
+			toDead, toLive := 0, 0
+			for i := 0; i < picks; i++ {
+				picked := group.pickExcluding(nil)
+				switch picked {
+				case dead:
+					toDead++
+				case live:
+					toLive++
+				case nil:
+					t.Fatalf("pick %d chose no member", i+1)
+				default:
+					t.Fatalf("pick %d chose an unexpected member", i+1)
+				}
+			}
+
+			if toLive != picks-2 || toDead != 2 {
+				t.Fatalf("under %s the member that answers got %d of %d picks and the one that "+
+					"never answered %d, want %d and 2 (one probe per twenty)",
+					strategy, toLive, picks, toDead, picks-2)
+			}
+		})
+	}
+}

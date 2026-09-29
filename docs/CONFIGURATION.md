@@ -1,23 +1,38 @@
 # 配置参考 · Configuration reference
 
-**English summary.** Every key this version reads is listed below. Any other key is reported
-at startup, and `--check` fails when `RejectUnknownKeys` is set. Three credentials may also
+**English summary.** Every key this version reads is listed below. Any other key is reported at
+startup and by `--check`; pass `--reject-unknown-keys` to make such a key an error instead, which
+is what the repository's own CI does to the example files. Three credentials may also
 come from the environment and take precedence over the file: `AETHERTUNNEL_AUTH_TOKEN`,
 `AETHERTUNNEL_DASHBOARD_TOKEN`, `AETHERTUNNEL_ENCRYPTION_PASSPHRASE`. The example files in the
 repository root are validated by CI.
 
-用 `--check` 校验而不启动：
+Windows 编辑器写出的配置文件可以直接用：CRLF 行尾与 UTF-8 BOM 都按原样解析，不会把回车
+带进任何值里（`pkg/config` 有测试锁定这一行为）。
+
+用 `--check` 校验而不启动（未知键与来自环境变量的凭据都会打印出来；文件因为别的问题被拒时
+也会先打印，所以一次运行就能看到全部问题，校验失败时退出码为 1）：
 
 ```bash
 aethertunnel-server --config server.toml --check
 aethertunnel-client --config client.toml --check
+
+# 把未知键从警告变成错误：CI 就是这样校验两个示例文件的，
+# 示例里多打一个键会当场让这一步失败而不是只打一行警告
+aethertunnel-server --config server.toml --check --reject-unknown-keys
 ```
+
+**哪些检查与段的 `enabled` 有关**：对**单个数值**的范围检查与它无关——负数、上下限（如 `mtu` 的
+576–9000、`pad_to` 不得超过帧上限、`announce_ttl_seconds` 最少 2 秒）说的是文件本身写错了，所以
+段写着 `enabled = false` 也照样会被 `--check` 拒绝，而不是等你把它打开才发现。需要该段真的在用的
+检查只在启用时执行：要能解析的地址与密钥，以及**两个值之间的关系**——`republish_seconds` 必须短于
+`announce_ttl_seconds`，而段未启用时 `republish_seconds = 0` 表示"按 TTL 推导"，此时无从比较。
 
 ## `[server]`（服务端）
 
 | 键 | 类型 | 默认 | 说明 |
 |---|---|---|---|
-| `bind_addr` | string | 必填 | 监听地址。`0.0.0.0` 表示所有网卡 |
+| `bind_addr` | string | 必填 | 监听地址。`0.0.0.0` 表示所有 IPv4 网卡，`::` 表示所有 IPv6 网卡，`::1` 只回环 |
 | `bind_port` | int | 必填 | 监听端口（1–65535）。控制连接与数据连接共用。同一个进程里两个监听器不能绑在同一个地址上：与 `http_port`/`https_port`/`dashboard.port` 冲突时 `--check` 直接拒绝 |
 | `auth_token` | string | 必填 | 与客户端共享的密钥。少于 16 位或形如占位符会**警告** |
 | `max_connections` | int | 512 | 同时在线客户端上限，超出的会被明确拒绝。负数被拒绝 |
@@ -60,7 +75,7 @@ aethertunnel-client --config client.toml --check
 |---|---|---|---|
 | `name` | string | 必填 | 代理名，同一客户端内不可重复；同一 `group` 内多个客户端可以同名 |
 | `type` | string | `tcp` | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5` |
-| `local_ip` | string | `127.0.0.1` | 本地服务地址 |
+| `local_ip` | string | `127.0.0.1` | 本地服务地址；IPv6 地址同样可用（如 `::1`） |
 | `local_port` | int | 必填 | 本地服务端口（1–65535） |
 | `remote_port` | int | 0 | 服务器上对外开放的端口。`tcp`/`udp` 用它；`http`/`https` 与私有类型必须为 0。同一客户端里两个**同协议**的代理不能请求同一个端口（先注册的绑住它，第二个会被拒绝），`tcp` 与 `udp` 用同一个端口号是允许的：它们绑的是不同协议的两个套接字 |
 | `domains` | []string | 空 | `http`/`https` 的访问域名：精确域名、`*.通配`，或留空后由服务端 `subdomain_host` 拼出 `<代理名>.<该值>`。留空时客户端只给出警告，因为该设置属于服务端 |
@@ -73,7 +88,9 @@ aethertunnel-client --config client.toml --check
 | `deny_cidrs` | []string | 空 | 拒绝的来源地址，优先级高于 `allow_cidrs` |
 
 `socks5` 没有本地服务，因此 `local_ip` 与 `local_port` 会被忽略并给出警告，必须设置
-`remote_port`。`allow_targets` 按 IP 范围匹配，域名先解析再匹配；不在范围里的目标会以
+`remote_port`。它支持 TCP `CONNECT` 与 UDP `ASSOCIATE`：前者按访客指定的目标拨号，后者在
+服务端开一个 UDP 中继、按每个数据报头里写的目标拨号并把应答原样带回。`allow_targets` 对两者
+都生效，按 IP 范围匹配，域名先解析再匹配；不在范围里的目标会以
 SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` 在服务器接受连接之后、
 建立隧道之前执行，被拒绝的访客会留下 `proxy_visitor_denied` 审计记录。
 
@@ -171,28 +188,39 @@ SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` �
 每一行都直接读自运行中的计数器，没有估算值；`aethertunnel_p2p_direct_total` 只在访客
 用 `ATP3` 数据报回报了直连路径时才增加，访客没回报的尝试不会计入直连。
 
+两个字节计数器与按隧道的字节只统计**服务端搬过**的字节：`xtcp` 打洞成功后两端直连，那个方向
+的流量不再经过服务端，因此既不在这些计数里，也不在带宽账本里；服务端能记下的是这次尝试与它
+报告的结果（`aethertunnel_p2p_*_total` 与对应的审计事件）。
+
 序列名逐条列出（值都是自进程启动以来的累计数，除标为 gauge 的）：
 
 | 序列 | 类型 | 含义 |
 |---|---|---|
 | `aethertunnel_uptime_seconds` | gauge | 进程运行秒数 |
 | `aethertunnel_control_connections_total` | counter | 被接受的（已通过握手的）控制连接 |
-| `aethertunnel_control_rejected_total` | counter | 在握手前被拒绝的控制连接，原因是容量、ACL、限流或封禁中的任意一种 |
+| `aethertunnel_control_rejected_total` | counter | 被拒绝的控制连接：容量、ACL、限流、封禁、首帧读不出来、首帧不是一个可用请求，以及凭据不通过（访客入口的拒绝也算在这里）；各项另有单独的计数。其中有些是不回答直接关闭的，所以这一条是"盯着端口有没有人在敲"该看的汇总 |
 | `aethertunnel_auth_failures_total` | counter | 凭据错误的认证尝试 |
 | `aethertunnel_connections_denied_by_acl_total` | counter | 被允许/拒绝名单挡下的连接 |
 | `aethertunnel_connections_rate_limited_total` | counter | 被按来源令牌桶挡下的连接 |
 | `aethertunnel_sources_banned_total` | counter | 因反复认证失败被封禁的来源 |
 | `aethertunnel_banned_connections_refused_total` | counter | 因来源处于封禁期而被拒绝的连接 |
-| `aethertunnel_visitors_denied_by_proxy_total` | counter | 被单个代理自己的名单拒绝的访客 |
+| `aethertunnel_visitors_denied_by_proxy_total` | counter | 被拒绝的访客：既包括被服务端为该名字定的策略拒绝的，也包括被代理自己的名单拒绝的（审计记录的 `detail` 指出是哪一边） |
+| `aethertunnel_unusable_request_frames_total` | counter | 首帧不是一个可用请求的连接：载荷无法解析的请求帧（认证请求、访客连接或数据打开），或一个不能用来开局面的帧类型。每条都会先回答再关闭；控制端口上那几种和别的拒绝一样计入汇总，数据打开那一帧不计入汇总（它没有成为控制会话）；单列是为了让"有人在拿垃圾帧扫端口"不被读成策略拒绝 |
+| `aethertunnel_handshake_failures_total` | counter | 连首帧都读不出来、因而被**不回答直接关闭**的连接：伪装、加密或 TLS 两端设置不一致导致字节解不开，或者对端连上什么都不发就离开（TCP 健康检查也是这样）。和上一条的区别在于"字节到了但不可用"还是"根本没有可读的帧"，两者都会计入 `control_rejected`；这一条单列是因为它此前只写日志：一边改了 `[encryption]` 口令的机群、或拿垃圾扫控制端口的人，在指标和审计里都是零 |
+| `aethertunnel_dashboard_unauthorized_total` | counter | 面板监听器上因令牌缺失或错误被拒的请求：需要令牌的每个 `/api` 端点，以及没带对令牌的 `/metrics`。这个监听器**自己没有任何限流**，所以这条是"有东西在够一个它没有凭据的面板"的唯一痕迹；它只计数不写审计，是因为面板本身每隔几秒轮询一次，一次请求一行会让一个拿着过期令牌的客户端把痕迹埋掉（控制端口那边每条一次是因为一条连接只对应一次拒绝） |
 | `aethertunnel_streams_refused_while_draining_total` | counter | 因服务器正在关闭而被拒绝的流 |
 | `aethertunnel_socks5_requests_total` | counter | 通过 socks5 出口发出的 CONNECT 请求 |
-| `aethertunnel_data_connections_total` | counter | 客户端打开的数据连接 |
+| `aethertunnel_socks5_udp_associations_total` | counter | socks5 出口接受的 UDP ASSOCIATE 关联 |
+| `aethertunnel_socks5_udp_datagrams_total` | counter | socks5 出口转发的 UDP 数据报（双向各计一次） |
+| `aethertunnel_socks5_malformed_requests_total` | counter | socks5 出口上收到的、不是一个可用 SOCKS5 请求的连接（与上面的"被名单拒绝"分开计数，便于区分探测与策略拒绝） |
+| `aethertunnel_data_connections_total` | counter | 客户端打开的数据连接（能解析出 `DataOpen` 的那些，包括后面没能配对的） |
+| `aethertunnel_data_connections_unmatched_total` | counter | 数据连接的 `DataOpen` 指向了服务端没在等的会话或流：会话未知或已过期，或者要这条流的访客已经走了。这两类都在任何认证之前就能到达，此前只留一行日志。**连不上自己本地服务的客户端不算在内**——它在帧里自己说明了原因，等这条流的访客也会收到错误，那是正常结果而不是配不上的连接 |
 | `aethertunnel_streams_active` | gauge | 当前打开的隧道流 |
 | `aethertunnel_streams_total` | counter | 已结束的隧道流 |
 | `aethertunnel_bytes_from_clients_total` | counter | 从客户端收到的字节 |
 | `aethertunnel_bytes_to_clients_total` | counter | 发往客户端的字节 |
-| `aethertunnel_udp_datagrams_total` | counter | 转发的 UDP 数据报 |
-| `aethertunnel_udp_sessions_active` | gauge | 当前跟踪的 UDP 访客会话（按来源地址计） |
+| `aethertunnel_udp_datagrams_total` | counter | `udp` 与 `sudp` 代理转发的 UDP 数据报（双向各计一次）。socks5 出口的数据报走它自己那条序列 |
+| `aethertunnel_udp_sessions_active` | gauge | 当前跟踪的 UDP 访客会话（`udp` 代理按来源地址各算一个；`sudp` 的访客是一条独立的流，不进这个数） |
 | `aethertunnel_http_requests_total` | counter | 共享虚拟主机监听上服务的请求 |
 | `aethertunnel_p2p_punches_total` | counter | 为 xtcp 代理发起的打洞尝试 |
 | `aethertunnel_p2p_direct_total` | counter | 得到直连路径的打洞尝试 |
@@ -208,9 +236,11 @@ SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` �
 三条审计序列只在 `[audit] enabled = true` 时出现。审计关闭时不输出它们，因为恒为 0 的
 "丢失 0 条"会被读成"审计正常"，而实际上根本没有任何日志。
 
-UDP 数据报会话的字节在**会话释放时**计入两个字节计数器与按隧道的计数，即该来源地址安静
-`server.read_timeout_seconds`（默认 120）秒之后，与它从 `aethertunnel_udp_sessions_active`
-消失的时刻相同；每收到一个数据报就增加的是 `aethertunnel_udp_datagrams_total`。
+UDP 数据报会话的字节在**会话释放时**计入两个字节计数器与按隧道的计数：`udp` 代理是
+该来源地址安静 `server.read_timeout_seconds`（默认 120）秒之后，`sudp` 与 socks5 出口是那条
+流结束时，前者同时从 `aethertunnel_udp_sessions_active` 消失；每转一个数据报就增加的是
+`aethertunnel_udp_datagrams_total`（`udp` 与 `sudp`）或
+`aethertunnel_socks5_udp_datagrams_total`（socks5 出口），都是双向各计一次。
 
 ## `[audit]`（服务端）
 
@@ -242,7 +272,7 @@ inode，不重建的话路径到重启为止都是空的。仍然写不下去的
 关闭之后再写一条，说明有写记录的东西活过了关闭，不能就这么算了。
 
 每行一个 JSON 对象，字段为 `time`、`event`、`client_id`、`remote`、`proxy`、`detail`、`outcome`；
-`event` 取值为 `control_accepted`、`control_rejected`、`auth_failed`、`client_disconnected`、
+`event` 取值为 `control_accepted`、`control_rejected`、`handshake_failed`、`auth_failed`、`client_disconnected`、
 `proxy_registered`、`proxy_rejected`、`proxy_removed`、`acl_denied`、`rate_limited`、
 `source_banned`、`ban_refused`、`proxy_visitor_denied`、
 `dashboard_action`、`visitor_accepted`、`visitor_rejected`、
@@ -263,8 +293,11 @@ inode，不重建的话路径到重启为止都是空的。仍然写不下去的
 | `path` | string | `aethertunnel-ledger.jsonl` | 账本文件，每行一条 JSON 记录 |
 | `signing_key_file` | string | `aethertunnel-ledger.key` | Ed25519 私钥种子（32 字节十六进制），首次使用时生成。**Unix 上以 0600 创建**；Windows 没有 POSIX 权限位，`0600` 只是 Go 的请求，实际保护来自文件所在目录继承的 ACL（用户配置目录默认只授予本人、SYSTEM 与 Administrators） |
 
-每条记录包含序号、时间、客户端、代理、双向字节、上一条的哈希、本条哈希与签名。
-`GET /api/ledger` 发布公钥、链头、最近条目与按客户端汇总。
+每条记录包含序号、时间、客户端、代理、双向字节、上一条的哈希、本条哈希与签名。这里的**双向字节
+只是服务端自己搬过的那部分**：`xtcp` 打洞成功后两端直接对话，那条会话的条目就是 0 字节（它没有
+因此变成"免费额度"，而是根本没经过这里，详见 `docs/SECURITY.md` 第 9 节）。条目在**会话结束时**
+追加，所以被强杀的进程不会留下这一条——这也是容器里那张账本有时是空的原因。
+`GET /api/ledger` 发布公钥、链头、最近条目与按客户端汇总；面板的「账本」页渲染的就是这份响应。
 `aethertunnel-server --verify-ledger <文件> --ledger-key <公钥或私钥文件>` 可以离线校验，
 校验只需要公钥。
 `aethertunnel-server --ledger-proof <文件> --proof-index <n>` 把到第 n 条为止的前缀按同样的
@@ -298,7 +331,8 @@ JSONL 格式写到标准输出（索引从 0 开始，越界或缺失时报错�
 不满足策略时 `--dht-lookup` 与 `--discover` 会失败，错误分别是
 `the announcement carries no signature`、`the announcement's signature does not verify`
 与 `the announcement is signed by a key that is not trusted`。
-服务端的签名公钥可以从 `--dht-key`、`GET /api/dht` 的 `signing_key` 字段或启动日志里读到。
+服务端的签名公钥可以从 `--dht-key`、`GET /api/dht` 的 `signing_key` 字段或启动日志里读到；
+面板的「目录」页把这份响应连同正在通告的名字一起显示出来（`--dht-key` 打印的必须是同一个值）。
 
 ## `[vpn]`（三层隧道）
 

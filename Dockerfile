@@ -44,8 +44,11 @@ COPY --from=builder --chown=65532:65532 /out/state /var/lib/aethertunnel
 WORKDIR /var/lib/aethertunnel
 VOLUME ["/var/lib/aethertunnel"]
 
-# 7001 is the control port, 7500 the dashboard and 7001/udp the DHT node.
-EXPOSE 7001 7500 7001/udp
+# The ports the shipped Deployment routes: 7001 the control port, 7500 the dashboard,
+# 7002/udp the xtcp rendezvous and 7003/udp the DHT node. The manifests give the DHT a
+# number of its own because a Service merges its ports by number, so a TCP control port
+# and a UDP DHT node sharing 7001 cannot both be published.
+EXPOSE 7001 7500 7002/udp 7003/udp
 
 ENTRYPOINT ["/usr/local/bin/aethertunnel-server"]
 CMD ["--config", "/etc/aethertunnel/server.toml"]

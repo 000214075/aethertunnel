@@ -567,6 +567,10 @@ type DataRequest struct {
 	// Target is the address a socks5 visitor asked for. It is empty for every
 	// other proxy type, whose target is the client's own local_addr.
 	Target string `json:"target,omitempty"`
+	// SocksUDP marks a socks5 UDP ASSOCIATE stream: each TypeUDPPacket frame
+	// carries a whole SOCKS5 UDP datagram (RFC 1928 section 7 header plus data),
+	// and the client dials the target named in that header per datagram.
+	SocksUDP bool `json:"socks_udp,omitempty"`
 }
 
 // DataOpen asks the server to open a new data stream for a proxy. After the ack

@@ -18,27 +18,34 @@ import (
 type Metrics struct {
 	startedAt time.Time
 
-	controlAccepted  atomic.Int64
-	controlRejected  atomic.Int64
-	authFailures     atomic.Int64
-	dataConnections  atomic.Int64
-	aclDenied        atomic.Int64
-	rateLimited      atomic.Int64
-	bans             atomic.Int64
-	banRefused       atomic.Int64
-	visitorDenied    atomic.Int64
-	socksRequests    atomic.Int64
-	drainRefused     atomic.Int64
-	streamsActive    atomic.Int64
-	streamsTotal     atomic.Int64
-	bytesFromClients atomic.Int64
-	bytesToClients   atomic.Int64
-	udpDatagrams     atomic.Int64
-	udpSessions      atomic.Int64
-	httpRequests     atomic.Int64
-	p2pPunches       atomic.Int64
-	p2pDirect        atomic.Int64
-	p2pRelayed       atomic.Int64
+	controlAccepted   atomic.Int64
+	controlRejected   atomic.Int64
+	authFailures      atomic.Int64
+	dataConnections   atomic.Int64
+	dataUnmatched     atomic.Int64
+	aclDenied         atomic.Int64
+	rateLimited       atomic.Int64
+	bans              atomic.Int64
+	banRefused        atomic.Int64
+	visitorDenied     atomic.Int64
+	unusableFrames    atomic.Int64
+	handshakeFailures atomic.Int64
+	dashboardRefused  atomic.Int64
+	socksMalformed    atomic.Int64
+	socksRequests     atomic.Int64
+	socksUDPAssoc     atomic.Int64
+	socksUDPDatagrams atomic.Int64
+	drainRefused      atomic.Int64
+	streamsActive     atomic.Int64
+	streamsTotal      atomic.Int64
+	bytesFromClients  atomic.Int64
+	bytesToClients    atomic.Int64
+	udpDatagrams      atomic.Int64
+	udpSessions       atomic.Int64
+	httpRequests      atomic.Int64
+	p2pPunches        atomic.Int64
+	p2pDirect         atomic.Int64
+	p2pRelayed        atomic.Int64
 
 	// audit is the log whose health is reported; nil when the server was built
 	// without one, in which case the series are omitted rather than reported as
@@ -142,22 +149,29 @@ func (m *Metrics) Render() string {
 
 	gauge("aethertunnel_uptime_seconds", "Seconds since the process started.", int64(time.Since(m.startedAt).Seconds()))
 	counter("aethertunnel_control_connections_total", "Control connections that completed the handshake.", m.controlAccepted.Load())
-	counter("aethertunnel_control_rejected_total", "Control connections refused (capacity, ACL, rate limit or ban).", m.controlRejected.Load())
-	counter("aethertunnel_auth_failures_total", "Authentication attempts with an invalid token.", m.authFailures.Load())
+	counter("aethertunnel_control_rejected_total", "Control-port connections refused instead of accepted: capacity, ACL, rate limit, ban, a first frame that could not be read, an unusable first frame, or credentials that do not check out (refusals on the visitor entry point are counted here too). Some of these are closed without an answer, so this is the series an alert on the port watches; the specific ones say why.", m.controlRejected.Load())
+	counter("aethertunnel_auth_failures_total", "Authentication attempts that failed a credential check: a wrong token, a failed identity assertion, a failed key agreement, or a visitor's failed proof for a proxy's secret key.", m.authFailures.Load())
 	counter("aethertunnel_connections_denied_by_acl_total", "Connections refused by allow/deny lists.", m.aclDenied.Load())
 	counter("aethertunnel_connections_rate_limited_total", "Connections refused by the per-IP rate limit.", m.rateLimited.Load())
 	counter("aethertunnel_sources_banned_total", "Sources banned after repeated authentication failures.", m.bans.Load())
 	counter("aethertunnel_banned_connections_refused_total", "Connections refused because the source is banned.", m.banRefused.Load())
-	counter("aethertunnel_visitors_denied_by_proxy_total", "Visitors refused by a proxy's own allow/deny lists.", m.visitorDenied.Load())
+	counter("aethertunnel_visitors_denied_by_proxy_total", "Visitors refused by the server's policy for a name or by the proxy's own allow/deny lists.", m.visitorDenied.Load())
+	counter("aethertunnel_unusable_request_frames_total", "Connections whose first frame was not a usable request: a payload that does not parse (an auth request, a visitor-connect, or a data-open), or a frame type that cannot start a connection.", m.unusableFrames.Load())
+	counter("aethertunnel_handshake_failures_total", "Connections closed without an answer because no usable first frame could be read: a disguise, encryption or TLS mismatch that leaves the bytes undecodable, or a peer that closed or went quiet before sending one, which a TCP health check also does.", m.handshakeFailures.Load())
+	counter("aethertunnel_dashboard_unauthorized_total", "Requests on the dashboard listener refused for a missing or wrong token: every /api endpoint that needs one, and /metrics with a token the scraper did not present. This listener has no rate limit of its own, so this is the series that shows something is reaching for a dashboard it has no credential for.", m.dashboardRefused.Load())
+	counter("aethertunnel_socks5_malformed_requests_total", "Connections on a socks5 endpoint that did not carry a usable SOCKS5 request.", m.socksMalformed.Load())
 	counter("aethertunnel_streams_refused_while_draining_total", "Streams refused because the server was shutting down.", m.drainRefused.Load())
 	counter("aethertunnel_socks5_requests_total", "SOCKS5 CONNECT requests served.", m.socksRequests.Load())
+	counter("aethertunnel_socks5_udp_associations_total", "SOCKS5 UDP ASSOCIATE associations accepted.", m.socksUDPAssoc.Load())
+	counter("aethertunnel_socks5_udp_datagrams_total", "SOCKS5 UDP datagrams relayed.", m.socksUDPDatagrams.Load())
 	counter("aethertunnel_data_connections_total", "Data connections opened by clients.", m.dataConnections.Load())
+	counter("aethertunnel_data_connections_unmatched_total", "Data connections whose data-open named a session or a stream the server was not waiting for: the session was unknown or had expired, or the visitor that asked for the stream had gone. A client that cannot reach its own local service is not one of these — it reports that itself, and the visitor waiting for the stream is told.", m.dataUnmatched.Load())
 	gauge("aethertunnel_streams_active", "Tunnelled streams currently open.", m.streamsActive.Load())
 	counter("aethertunnel_streams_total", "Tunnelled streams completed.", m.streamsTotal.Load())
 	counter("aethertunnel_bytes_from_clients_total", "Bytes received from clients.", m.bytesFromClients.Load())
 	counter("aethertunnel_bytes_to_clients_total", "Bytes sent to clients.", m.bytesToClients.Load())
-	counter("aethertunnel_udp_datagrams_total", "UDP datagrams relayed.", m.udpDatagrams.Load())
-	gauge("aethertunnel_udp_sessions_active", "UDP visitor sessions currently tracked.", m.udpSessions.Load())
+	counter("aethertunnel_udp_datagrams_total", "UDP datagrams relayed by a udp or sudp proxy.", m.udpDatagrams.Load())
+	gauge("aethertunnel_udp_sessions_active", "UDP visitor sessions currently tracked, which is what a udp proxy keeps per source address.", m.udpSessions.Load())
 	counter("aethertunnel_http_requests_total", "Requests served by the shared virtual-host listener.", m.httpRequests.Load())
 	counter("aethertunnel_p2p_punches_total", "Hole punching attempts started for xtcp proxies.", m.p2pPunches.Load())
 	counter("aethertunnel_p2p_direct_total", "Hole punching attempts that produced a direct path.", m.p2pDirect.Load())

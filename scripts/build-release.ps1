@@ -54,10 +54,16 @@ foreach ($platform in $platforms) {
 }
 Remove-Item Env:GOOS, Env:GOARCH -ErrorAction SilentlyContinue
 
+# The entries carry the ./ prefix that `sha256sum ./*` produces on a POSIX host,
+# and the lines end in LF. scripts/verify-release-linux.sh looks an entry up as
+# (^|/)<name>$, so a plain file name reads as an artifact the file never lists,
+# and a CR before the end of the line defeats the anchor the same way. Written
+# this way the file has one shape whichever build script produced the release.
 $sums = Get-ChildItem $out -File | Sort-Object Name | ForEach-Object {
-    "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
+    "{0}  ./{1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
 }
-$sums | Set-Content (Join-Path $out "SHA256SUMS") -Encoding ASCII
+$sumsPath = Join-Path $out "SHA256SUMS"
+[System.IO.File]::WriteAllText($sumsPath, ($sums -join "`n") + "`n", [System.Text.Encoding]::ASCII)
 
 Write-Host "`nchecksums:" -ForegroundColor Cyan
 $sums | ForEach-Object { Write-Host $_ }

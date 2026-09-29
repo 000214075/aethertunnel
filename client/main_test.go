@@ -12,6 +12,7 @@ import (
 	"github.com/aethertunnel/aethertunnel/pkg/config"
 	"github.com/aethertunnel/aethertunnel/pkg/crypto"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
+	"github.com/aethertunnel/aethertunnel/pkg/socks"
 )
 
 // testClient builds the smallest client the heartbeat decision needs: a config and a
@@ -238,5 +239,150 @@ func TestAStreamFromAVisitorIsLabelledAsOne(t *testing.T) {
 	}
 	if got := streamOrigin(protocol.DataRequest{}); strings.Contains(got, "visitor") {
 		t.Errorf("a stream from the public port is labelled %q", got)
+	}
+}
+
+// The socks5 UDP relay is what lets a socks5 exit carry UDP: it parses the target
+// out of each wrapped datagram, dials it, and wraps every reply back with the
+// target as its source.
+func TestSocksUDPRelayForwardsDatagramsAndWrapsReplies(t *testing.T) {
+	echo, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("start the udp echo: %v", err)
+	}
+	defer echo.Close()
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, addr, err := echo.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			_, _ = echo.WriteTo(buf[:n], addr)
+		}
+	}()
+
+	policy, err := socks.NewTargetPolicy([]string{"127.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+
+	// One pipe plays the server's data connection; the relay sits on one end and
+	// the test drives the other.
+	serverSide, clientSide := net.Pipe()
+	t.Cleanup(func() { serverSide.Close(); clientSide.Close() })
+
+	relay := &socksUDPRelay{
+		policy:      policy,
+		framer:      protocol.NewFramer(clientSide, nil, 0),
+		logger:      log.New(io.Discard, "", 0),
+		name:        "exit",
+		idleTimeout: 2 * time.Second,
+		dialTimeout: 5 * time.Second,
+		sockets:     make(map[string]*socksUDPTarget),
+	}
+	defer relay.close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		relay.run()
+	}()
+
+	peer := protocol.NewFramer(serverSide, nil, 0)
+	wrapped, err := socks.WrapUDPDatagram(echo.LocalAddr().String(), []byte("ping"))
+	if err != nil {
+		t.Fatalf("wrap: %v", err)
+	}
+	if err := peer.WriteFrame(&protocol.Message{Type: protocol.TypeUDPPacket, Payload: wrapped}); err != nil {
+		t.Fatalf("send the datagram: %v", err)
+	}
+
+	_ = serverSide.SetReadDeadline(time.Now().Add(5 * time.Second))
+	msg, err := peer.ReadFrame()
+	if err != nil {
+		t.Fatalf("read the reply: %v", err)
+	}
+	target, data, err := socks.ParseUDPDatagram(msg.Payload)
+	if err != nil {
+		t.Fatalf("parse the reply: %v", err)
+	}
+	if target != echo.LocalAddr().String() {
+		t.Errorf("the reply names %q, want %q", target, echo.LocalAddr().String())
+	}
+	if string(data) != "ping" {
+		t.Errorf("the reply carries %q", data)
+	}
+
+	_ = serverSide.Close()
+	<-done
+}
+
+// A visitor that sends datagrams to many distinct targets would otherwise give
+// the client one UDP socket per target until the file-descriptor table runs out.
+// The relay bounds the cache and evicts the target it has not seen in the longest.
+func TestSocksUDPRelayEvictsTheLeastRecentlyUsedTarget(t *testing.T) {
+	echo := func() string {
+		conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("start a udp echo: %v", err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		go func() {
+			buf := make([]byte, 4096)
+			for {
+				n, addr, err := conn.ReadFrom(buf)
+				if err != nil {
+					return
+				}
+				_, _ = conn.WriteTo(buf[:n], addr)
+			}
+		}()
+		return conn.LocalAddr().String()
+	}
+	a, b, c := echo(), echo(), echo()
+
+	policy, err := socks.NewTargetPolicy([]string{"127.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	relay := &socksUDPRelay{
+		policy:      policy,
+		logger:      log.New(io.Discard, "", 0),
+		name:        "exit",
+		idleTimeout: time.Second,
+		dialTimeout: 5 * time.Second,
+		maxSockets:  2,
+		sockets:     make(map[string]*socksUDPTarget),
+	}
+	defer relay.close()
+
+	if _, err := relay.socketFor(a); err != nil {
+		t.Fatalf("socket for a: %v", err)
+	}
+	if _, err := relay.socketFor(b); err != nil {
+		t.Fatalf("socket for b: %v", err)
+	}
+	// Touch a again so b, not a, is the least recently used, then add c.
+	if _, err := relay.socketFor(a); err != nil {
+		t.Fatalf("touch a: %v", err)
+	}
+	if _, err := relay.socketFor(c); err != nil {
+		t.Fatalf("socket for c: %v", err)
+	}
+
+	relay.mu.Lock()
+	defer relay.mu.Unlock()
+	if len(relay.sockets) != 2 {
+		t.Fatalf("the relay holds %d sockets after adding a third, want 2", len(relay.sockets))
+	}
+	if _, ok := relay.sockets[b]; ok {
+		t.Error("the least recently used target was not evicted")
+	}
+	if _, ok := relay.sockets[a]; !ok {
+		t.Error("the recently used target was evicted")
+	}
+	if _, ok := relay.sockets[c]; !ok {
+		t.Error("the new target was not cached")
 	}
 }

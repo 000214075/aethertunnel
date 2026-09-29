@@ -26,6 +26,42 @@ func writeConfig(t *testing.T, body string) string {
 	return path
 }
 
+// TestAConfigWrittenByAWindowsEditorLoads covers the two things a Windows text editor
+// does to a configuration file: CRLF line endings and a UTF-8 byte order mark. Both end
+// up in the bytes that toml.Decode sees, and neither would fail loudly if a layer
+// treated \r as part of a value — the auth token would silently gain a carriage return
+// and the first section name would gain the BOM. A file authored on Windows has both by
+// default, so the guarantee is locked here rather than left to the platform the file
+// was written on.
+func TestAConfigWrittenByAWindowsEditorLoads(t *testing.T) {
+	body := "\xef\xbb\xbf" + strings.ReplaceAll(`
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[dashboard]
+enabled = true
+port = 7500
+token = "0123456789abcdef0123456789abcdef"
+`, "\n", "\r\n")
+	path := writeConfig(t, body)
+	cfg, err := LoadServer(path)
+	if err != nil {
+		t.Fatalf("a CRLF + BOM configuration should load: %v", err)
+	}
+	if len(cfg.Warnings) != 0 {
+		t.Fatalf("a CRLF + BOM configuration should raise no warnings, got %q",
+			strings.Join(cfg.Warnings, "\n"))
+	}
+	if cfg.Server.AuthToken != "0123456789abcdef0123456789abcdef" {
+		t.Errorf("the auth token gained bytes from the line endings: %q", cfg.Server.AuthToken)
+	}
+	if cfg.Server.BindPort != 7001 || cfg.Dashboard.Port != 7500 {
+		t.Errorf("numeric values did not survive CRLF: %d/%d", cfg.Server.BindPort, cfg.Dashboard.Port)
+	}
+}
+
 func TestServerDefaultsAreApplied(t *testing.T) {
 	path := writeConfig(t, `
 [server]
@@ -160,6 +196,107 @@ enabled = true
 	_, err = Load(path, ValidateOptions{Role: RoleServer, RejectUnknownKeys: true})
 	if err == nil || !strings.Contains(err.Error(), "does not understand") {
 		t.Fatalf("RejectUnknownKeys should fail, got %v", err)
+	}
+}
+
+// TestRangeChecksApplyToDisabledSections pins where the line between "checked anyway"
+// and "checked only in use" sits.
+//
+// A check on one value is a statement about the file, so it is made whether or not the
+// section is enabled: the operator should learn about it before switching the section
+// on. It used to depend on the flag and inconsistently so — `pad_to = -1` was accepted
+// while the upper limit of the same key was not, and `vpn.mtu = -1` and
+// `dht.announce_ttl_seconds = 1` were accepted, the last one even though the migration
+// guide tells operators to raise that value before upgrading. Checks that need the
+// section in use (an address that has to parse, or a relation between two values whose
+// defaults are only filled in when it is on) stay behind the flag.
+func TestRangeChecksApplyToDisabledSections(t *testing.T) {
+	head := `
+[server]
+bind_addr = "127.0.0.1"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+`
+	for _, tc := range []struct {
+		name string
+		body string
+		want string // empty means the configuration has to load
+	}{
+		{
+			name: "a negative pad_to in a disabled [obfuscation]",
+			body: "[obfuscation]\nenabled = false\npad_to = -1\n",
+			want: "obfuscation.pad_to cannot be negative",
+		},
+		{
+			name: "an mtu outside its range in a disabled [vpn]",
+			body: "[vpn]\nenabled = false\nmtu = -1\n",
+			want: "vpn.mtu must be",
+		},
+		{
+			name: "a one-second announcement TTL in a disabled [dht]",
+			body: "[dht]\nenabled = false\nannounce_ttl_seconds = 1\n",
+			want: "dht.announce_ttl_seconds (1) is too short",
+		},
+		{
+			name: "a negative ttl_seconds in a disabled [dht]",
+			body: "[dht]\nenabled = false\nttl_seconds = -1\n",
+			want: "dht.ttl_seconds cannot be negative",
+		},
+		{
+			name: "a usable value in a disabled section is still accepted",
+			body: "[obfuscation]\nenabled = false\npad_to = 256\n\n[vpn]\nenabled = false\nmtu = 1400\n\n[dht]\nenabled = false\nannounce_ttl_seconds = 90\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadServer(writeConfig(t, head+tc.body))
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("a disabled section with usable values should load, got: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected an error containing %q, got nil", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+// TestWarningsSurviveAValidationFailure is the other half of the reporting above. A
+// file can hold both an unknown key and a validation failure, and the failure used to
+// return a nil configuration, which put the warning out of reach: --check named the
+// missing values, the operator fixed them, and only the next run mentioned the typo
+// that was the same mistake to begin with.
+func TestWarningsSurviveAValidationFailure(t *testing.T) {
+	path := writeConfig(t, `
+[server]
+bind_adr = "127.0.0.1"
+bind_port = 7001
+
+[webrtc]
+enabled = true
+`)
+	cfg, err := LoadServer(path)
+	if err == nil {
+		t.Fatal("a file with no bind_addr and no auth_token should be rejected")
+	}
+	if cfg == nil {
+		t.Fatal("the rejected configuration is nil, so its warnings cannot be reported")
+	}
+	joined := strings.Join(cfg.Warnings, "\n")
+	for _, want := range []string{"webrtc", "bind_adr"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("the warnings do not name %q: %q", want, joined)
+		}
+	}
+	// The RejectUnknownKeys path is an error, and that error is the message; it must
+	// still be the one reported.
+	if _, err := Load(path, ValidateOptions{Role: RoleServer, RejectUnknownKeys: true}); err == nil ||
+		!strings.Contains(err.Error(), "does not understand") {
+		t.Errorf("RejectUnknownKeys should report the unknown keys, got %v", err)
 	}
 }
 
@@ -1109,6 +1246,41 @@ enabled = true
 	}
 }
 
+// The TLS server name derived from client.server_addr has to strip the brackets a
+// bracketed IPv6 literal carries: x509 matches an IP against the SAN with the bare
+// address, not with "[::1]".
+func TestClientTLSServerNameStripsIPv6Brackets(t *testing.T) {
+	cfg := &Config{}
+	cfg.Transport.EnableTLS = true
+	cfg.Transport.InsecureSkipVerify = true
+	cfg.Client.ServerAddr = "[::1]:7001"
+	tlsConfig, err := cfg.ClientTLSConfig()
+	if err != nil {
+		t.Fatalf("ClientTLSConfig: %v", err)
+	}
+	if tlsConfig.ServerName != "::1" {
+		t.Errorf("ServerName = %q, want ::1", tlsConfig.ServerName)
+	}
+}
+
+// A bare IPv6 advertise host contains colons that are part of the address, not a
+// port, so it has to load; the port check must not read every colon as one.
+func TestDHTAdvertiseHostAcceptsABareIPv6Address(t *testing.T) {
+	path := writeConfig(t, `
+[server]
+bind_addr = "0.0.0.0"
+bind_port = 7001
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[dht]
+enabled = true
+advertise_host = "2001:db8::1"
+`)
+	if _, err := LoadServer(path); err != nil {
+		t.Fatalf("a bare IPv6 advertise host was rejected: %v", err)
+	}
+}
+
 func TestDHTDiscoverySatisfiesTheClientAddressRequirement(t *testing.T) {
 	path := writeConfig(t, `
 [client]
@@ -1193,6 +1365,36 @@ func TestLocalAddrIsEmptyForASocks5Proxy(t *testing.T) {
 	explicit := ProxyConfig{Name: "web", Type: ProxyTypeTCP, LocalIP: "10.0.0.5", LocalPort: 8080}
 	if got := explicit.LocalAddr(); got != "10.0.0.5:8080" {
 		t.Errorf("LocalAddr() is %q, want 10.0.0.5:8080", got)
+	}
+}
+
+// An IPv6 host has to be bracketed when a port is appended, or a dialer would
+// read "::1:22" as one ambiguous address.
+func TestIPv6AddressesAreBracketed(t *testing.T) {
+	proxy := ProxyConfig{Name: "v6", Type: ProxyTypeTCP, LocalIP: "::1", LocalPort: 22}
+	if got := proxy.LocalAddr(); got != "[::1]:22" {
+		t.Errorf("LocalAddr() = %q, want [::1]:22", got)
+	}
+
+	visitor := VisitorConfig{BindAddr: "::1", BindPort: 7000}
+	if got := visitor.ListenAddr(); got != "[::1]:7000" {
+		t.Errorf("VisitorConfig.ListenAddr() = %q, want [::1]:7000", got)
+	}
+
+	cfg := &Config{}
+	cfg.Server.BindAddr = "::"
+	cfg.Server.BindPort = 7001
+	if got := cfg.ListenAddr(); got != "[::]:7001" {
+		t.Errorf("ListenAddr() = %q, want [::]:7001", got)
+	}
+	cfg.Server.HTTPPort = 8080
+	if got := cfg.HTTPAddr(); got != "[::]:8080" {
+		t.Errorf("HTTPAddr() = %q, want [::]:8080", got)
+	}
+	cfg.Dashboard.BindAddr = "::1"
+	cfg.Dashboard.Port = 7500
+	if got := cfg.DashboardAddr(); got != "[::1]:7500" {
+		t.Errorf("DashboardAddr() = %q, want [::1]:7500", got)
 	}
 }
 

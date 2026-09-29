@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -162,6 +163,7 @@ func main() {
 		showVersion = flag.Bool("version", false, "print the version and exit")
 		configPath  = flag.String("config", "", "path to the client configuration file (default client.toml)")
 		checkConfig = flag.Bool("check", false, "validate the configuration and exit")
+		strictKeys  = flag.Bool("reject-unknown-keys", false, "fail instead of warning when the configuration holds a key this version does not understand")
 		showID      = flag.Bool("identity", false, "print this client's public identity key and exit")
 		discover    = flag.String("discover", "", "resolve a proxy name through the [dht] network and exit")
 	)
@@ -188,14 +190,19 @@ func main() {
 
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 
-	cfg, err := config.Load(path, config.ValidateOptions{Role: config.RoleClient})
+	cfg, err := config.Load(path, config.ValidateOptions{Role: config.RoleClient, RejectUnknownKeys: *strictKeys})
+	// Reported even when the configuration is rejected, for the same reason the server
+	// does it: the warnings and the validation failures are usually one mistake, and
+	// seeing them together saves a second round trip.
+	if cfg != nil {
+		for _, warning := range cfg.Warnings {
+			logger.Printf("warning: %s", warning)
+		}
+	}
 	if err != nil {
 		logger.Fatalf("%v", err)
 	}
 
-	for _, warning := range cfg.Warnings {
-		logger.Printf("warning: %s", warning)
-	}
 	if *checkConfig {
 		fmt.Printf("%s is valid\n", path)
 		return
@@ -815,9 +822,10 @@ func (c *client) serveStream(session string, request protocol.DataRequest) {
 	// reported to the server — and from there to the visitor — instead of leaving
 	// the visitor to wait for the server's dial timeout. A socks5 tunnel dials the
 	// address the visitor asked for, checked against the ranges its configuration
-	// allows; a datagram tunnel dials its own UDP socket later.
+	// allows; a datagram tunnel dials its own UDP socket later, and a socks5 UDP
+	// relay dials each datagram's own target.
 	var local net.Conn
-	if !config.IsDatagramProxyType(proxy.Type) {
+	if !config.IsDatagramProxyType(proxy.Type) && !request.SocksUDP {
 		local, err = c.dialForProxy(proxy, request.Target)
 		if err != nil {
 			c.reportStreamFailure(session, request.Proxy, request.StreamID, err)
@@ -877,6 +885,11 @@ func (c *client) serveStream(session string, request protocol.DataRequest) {
 
 	if config.IsDatagramProxyType(proxy.Type) {
 		c.serveDatagrams(request.Proxy, conn, framer, proxy.LocalAddr())
+		return
+	}
+
+	if request.SocksUDP {
+		c.serveSocksUDP(proxy, framer)
 		return
 	}
 
@@ -1017,6 +1030,192 @@ func (c *client) findProxy(name string) (config.ProxyConfig, error) {
 		}
 	}
 	return config.ProxyConfig{}, errors.New("not in this client's configuration")
+}
+
+// serveSocksUDP relays one socks5 UDP ASSOCIATE stream. Each TypeUDPPacket frame
+// carries a whole SOCKS5 UDP datagram, whose header names the target; this client
+// dials the target, sends the data and wraps every reply back in the same header.
+// It runs until the server closes the data connection, which happens when the
+// visitor's association ends.
+func (c *client) serveSocksUDP(proxy config.ProxyConfig, framer *protocol.Framer) {
+	policy, err := socks.NewTargetPolicy(proxy.AllowTargets)
+	if err != nil {
+		c.logger.Printf("stream for %q: socks5 udp: %v", proxy.Name, err)
+		return
+	}
+
+	relay := &socksUDPRelay{
+		policy:      policy,
+		framer:      framer,
+		logger:      c.logger,
+		name:        proxy.Name,
+		idleTimeout: time.Duration(c.cfg.Client.IdleTimeoutSecs) * time.Second,
+		dialTimeout: time.Duration(c.cfg.Client.DialTimeoutSecs) * time.Second,
+		maxSockets:  maxSocksUDPTargets,
+		sockets:     make(map[string]*socksUDPTarget),
+	}
+	defer relay.close()
+	relay.run()
+}
+
+// run reads wrapped datagrams from the server until the connection ends, dialling
+// each target and forwarding the data.
+func (r *socksUDPRelay) run() {
+	for {
+		msg, err := r.framer.ReadFrame()
+		if err != nil {
+			return
+		}
+		if msg.Type != protocol.TypeUDPPacket {
+			continue
+		}
+		target, data, err := socks.ParseUDPDatagram(msg.Payload)
+		if err != nil {
+			r.logger.Printf("stream for %q: dropping a malformed socks5 udp datagram: %v", r.name, err)
+			continue
+		}
+		socket, err := r.socketFor(target)
+		if err != nil {
+			r.logger.Printf("stream for %q: cannot reach %s: %v", r.name, target, err)
+			continue
+		}
+		if _, err := socket.Write(data); err != nil {
+			r.logger.Printf("stream for %q: writing to %s: %v", r.name, target, err)
+			r.drop(target)
+		}
+	}
+}
+
+// socksUDPTarget is one connected UDP socket the relay keeps for a target.
+type socksUDPTarget struct {
+	conn     net.Conn
+	target   string
+	lastUsed atomic.Int64 // UnixNano of the most recent datagram sent to this target
+}
+
+// maxSocksUDPTargets bounds how many distinct targets one socks5 UDP association
+// may hold a socket for. A visitor that probes many addresses otherwise gets one
+// file descriptor per probe, and can exhaust the client's whole descriptor table.
+const maxSocksUDPTargets = 256
+
+// socksUDPRelay keeps the per-target UDP sockets of one socks5 UDP association.
+// Each socket has its own reply reader, so replies from several targets can be
+// interleaved without waiting on each other.
+type socksUDPRelay struct {
+	policy      *socks.TargetPolicy
+	framer      *protocol.Framer
+	logger      *log.Logger
+	name        string
+	idleTimeout time.Duration
+	dialTimeout time.Duration
+	// maxSockets bounds the per-target socket cache; zero selects
+	// maxSocksUDPTargets. It is a field so a test can drive a small cap.
+	maxSockets int
+
+	mu      sync.Mutex
+	sockets map[string]*socksUDPTarget
+}
+
+// socketFor returns the UDP socket for target, dialling and caching it the first
+// time. The target is the header's address exactly as the visitor named it, so
+// two datagrams to the same target share a socket and its reply reader.
+func (r *socksUDPRelay) socketFor(target string) (net.Conn, error) {
+	now := time.Now().UnixNano()
+	r.mu.Lock()
+	entry, ok := r.sockets[target]
+	if ok {
+		entry.lastUsed.Store(now)
+		r.mu.Unlock()
+		return entry.conn, nil
+	}
+	conn, err := r.policy.DialUDP(target, r.dialTimeout)
+	if err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
+	entry = &socksUDPTarget{conn: conn, target: target}
+	entry.lastUsed.Store(now)
+	r.sockets[target] = entry
+	r.evictLocked()
+	r.mu.Unlock()
+
+	go r.readReplies(entry)
+	return conn, nil
+}
+
+// evictLocked closes the least-recently-used socket once the cache outgrows its
+// cap. It must be called with r.mu held; closing a socket unblocks its reader,
+// which then removes itself on the next mutex turn.
+func (r *socksUDPRelay) evictLocked() {
+	cap := r.maxSockets
+	if cap == 0 {
+		cap = maxSocksUDPTargets
+	}
+	if len(r.sockets) <= cap {
+		return
+	}
+	var oldest *socksUDPTarget
+	for _, entry := range r.sockets {
+		if oldest == nil || entry.lastUsed.Load() < oldest.lastUsed.Load() {
+			oldest = entry
+		}
+	}
+	if oldest != nil {
+		delete(r.sockets, oldest.target)
+		_ = oldest.conn.Close()
+	}
+}
+
+// readReplies forwards everything the target sends back, wrapped in the SOCKS5
+// UDP header that names it as the source.
+func (r *socksUDPRelay) readReplies(entry *socksUDPTarget) {
+	buf := make([]byte, 65535)
+	for {
+		if r.idleTimeout > 0 {
+			_ = entry.conn.SetReadDeadline(time.Now().Add(r.idleTimeout))
+		}
+		n, err := entry.conn.Read(buf)
+		if err != nil {
+			r.drop(entry.target)
+			return
+		}
+		wrapped, err := socks.WrapUDPDatagram(entry.target, buf[:n])
+		if err != nil {
+			r.logger.Printf("stream for %q: wrapping a reply from %s: %v", r.name, entry.target, err)
+			continue
+		}
+		if err := r.framer.WriteFrame(&protocol.Message{Type: protocol.TypeUDPPacket, Payload: wrapped}); err != nil {
+			r.drop(entry.target)
+			return
+		}
+	}
+}
+
+// drop closes and forgets one target's socket.
+func (r *socksUDPRelay) drop(target string) {
+	r.mu.Lock()
+	entry, ok := r.sockets[target]
+	if ok {
+		delete(r.sockets, target)
+	}
+	r.mu.Unlock()
+	if ok {
+		_ = entry.conn.Close()
+	}
+}
+
+// close closes every socket the relay still holds, which unblocks their readers.
+func (r *socksUDPRelay) close() {
+	r.mu.Lock()
+	entries := make([]*socksUDPTarget, 0, len(r.sockets))
+	for _, entry := range r.sockets {
+		entries = append(entries, entry)
+	}
+	r.sockets = make(map[string]*socksUDPTarget)
+	r.mu.Unlock()
+	for _, entry := range entries {
+		_ = entry.conn.Close()
+	}
 }
 
 // cryptoStreamConn presents a crypto.Stream as a net.Conn for the pipe helper.

@@ -211,6 +211,90 @@ func TestEveryPreHandshakeRefusalIsCounted(t *testing.T) {
 	}
 }
 
+// TestAnUnusableFirstFrameIsRefusedAndCounted covers the two ways a connection can
+// carry a first frame that is not a usable request: an authentication request whose
+// payload cannot be decoded, and a frame type that may not start a connection. Both
+// are answered with a refusal, so both have to leave the same trace as every other
+// refusal; the malformed one used to leave none at all, and neither moved the
+// aggregate counter an alert watches.
+func TestAnUnusableFirstFrameIsRefusedAndCounted(t *testing.T) {
+	dir := t.TempDir()
+	auditPath := dir + "/audit.jsonl"
+
+	cfg := testConfig(t, false)
+	cfg.Audit.Enabled = true
+	cfg.Audit.Path = auditPath
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	rs := startServer(t, cfg)
+
+	metrics := rs.server.metrics
+	acceptedBefore := metrics.controlAccepted.Load()
+	refusedBefore := metrics.controlRejected.Load()
+
+	// An auth request with a payload that is not JSON at all.
+	conn, err := net.DialTimeout("tcp", rs.addr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	framer := protocol.NewFramer(conn, nil, 0)
+	if err := framer.WriteFrame(&protocol.Message{Type: protocol.TypeAuthRequest, Payload: []byte("this is not json")}); err != nil {
+		t.Fatalf("write the malformed auth request: %v", err)
+	}
+	var response protocol.AuthResponse
+	if err := framer.ReadJSON(protocol.TypeAuthResponse, &response); err != nil {
+		t.Fatalf("read the answer to the malformed auth request: %v", err)
+	}
+	if response.OK {
+		t.Error("a malformed auth request was accepted")
+	}
+	conn.Close()
+
+	// A frame type that cannot start a connection, sent as the first frame.
+	conn, err = net.DialTimeout("tcp", rs.addr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	framer = protocol.NewFramer(conn, nil, 0)
+	if err := framer.WriteJSON(protocol.TypeHeartbeat, map[string]string{}); err != nil {
+		t.Fatalf("write the heartbeat first frame: %v", err)
+	}
+	var protocolError protocol.ErrorPayload
+	if err := framer.ReadJSON(protocol.TypeError, &protocolError); err != nil {
+		t.Fatalf("read the answer to the unexpected first frame: %v", err)
+	}
+	if !strings.Contains(protocolError.Error, "first frame must be") {
+		t.Errorf("the answer does not say what a first frame has to be: %q", protocolError.Error)
+	}
+	conn.Close()
+
+	events := waitForAuditEvents(t, auditPath, 2)
+	rejected := 0
+	for _, event := range events {
+		if event.Event != EventControlRejected {
+			continue
+		}
+		if event.Outcome != "denied" {
+			t.Errorf("the refusal of an unusable first frame has outcome %q", event.Outcome)
+		}
+		rejected++
+	}
+	if rejected != 2 {
+		t.Errorf("%d refusal(s) of an unusable first frame are in the audit log, want 2", rejected)
+	}
+	if got := metrics.unusableFrames.Load(); got != 2 {
+		t.Errorf("the unusable-first-frame counter is %d after two of them, want 2", got)
+	}
+	if got := metrics.controlRejected.Load(); got != refusedBefore+2 {
+		t.Errorf("the rejection counter is %d after two unusable first frames, want %d",
+			got, refusedBefore+2)
+	}
+	if got := metrics.controlAccepted.Load(); got != acceptedBefore {
+		t.Errorf("the accepted counter is %d, want it to stay at %d", got, acceptedBefore)
+	}
+}
+
 // --- automatic bans ------------------------------------------------------------
 
 func TestRepeatedAuthFailuresBanTheSource(t *testing.T) {

@@ -19,6 +19,7 @@ import (
 	"github.com/aethertunnel/aethertunnel/pkg/crypto"
 	flynet "github.com/aethertunnel/aethertunnel/pkg/net"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
+	"github.com/aethertunnel/aethertunnel/pkg/socks"
 )
 
 // --- a full protocol client ---------------------------------------------------
@@ -54,6 +55,11 @@ type testAgent struct {
 	// under dialMu.
 	dialMu     sync.Mutex
 	dialTarget func(target string) (net.Conn, error)
+
+	// udpDialTarget does the same for a socks5 UDP ASSOCIATE datagram; nil means
+	// this agent serves no socks5 UDP relay.
+	udpDialMu     sync.Mutex
+	udpDialTarget func(target string) (net.Conn, error)
 
 	// requests records what the server said about each stream, oldest first. The
 	// control loop writes it and the test reads it, so it is guarded. A real client
@@ -103,6 +109,20 @@ func (a *testAgent) targetDialer() func(string) (net.Conn, error) {
 	a.dialMu.Lock()
 	defer a.dialMu.Unlock()
 	return a.dialTarget
+}
+
+// setUDPDialTarget installs the UDP dial function a socks5 UDP ASSOCIATE goes
+// through.
+func (a *testAgent) setUDPDialTarget(fn func(string) (net.Conn, error)) {
+	a.udpDialMu.Lock()
+	a.udpDialTarget = fn
+	a.udpDialMu.Unlock()
+}
+
+func (a *testAgent) udpDialer() func(string) (net.Conn, error) {
+	a.udpDialMu.Lock()
+	defer a.udpDialMu.Unlock()
+	return a.udpDialTarget
 }
 
 func startAgent(t *testing.T, serverAddr string, encryption bool, handlers map[string]dataHandler) *testAgent {
@@ -191,6 +211,12 @@ func (a *testAgent) loop(handlers map[string]dataHandler) {
 				continue
 			}
 			a.recordRequest(request)
+			if request.SocksUDP {
+				// A socks5 UDP ASSOCIATE names its target inside each datagram,
+				// so it also needs no handlers entry.
+				a.goServe(request, nil)
+				continue
+			}
 			if request.Target != "" {
 				// A socks5 request carries the address to reach, so it needs no
 				// entry in the handlers map: the agent dials the target itself.
@@ -229,6 +255,12 @@ func (a *testAgent) serve(request protocol.DataRequest, handler dataHandler) {
 		return
 	}
 	framer := protocol.NewFramer(conn, a.client.cipher, 0)
+
+	// A socks5 UDP ASSOCIATE names its target inside each datagram.
+	if request.SocksUDP {
+		a.serveSocksUDP(conn, framer, request)
+		return
+	}
 
 	// A socks5 request names its own target, so the agent dials it (subject to
 	// whatever ranges the test allows) and reports a refusal the way the real
@@ -283,6 +315,66 @@ func (a *testAgent) serveTarget(conn net.Conn, framer *protocol.Framer, request 
 
 	toTarget, fromTarget := flynet.Pipe(target, conn, 5*time.Second)
 	a.t.Logf("socks5 stream for %s finished (%d bytes to the target, %d back)", request.Target, toTarget, fromTarget)
+}
+
+// serveSocksUDP emulates the client end of a socks5 UDP ASSOCIATE: it parses
+// each wrapped datagram, dials the target over UDP, sends the data and wraps the
+// reply back.
+func (a *testAgent) serveSocksUDP(conn net.Conn, framer *protocol.Framer, request protocol.DataRequest) {
+	open := protocol.DataOpen{Session: a.client.session, Proxy: request.Proxy, StreamID: request.StreamID}
+
+	dial := a.udpDialer()
+	if dial == nil {
+		open.Error = "this agent serves no socks5 udp relay"
+		a.refuseTarget(conn, framer, open)
+		return
+	}
+
+	if err := framer.WriteJSON(protocol.TypeDataOpen, open); err != nil {
+		_ = conn.Close()
+		return
+	}
+	var ack protocol.DataOpenAck
+	if err := framer.ReadJSON(protocol.TypeDataOpenAck, &ack); err != nil || !ack.OK {
+		_ = conn.Close()
+		return
+	}
+
+	for {
+		msg, err := framer.ReadFrame()
+		if err != nil {
+			return
+		}
+		if msg.Type != protocol.TypeUDPPacket {
+			continue
+		}
+		target, data, err := socks.ParseUDPDatagram(msg.Payload)
+		if err != nil {
+			continue
+		}
+		remote, err := dial(target)
+		if err != nil {
+			continue
+		}
+		if _, err := remote.Write(data); err != nil {
+			_ = remote.Close()
+			continue
+		}
+		_ = remote.SetReadDeadline(time.Now().Add(5 * time.Second))
+		buf := make([]byte, 65535)
+		n, err := remote.Read(buf)
+		_ = remote.Close()
+		if err != nil {
+			continue
+		}
+		wrapped, err := socks.WrapUDPDatagram(target, buf[:n])
+		if err != nil {
+			continue
+		}
+		if err := framer.WriteFrame(&protocol.Message{Type: protocol.TypeUDPPacket, Payload: wrapped}); err != nil {
+			return
+		}
+	}
 }
 
 // refuseTarget reports a stream the agent will not serve.
@@ -449,6 +541,68 @@ func TestUDPTunnelRoundTrip(t *testing.T) {
 		return
 	}
 	t.Fatal("no datagram was echoed within 12 attempts")
+}
+
+// TestUDPTunnelSessionCountsBytesWithoutCountingStreams covers the accounting of
+// a udp proxy: a datagram session carries real bytes, but it is not a stream, so
+// it must leave aethertunnel_streams_total alone. The sudp and socks5 datagram
+// paths already work that way, and the udp path has to agree with them.
+func TestUDPTunnelSessionCountsBytesWithoutCountingStreams(t *testing.T) {
+	echo := startUDPEcho(t)
+	cfg := testConfig(t, false)
+	// The pump books a session's traffic when it releases it, and it releases an
+	// idle session after read_timeout_seconds. Keep that short so the test does not
+	// wait out the 20-second default.
+	cfg.Server.ReadTimeoutSecs = 1
+	remotePort := freeUDPPort(t)
+
+	rs := startServer(t, cfg)
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"echo-udp": datagramHandler(echo)})
+	agent.register(protocol.ProxySpec{Name: "echo-udp", Type: protocol.ProxyTypeUDP, RemotePort: remotePort})
+
+	visitor, err := net.Dial("udp", fmt.Sprintf("127.0.0.1:%d", remotePort))
+	if err != nil {
+		t.Fatalf("dial the tunnel: %v", err)
+	}
+	defer visitor.Close()
+
+	// A session is only worth accounting once it has carried something.
+	payload := []byte("counted-without-a-stream")
+	echoed := false
+	for attempt := 0; attempt < 12 && !echoed; attempt++ {
+		if _, err := visitor.Write(payload); err != nil {
+			t.Fatalf("send: %v", err)
+		}
+		_ = visitor.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		buf := make([]byte, 2048)
+		n, err := visitor.Read(buf)
+		if err != nil {
+			continue
+		}
+		if string(buf[:n]) != string(payload) {
+			t.Fatalf("echo returned %q, want %q", buf[:n], payload)
+		}
+		echoed = true
+	}
+	if !echoed {
+		t.Fatal("no datagram was echoed, so there is no session traffic to account")
+	}
+
+	// The visitor goes quiet, so the pump releases the session and books its bytes.
+	metrics := rs.server.metrics
+	deadline := time.Now().Add(15 * time.Second)
+	for metrics.bytesFromClients.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := metrics.bytesFromClients.Load(); got == 0 {
+		t.Fatal("the datagram session never booked the bytes it carried")
+	}
+	if got := metrics.streamsTotal.Load(); got != 0 {
+		t.Errorf("aethertunnel_streams_total is %d after a datagram session, want 0", got)
+	}
+	if entry := metrics.tunnel("echo-udp"); entry.streamsTotal.Load() != 0 {
+		t.Errorf("the per-tunnel stream count for echo-udp is %d, want 0", entry.streamsTotal.Load())
+	}
 }
 
 func TestUDPTunnelKeepsSessionsPerVisitorAddress(t *testing.T) {
@@ -923,6 +1077,15 @@ func TestSUDPVisitorRelaysDatagrams(t *testing.T) {
 	}
 	if string(msg.Payload) != string(payload) {
 		t.Fatalf("echo returned %q, want %q", msg.Payload, payload)
+	}
+
+	// A sudp proxy moves datagrams the way a udp proxy's pump does, so the counter
+	// that says the datagram path is carrying them has to move for this path too:
+	// without it, a sudp proxy reports zero datagrams while bytes flow, and an
+	// operator watching the series reads that as a tunnel that is not working.
+	oneEachWay := int64(2)
+	if got := rs.server.metrics.udpDatagrams.Load(); got < oneEachWay {
+		t.Errorf("aethertunnel_udp_datagrams_total is %d after one datagram round trip, want at least %d", got, oneEachWay)
 	}
 }
 

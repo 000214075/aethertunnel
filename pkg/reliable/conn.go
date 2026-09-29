@@ -645,6 +645,35 @@ func (c *stream) appendInOrderLocked(p []byte) bool {
 	drained := false
 	for {
 		key := c.rcvBase + uint32(c.recvBuf.len())
+		// A retransmission does not have to arrive in the pieces the first attempt
+		// used, so a buffered segment can start before the hole and reach past it.
+		// The part that has already been delivered has to go, and the rest belongs
+		// at the hole, not at the sequence number it was buffered under: an entry
+		// left behind the hole can never match it again, so it would hold its bytes
+		// until the stream closed and keep the window advertised to the peer smaller
+		// by that much for the rest of the connection. Re-keying the remainder at the
+		// hole lets the loop below drain it in this same pass.
+		for seq, held := range c.ooo {
+			behind := int64(seqDiff(key, seq))
+			if behind <= 0 {
+				continue
+			}
+			delete(c.ooo, seq)
+			c.oooBytes -= len(held)
+			if behind >= int64(len(held)) {
+				continue
+			}
+			tail := held[behind:]
+			if older, dup := c.ooo[key]; !dup {
+				c.ooo[key] = tail
+				c.oooBytes += len(tail)
+			} else if len(tail) > len(older) {
+				// Both entries cover the same offsets from the hole onwards. Keep the
+				// longer one: the shorter one's bytes are a prefix of it.
+				c.ooo[key] = tail
+				c.oooBytes += len(tail) - len(older)
+			}
+		}
 		next, ok := c.ooo[key]
 		if !ok {
 			break

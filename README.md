@@ -77,7 +77,7 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 
 | 能力 | 状态 | 说明 |
 |---|---|---|
-| 代理类型 | ✅ 可用 | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`；http/https 走服务器的共享监听并按 Host 头选择隧道（精确域名、`*.通配`，或服务端 `subdomain_host` 拼出的 `<代理名>.<该值>`），stcp/sudp/xtcp 为私有隧道，socks5 是出口代理（访客指定目标，客户端拨号，`allow_targets` 限定可达范围） |
+| 代理类型 | ✅ 可用 | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`；http/https 走服务器的共享监听并按 Host 头选择隧道（精确域名、`*.通配`，或服务端 `subdomain_host` 拼出的 `<代理名>.<该值>`，WebSocket 等协议升级原样转发），stcp/sudp/xtcp 为私有隧道，socks5 是出口代理（访客指定目标，客户端拨号，`allow_targets` 限定可达范围；支持 TCP `CONNECT` 与 UDP `ASSOCIATE`） |
 | XTCP 直连 | ✅ 可用 | 自研 UDP 打洞（HMAC-SHA256 同时打开 + 可靠有序字节流），打洞失败自动回退到服务器中继；访客把实际走通的路径回报给服务器（`ATP3` 数据报），因此指标与审计记录的是真实结果而不是猜测 |
 | TCP/UDP 转发 | ✅ 可用 | 访问者 → 服务器端口 → 客户端 → 本地服务；TCP 保留半关闭，UDP 按来源地址分会话 |
 | 负载均衡 | ✅ 可用 | 同名代理可由多个客户端组成代理池，策略：`round-robin` `random` `latency` `failover` `adaptive`，以及**在线学习**的 `bandit`（UCB1 多臂老虎机：按每条流的应答速度记奖励，估计各成员并保留探索，所以曾经慢过的成员在恢复后仍会被重新测量；没有离线训练与模型文件）。池只拥有一个端点（取第一个成员的端口），后到的成员即使请求了别的端口也不会另开一个，服务端会把**实际生效的端口**回给客户端，客户端日志按它显示；`scripts/smoke-test.ps1` 用两个真实客户端验到池成员都被分流、掉一个成员后仍继续服务 |
@@ -89,8 +89,8 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 | 主机身份 | ✅ 可用 | Ed25519 身份签名，服务端可用 `allowed_keys` 白名单与 `require_identity` 强制；对访客连接同样生效 |
 | 抗量子密钥协商 | ✅ 可用 | `encryption.post_quantum`：X25519 与 ML-KEM-768 混合（HKDF 同时纳入两者），每条数据连接单独派生密钥 |
 | 零知识证明 | ✅ 可用 | `auth_method = "nizk"`：访客用 P-256 上的 Schnorr 证明自己知道 secret_key，过程中不发送该值 |
-| 带宽账本 | ✅ 可用 | Ed25519 签名、哈希链式追加的用量记录（JSONL），`GET /api/ledger` 发布公钥、链头与条目，`--verify-ledger` 可离线校验，`--ledger-proof <文件> --proof-index <n>` 导出到第 n 条为止的前缀（只凭公钥即可校验，不必交出整条链）；改一个字节、换一串公钥、调换条目顺序或用别条的签名都会失败 |
-| 去中心化目录 | ✅ 可用 | 基于 Kademlia 的 DHT（160 位、k 桶、迭代查找）；服务端把已发布的代理写成记录，客户端可用 `dht.discover` 按名字找服务器，运维可用 `--dht-lookup` / `--discover` / `--dht-key` |
+| 带宽账本 | ✅ 可用 | Ed25519 签名、哈希链式追加的用量记录（JSONL），`GET /api/ledger` 发布公钥、链头与条目，`--verify-ledger` 可离线校验，`--ledger-proof <文件> --proof-index <n>` 导出到第 n 条为止的前缀（只凭公钥即可校验，不必交出整条链）；改一个字节、换一串公钥、调换条目顺序或用别条的签名都会失败。面板的「账本」页显示同一份数据：是否启用、文件、条目数、链头、尚未入账的活动用量与公钥，以及按客户端汇总和最近条目两张表。**记的是服务端搬过的字节**：`xtcp` 打洞成功后两端直连，那段流量不经过服务端，因此不在账本里（见 [`docs/SECURITY.md`](docs/SECURITY.md) 第 9 节） |
+| 去中心化目录 | ✅ 可用 | 基于 Kademlia 的 DHT（160 位、k 桶、迭代查找）；服务端把已发布的代理写成记录，客户端可用 `dht.discover` 按名字找服务器，运维可用 `--dht-lookup` / `--discover` / `--dht-key`；面板的「目录」页显示同一份数据（节点标识、地址、命名空间、路由表节点数、对外主机名与通告签名公钥）与正在通告的名字 |
 | 通告签名 | ✅ 可用 | DHT 上任何节点都能写同一个键，所以服务端用 Ed25519 给每条通告签名；读取端 `require_signed` 拒绝无签名记录，`trusted_keys` 只认指定公钥。改一个字段或换一把key都会失败 |
 | 三层隧道 | ⚠️ 仅 Linux | `[vpn]`：客户端从服务端领取地址，IP 包经控制连接转发；服务端是共享一张网卡的路由器。Linux 上打开或创建 tun 设备；其它平台**明确拒绝启动**并说明缺少什么，不会静默降级。Linux 路径已在真实 tun 设备上跑通（`scripts/vpn-linux-test.sh`，两端放在不同网络命名空间里互相 ping），`GET /api/vpn` 与面板的"三层隧道"一栏显示接口、地址池与包计数 |
 | 流量混淆 | ✅ 可用 | `pad_to` 补齐帧长度、`jitter_millis` 加抖动；`disguise = "tls-record"` 把每个写入包进 TLS 1.2 应用数据记录 |
@@ -101,12 +101,12 @@ ssh -p 6022 user@你的服务器IP                    # 从任何地方访问
 | Prometheus 指标 | ✅ 可用 | `GET /metrics`（文本格式 0.0.4），含连接、认证失败、拒绝、封禁、按代理拒绝的访客、socks5 请求数、因关闭被拒的流、流、双向字节、打洞结果与按隧道的序列；每个数字都读自运行中的计数器 |
 | 优雅关闭 | ✅ 可用 | 收到停止信号后停止接受新连接，给正在传输的流最多 `server.graceful_shutdown_seconds`（默认 5）秒完成再断开客户端；期间到达的访客被立即拒绝并计入指标；没有流在传时立刻退出，不会空等 |
 | 健康探针 | ✅ 可用 | `GET /healthz` 恒 200；`GET /readyz` 在监听器未就绪或正在关闭时返回 503 |
-| Web 面板 | ✅ 可用 | 单页、自带资源（编译进二进制）、中英双语、手机可用；含 `/api/ledger`、`/api/dht` 与 `/api/vpn`；代理池在代理表格里逐成员列出，每行是该客户端测得的延迟与连续失败次数（尚未应答过的成员延迟显示 `—`）——`latency`、`failover`、`adaptive` 三种策略依据的就是这两个数 |
-| 容器与编排 | ✅ 可用 | `Dockerfile`（多阶段 → distroless）与 `deploy/kubernetes/` 清单；凭据可用环境变量提供，不必写进 ConfigMap |
+| Web 面板 | ✅ 可用 | 单页、自带资源（编译进二进制）、中英双语、手机可用；`/api/ledger`、`/api/dht` 与 `/api/vpn` 都是页面上的一栏（账本、去中心化目录、三层隧道）；代理池在代理表格里逐成员列出，每行是该客户端测得的延迟与连续失败次数（尚未应答过的成员延迟显示 `—`）——`latency`、`failover`、`adaptive` 三种策略依据的就是这两个数 |
+| 容器与编排 | ✅ 可用 | `Dockerfile`（多阶段 → distroless）与 `deploy/kubernetes/` 清单；凭据可用环境变量提供，不必写进 ConfigMap。清单已经在真集群上跑过一遍（单节点 k3s，`scripts/kubernetes-linux.sh`，14 项全过：镜像按 kustomization 的标签构建、探针、Secret 里的令牌、客户端穿过隧道搬字节、带宽账本落在 Deployment 挂的状态卷里、DHT 从集群内的 ClusterIP 与集群外的 NodePort 各解析一次；见 `docs/PLATFORMS.md` 的 3.15） |
 | 多平台 | ✅ 可用 | linux/darwin/windows × amd64/arm64，`scripts/build-release.*` 一键出 12 个产物 + SHA256 |
-| 配置校验 | ✅ 可用 | 未知配置项会**报出来**而不是静默忽略；`--check` 只校验不启动 |
-| 单元 + 端到端测试 | ✅ 可用 | 含"访问者→隧道→本地服务"的真实回环测试，明文与加密两种模式；另有 101 项检查的运维脚本 `scripts/smoke-test.ps1`（CI 的 Windows 作业与发布流程都会跑它，发布前不通过就不出 Release；发布后还会把发布页上的二进制下载下来重跑一遍），以及真实 tun 设备上的 `scripts/vpn-linux-test.sh`（20 项）与发布后在真实内核上跑 `scripts/verify-release-linux.sh`（18 项） |
-| 逐平台功能验证 | ✅ 可用 | 同一套 70 项功能检查（八种代理类型、共享监听、三个访问者、面板、指标、审计、命令行子命令、两种加密算法、带证书校验的 TLS、伪装、身份认证、DHT 解析、通配域名、socks5 域名目标、客户端日志里流的来源、半关闭的请求仍能收到应答）在可执行的平台上真跑：原生 linux/amd64 **70/70**、qemu 下的 linux/arm64 **70/70**；Wine 下的 windows/amd64（真实 PE）在 67 项那一套上是 **66/66**，其后新增的三项**尚未在 Windows 上执行**（原因见 [`docs/PLATFORMS.md`](docs/PLATFORMS.md) 第 3.1 节）。另有**跨系统矩阵**——两端来自不同平台，六对组合各 25 项隧道检查全过，五对组合各 6 项四层安全全过。 |
+| 配置校验 | ✅ 可用 | 未知配置项会**报出来**而不是静默忽略（配置因别的问题被拒时也照报，两者在同一次运行里给出）；`--check` 只校验不启动，加 `--reject-unknown-keys` 可让未知键直接失败——CI 与 `make check` 就这样校验两个示例文件 |
+| 单元 + 端到端测试 | ✅ 可用 | 含"访问者→隧道→本地服务"的真实回环测试，明文与加密两种模式；**14 个 fuzz 目标**覆盖所有直接吃不可信字节的解析器（控制端口的帧读取、会合端口的两条请求、公开 socks5 端口的 CONNECT 与 UDP ASSOCIATE、DHT 的 UDP 端口、三层隧道的 IP 包校验与校验和写入、认证之前就解析的 NIZK 证明与 X25519/ML-KEM 公钥、记录解密与身份断言、伪装流的记录读取、打洞传输的数据报），断言解析成功的地址可还原成 `host:port`、`Validate` 接受的包地址可读、写好的 IPv4 头校验和验证通过、验证过的证明换个上下文必须失败；这样跑出的两条失败输入留在 `pkg/socks/testdata/fuzz/` 作为语料，CI 的 Linux 作业对每个目标再跑 10 秒。另有 101 项检查的运维脚本 `scripts/smoke-test.ps1`（CI 的 Windows 作业与发布流程都会跑它，发布前不通过就不出 Release；发布后还会把发布页上的二进制下载下来重跑一遍），以及真实 tun 设备上的 `scripts/vpn-linux-test.sh`（23 项，本机以 root 真跑过一遍，见 `docs/PLATFORMS.md` 的 3.13）、Linux 与 arm64 上跑的 `scripts/functional-linux.sh`（有浏览器时 281 项、无浏览器时 138 项，含代理池与负载均衡——一名成员的服务下线时各策略浪费多少、它恢复后是否还会被用到——访客名单两侧的拒绝路径，服务端侧的拒绝（`deny_cidrs`、令牌桶、`ban_after_failures` 与 `ban_ignore_cidrs`、`max_connections`、首帧不是可用请求的两种），**带宽账本的端到端**（`[ledger]` 写下的条目与隧道实际搬运的字节一致、只凭公钥就能离线校验、改一个字节或换一把公钥都必须失败、到第 n 条的前缀单独可校验），**目录的端到端**（节点标识、绑定地址、命名空间、对外主机名与 `-dht-key` 打印的公钥都与 `/api/dht` 一致；一个名字从被通告、到池里一名成员离开后仍然保持、再到最后一名成员离开后被撤回）、**Kubernetes ConfigMap 的凭证契约**（那份 `server.toml` 单独校验不通过、带上环境变量里的令牌才通过并真的跑起来、面板按它鉴权、一个启用同样伪装的客户端能穿过它搬字节、审计落在它指的路径上，而没启用伪装的客户端被拒），`scripts/kubernetes-linux.sh` 再把 `deploy/kubernetes/` 真的 apply 到一个单节点 k3s 上并从集群外驱动它一遍（14 项：镜像按 kustomization 的标签构建、Deployment 自己的探针、Secret 里的两种令牌、客户端穿过隧道搬字节、带宽账本落在 Deployment 挂的状态卷里、DHT 从集群内的 ClusterIP 与集群外的 NodePort 各解析一次；需要 root、docker 与一个 k3s 二进制，见 `docs/PLATFORMS.md` 的 3.15），以及在**真实浏览器**里把控制台页面跑一遍的最后一节（`scripts/panel-checks.py`，143 项：令牌提示与错误令牌、每个数字是否与 API 一致、异常请求下的横幅与切换语言、断开按钮，账本页（数字与 `/api/ledger` 一致、按客户端汇总与最近条目两张表、切换语言时重画、失败时横幅点名端点、以及在另一台关闭了 `[ledger]` 与 `[dht]` 的部署上看「未启用」这两个状态）与目录页（状态、节点标识、地址、命名空间、节点数、对外主机名与通告公钥、正在通告的名字、切换语言重画、失败横幅）与字典（两种语言定义的键相同、元素提到的键都存在、没有重复的键、也没有多余的键），以及版式（700 px 以下的卡片与栏目标签、账本页同样如此：条目变成卡片、连不成一个词的公钥在行内换行而不是把页面撑宽、太长放不下的代理名在卡片内换行、360 px 下没有元素越界、宽表格只在容器里滚动）与无障碍（无障碍树里每个控件都有名字、抽屉报出 `aria-expanded`、跳转链接排在键盘最前、导航的可访问名跟随语言）），CI 两个 Linux 作业与发布后的 Linux 产物都用它验证；没有 arm64 机器时用 `scripts/emulate-linux-arm64.sh` 在 qemu 上跑）与发布后在真实内核上跑 `scripts/verify-release-linux.sh`（18 项） |
+| 逐平台功能验证 | ✅ 可用 | 同一套 70 项功能检查（八种代理类型、共享监听、三个访问者、面板、指标、审计、命令行子命令、两种加密算法、带证书校验的 TLS、伪装、身份认证、DHT 解析、通配域名、socks5 域名目标、客户端日志里流的来源、半关闭的请求仍能收到应答）在可执行的平台上真跑：原生 linux/amd64 **70/70**、qemu 下的 linux/arm64 **70/70**；Wine 下的 windows/amd64（真实 PE）用仓库里的 `scripts/wine-check.sh` 跑 **71/71**（含此前从未在 Windows 上执行过的两层日志检查：封禁窗口里"被拒的客户端日志没有会话、窗口过后才有"，四层安全各自在自己日志里的报名行，目录与共享 http 端口各一节，以及已占用端口的诊断报错、审计轮转、`--reject-unknown-keys` 与身份密钥复用）。这个脚本按参数决定每一侧走 Wine、qemu 还是直接执行，因此同一套 71 项在本机能执行的三种目标的**九种组合**上各 **71/71**（windows/amd64、linux/amd64 与 qemu 下的 linux/arm64 两两组合，含 Windows 参与的四对混合组合；方法、封锁解除与未跑到的地方见 [`docs/PLATFORMS.md`](docs/PLATFORMS.md) 第 3.20 节；更早的 66/66 来自一个不在仓库里的脚本）。另有**跨系统矩阵**——两端来自不同平台，六对组合各 25 项隧道检查全过，五对组合各 6 项四层安全全过。 |
 
 ### 这一版有意不做的能力
 
@@ -144,9 +144,10 @@ post_quantum = true                 # 再用 X25519 + ML-KEM-768 协商每条连
 - 面板轮询 `/api/status`、`/api/clients`、`/api/proxies`，**屏幕上每个数字都来自服务器实时状态**；
   没有客户端时显示空状态。
 - `/api/ledger` 返回公钥、链头、最近的账本条目与按客户端汇总的用量；条目本身已签名，
-  拿到响应的人可以独立校验。
+  拿到响应的人可以独立校验。面板的「账本」页渲染的就是这份响应（`?limit=` 限制条目数）。
 - `/api/dht` 返回 DHT 节点标识、绑定地址、已知节点数、对外通告的主机名、当前已通告的代理名，
-  以及 `signing_key`（通告用的 Ed25519 公钥；未签名部署为空串）。
+  以及 `signing_key`（通告用的 Ed25519 公钥；未签名部署为空串）。面板的「目录」页渲染的就是
+  这份响应。
 
 ### 运维
 
@@ -222,8 +223,41 @@ kill -TERM <服务器PID>               # Linux 与 macOS
 和网络命名空间；缺任何一样就打印原因并以 0 退出，不会把 CI 弄红。
 
 ```bash
-sudo scripts/vpn-linux-test.sh bin/aethertunnel-server bin/aethertunnel-client
+sudo bash scripts/vpn-linux-test.sh bin/aethertunnel-server bin/aethertunnel-client
 # 关键行：PASS  服务端与客户端跨隧道互相 ping 通；两侧接口双向都有包
+```
+
+`deploy/kubernetes/` 同理不能只在渲染里看：`scripts/kubernetes-linux.sh` 在一个只属于它自己的
+单节点 k3s 上把清单 apply 一遍，再从集群外驱动它（探针、Secret 里的两种令牌、客户端穿过隧道搬
+字节、带宽账本落进 Deployment 挂的状态卷、DHT 从集群内与集群外各解析一次）。它需要 root、
+可用的 docker daemon 与一个 k3s 二进制，缺任何一样就打印缺什么并以 0 退出；跑完把集群、镜像与
+工作目录都清掉（`--keep` 可留下）。
+
+```bash
+sudo bash scripts/kubernetes-linux.sh bin/aethertunnel-server bin/aethertunnel-client
+# 关键行：ALL KUBERNETES CHECKS PASSED
+```
+
+`scripts/smoke-test.ps1` 是 Windows 用的那一套，Linux 与 arm64 上的对应脚本是
+`scripts/functional-linux.sh`：它起一组本地服务（TCP/UDP/HTTP 回显，以及一个只在对端半关闭
+之后才回答的服务）与一个自签证书，
+拉起服务端、一个发布方客户端和三个访问者客户端，逐项验证能真的传数据的能力——`tcp`、`udp`、
+`http` 与共享 `https` 监听（两者都按 Host 选隧道，未配置的名字被拒）、`socks5`（`allow_targets`
+内的目标可达、范围外的被拒）、`stcp`/`sudp`/`xtcp` 三种访问者（含密钥错误时必须拿不到数据；
+`xtcp` 那一项还会核对服务端报出的打洞结果与三个 `aethertunnel_p2p_*` 计数彼此对得上）、
+**半关闭之后仍要收到应答**（一个"读到 EOF 才回答"的服务，经公网端口与经 socks5 各测一次）、
+**只凭一个名字找到服务端**（`--dht-lookup` 把 tcp 名解析到公网端口、`--discover` 把私有名解析到
+控制端口、未知名字报错，以及一个 `server_addr` 留空的客户端真的连上去传一次数据）、
+**两个客户端组成的代理池**（两名成员都真的服务了一部分连接、池只保留第一个成员的端口、后到
+成员请求的端口不被监听、成员离开后池继续服务且移除写进审计）、
+指标与 `/api/status` 的计数、审计日志里的注册与访问者事件，最后把加密、后量子、TLS、
+身份认证与伪装**同时打开**再传一次数据，并逐层核对它自己写出的日志行。只绑回环端口，
+不需要 root，CI 的 `ubuntu-latest` 与 `ubuntu-24.04-arm` 两个作业都跑它，发布后也用**已发布的
+Linux 二进制**重跑一遍。
+
+```bash
+scripts/functional-linux.sh bin/aethertunnel-server bin/aethertunnel-client
+# 关键行：ALL LINUX FUNCTIONAL CHECKS PASSED（281 项，无浏览器时 138 项）
 ```
 
 ### 构建与测试
@@ -231,11 +265,16 @@ sudo scripts/vpn-linux-test.sh bin/aethertunnel-server bin/aethertunnel-client
 ```bash
 make build          # 本机两个二进制 → bin/
 make test           # 单元 + 端到端测试
-make test-race      # 同上，带竞态检测（需要 CGO 与 C 编译器）
+make test-race      # 同上，带竞态检测（需要 CGO 与 C 编译器；没有编译器时 scripts/race-toolchain.sh 会解出一个，不需要 root）
+make lint           # gofmt 未格式化的文件 + go vet（与 CI 的 Linux 作业同一对检查）
 make vet
 make cross          # 12 个产物 + dist/SHA256SUMS
-make check          # 校验示例配置
+make check          # 校验示例配置（未知键直接失败）
 ```
+
+没有 arm64 机器时，`scripts/emulate-linux-arm64.sh <qemu-aarch64> [sysroot]` 交叉编译出 arm64
+产物、用 qemu 跑整套单测，再把包装脚本交给 `scripts/functional-linux.sh` 跑那 281 项功能检查（无浏览器时 138 项）
+（本机是 amd64，这条路径也在本机跑过；静态产物不需要 sysroot）。
 
 Windows 无 make 时：
 
@@ -327,7 +366,7 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 
 | Capability | State | Notes |
 |---|---|---|
-| Proxy types | ✅ works | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`; http and https use one shared listener and are selected by the Host header; stcp, sudp and xtcp are private; socks5 is an exit, where the visitor names the target and `allow_targets` bounds what may be reached |
+| Proxy types | ✅ works | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`; http and https use one shared listener and are selected by the Host header, forwarding WebSocket-style protocol upgrades through; stcp, sudp and xtcp are private; socks5 is an exit, where the visitor names the target and `allow_targets` bounds what may be reached, with both TCP `CONNECT` and UDP `ASSOCIATE` |
 | XTCP direct path | ✅ works | its own UDP hole punching (HMAC-SHA256 simultaneous open over a reliable ordered byte stream) with an automatic fall back to the server's relay; the visitor reports the path it actually took with an `ATP3` datagram, so the metrics and the audit log record the outcome rather than a guess |
 | TCP and UDP forwarding | ✅ works | visitor → server port → client → local service; TCP preserves half-close, UDP keeps one session per source address |
 | Load balancing | ✅ works | several clients may publish one name as a pool; strategies `round-robin`, `random`, `latency`, `failover`, `adaptive` and `bandit` — a UCB1 multi-armed bandit that learns online which member answers fastest (each stream rewards its speed, and the least-observed member is still sampled so one that recovers is found again; no offline training, no model file). A pool owns one endpoint (the first member's port), so a member that arrives later and asks for another port does not get a second one; the server reports the port that is actually in effect and the client's log shows that one. `scripts/smoke-test.ps1` runs two real clients and checks that both members serve, and that the pool keeps serving after one of them leaves |
@@ -339,8 +378,8 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 | Host identity | ✅ works | Ed25519 assertions, with `allowed_keys` and `require_identity` on the server, checked on data connections from visitors as well |
 | Post-quantum key agreement | ✅ works | `encryption.post_quantum`: X25519 together with ML-KEM-768, both folded into one HKDF, and a separate key per data connection |
 | Proof of token knowledge | ✅ works | `auth_method = "nizk"` proves knowledge of `secret_key` with a Schnorr proof over P-256; the secret itself is never sent |
-| Bandwidth ledger | ✅ works | Ed25519-signed, hash-chained usage records (JSONL); `GET /api/ledger` publishes the public key, the chain head and the entries, `--verify-ledger` checks them offline, and `--ledger-proof <file> --proof-index <n>` writes the prefix up to entry n, which verifies on its own so one period's usage can be shown without handing over the rest of the chain; one altered byte, a different key, two entries swapped or another entry's signature all fail |
-| Decentralised directory | ✅ works | a Kademlia DHT (160-bit, k-buckets, iterative lookup); the server publishes one record per proxy, a client resolves a name with `dht.discover`, and operators use `--dht-lookup`, `--discover` or `--dht-key` |
+| Bandwidth ledger | ✅ works | Ed25519-signed, hash-chained usage records (JSONL); `GET /api/ledger` publishes the public key, the chain head and the entries, `--verify-ledger` checks them offline, and `--ledger-proof <file> --proof-index <n>` writes the prefix up to entry n, which verifies on its own so one period's usage can be shown without handing over the rest of the chain; one altered byte, a different key, two entries swapped or another entry's signature all fail. The dashboard's Ledger view shows the same data: whether it is on, the file, the entry count, the chain head, the live usage not yet in the chain and the public key, with tables for the per-client totals and the most recent entries. It bills the bytes the server carried: once an `xtcp` punch succeeds the two ends talk directly, and that traffic never reaches the server, so it is in no entry (see section 9 of [`docs/SECURITY.md`](docs/SECURITY.md)) |
+| Decentralised directory | ✅ works | a Kademlia DHT (160-bit, k-buckets, iterative lookup); the server publishes one record per proxy, a client resolves a name with `dht.discover`, and operators use `--dht-lookup`, `--discover` or `--dht-key`; the dashboard's Directory view shows the same data (node id, address, namespace, routing-table size, advertised host and announcement key) and the names being announced |
 | Signed announcements | ✅ works | any node can write to a proxy's key, so the server signs every record with Ed25519; a reader sets `require_signed` to refuse unsigned records and `trusted_keys` to believe named keys only. One altered field or a different key fails |
 | Layer-3 tunnel | ⚠️ Linux only | `[vpn]`: a client is given an address and its IP packets travel on the control connection; the server is a router over one shared interface. Linux opens or creates a tun device; every other platform **refuses to start** and says what is missing instead of degrading silently. The Linux path runs on a real tun device in `scripts/vpn-linux-test.sh`, with the two ends in separate network namespaces, and `GET /api/vpn` plus the dashboard's layer-3 panel report the interface, the pool and the packet counters |
 | Traffic obfuscation | ✅ works | `pad_to` rounds frame lengths, `jitter_millis` adds delay, and `disguise = "tls-record"` puts every write inside TLS 1.2 application-data records |
@@ -351,12 +390,12 @@ The dashboard is at `http://your-server:7500/` and shows live clients, tunnels a
 | Prometheus metrics | ✅ works | `GET /metrics` in the text format 0.0.4: connections, authentication failures, refusals, bans, per-proxy visitor refusals, socks5 requests, streams refused while shutting down, streams, bytes both ways and per-tunnel series; every number is read from a live counter |
 | Graceful shutdown | ✅ works | on a stop signal the server stops accepting, gives the streams already running up to `server.graceful_shutdown_seconds` (5 by default) to finish, and only then disconnects the clients; a visitor that arrives meanwhile is refused and counted, and an idle server exits at once instead of sitting out the grace period |
 | Health probes | ✅ works | `GET /healthz` is always 200; `GET /readyz` is 503 before the listener is up and while shutting down |
-| Web dashboard | ✅ works | one self-contained embedded page, English + 简体中文, usable on a phone, including `/api/ledger` and `/api/dht`; a pool is listed member by member in the proxies table, each line carrying the latency that client measured and its consecutive failures (a member that has not answered yet shows `—` for latency) — the two numbers `latency`, `failover` and `adaptive` act on |
-| Containers and orchestration | ✅ works | a multi-stage `Dockerfile` ending in distroless, and manifests under `deploy/kubernetes/`; credentials can come from environment variables instead of the ConfigMap |
+| Web dashboard | ✅ works | one self-contained embedded page, English + 简体中文, usable on a phone, rendering the ledger, the decentralized directory and the layer-3 tunnel as well as the proxies, clients and configuration; a pool is listed member by member in the proxies table, each line carrying the latency that client measured and its consecutive failures (a member that has not answered yet shows `—` for latency) — the two numbers `latency`, `failover` and `adaptive` act on |
+| Containers and orchestration | ✅ works | a multi-stage `Dockerfile` ending in distroless, and manifests under `deploy/kubernetes/`; credentials can come from environment variables instead of the ConfigMap. The manifests have been run on a real cluster (a single-node k3s, `scripts/kubernetes-linux.sh`, 14 checks: the image built under the tag the kustomization names, the probes, the token from the Secret, a client carrying bytes through a tunnel, the bandwidth ledger landing in the state volume the Deployment mounts, and the DHT resolving a name both through the cluster's ClusterIP and through the node port from outside; see 3.15 of [`docs/PLATFORMS.md`](docs/PLATFORMS.md)) |
 | Platforms | ✅ works | linux/darwin/windows × amd64/arm64; `scripts/build-release.*` produces 12 binaries + SHA256 |
-| Config validation | ✅ works | unknown keys are **reported**, not ignored; `--check` validates without starting |
-| Tests | ✅ works | unit tests, a real end-to-end tunnel test in cleartext and encrypted modes, a 101-check operations script `scripts/smoke-test.ps1` (run by CI, required before a release is created, and run again against the published binaries afterwards), a 20-check layer-3 run on real tun devices in `scripts/vpn-linux-test.sh`, and `scripts/verify-release-linux.sh` (18 checks), which runs the published Linux binaries on a real kernel after they are uploaded |
-| Per-platform checks | ✅ works | the same 70 checks (eight proxy types, shared listeners, three visitor kinds, dashboard, metrics, audit, command-line subcommands, both ciphers, TLS with certificate verification, the disguise, identity authentication, DHT resolution, wildcard domains, a hostname socks5 target, how a stream reached the client read out of its log, and a half-closed request still getting its answer) run on every platform this machine can execute: **70/70** natively on linux/amd64 and **70/70** on linux/arm64 under qemu-aarch64. The windows/amd64 build (real PE) stood at **66/66** on the set of 67; the three checks added since have **not run on Windows** — see section 3.1 of [`docs/PLATFORMS.md`](docs/PLATFORMS.md) for why; plus a **cross-system matrix** — the two ends on different platforms — six platform pairs at 25 tunnel checks each and five pairs at 6 security-layer checks each, all passing. Which targets these checks cannot execute, and why, are in [`docs/PLATFORMS.md`](docs/PLATFORMS.md) |
+| Config validation | ✅ works | unknown keys are **reported**, not ignored — including when the file is rejected for something else, so both come out of one run; `--check` validates without starting, and `--reject-unknown-keys` turns an unknown key into a failure, which is how CI and `make check` validate the two example files |
+| Tests | ✅ works | unit tests, a real end-to-end tunnel test in cleartext and encrypted modes, fourteen fuzz targets over every parser that reads untrusted bytes (the frame reader on the control port, both rendezvous requests, the CONNECT and UDP ASSOCIATE parsers of the public socks5 port, the DHT's UDP port, the IP packet check and checksum writer of the layer-3 tunnel, the NIZK proof and the X25519/ML-KEM keys parsed before authentication, record decryption and the identity assertion, the disguised-stream record reader, and the punched transport's datagram parser), asserting that a parsed address round-trips as `host:port`, that a packet `Validate` accepts has readable addresses, that a written IPv4 header checksum verifies, and that a verified proof fails under a different context; the two inputs this found are kept as corpus in `pkg/socks/testdata/fuzz/`, and the Linux CI job gives every target a 10-second run, a 101-check operations script `scripts/smoke-test.ps1` (run by CI, required before a release is created, and run again against the published binaries afterwards), a 23-check layer-3 run on real tun devices in `scripts/vpn-linux-test.sh` (run here as root, see 3.13 of `docs/PLATFORMS.md`), `scripts/functional-linux.sh` (281 checks where a browser is available and 138 without one, including pooled proxies and load balancing — what each strategy wastes on a member whose service is down, and whether it finds that member again once the service is back — the two sides of the visitor allow/deny lists, the server-side refusals (`deny_cidrs`, the connection rate limit, `ban_after_failures` with `ban_ignore_cidrs`, `max_connections`, and the two unusable-first-frame paths), **the bandwidth ledger end to end** (the entries it writes bill the bytes the tunnel really carried, the file verifies offline with only the public key, one changed byte or a second key must fail, and a prefix up to entry n verifies on its own), **the directory end to end** (the node id, bound address, namespace, advertised host and the key `-dht-key` prints all match `/api/dht`, and a name goes from announced, through one pool member leaving, to withdrawn when the last one leaves), **the Kubernetes ConfigMap's credential contract** (that `server.toml` does not validate on its own, validates and runs with the tokens from the environment, has the dashboard authenticate against them, carries bytes for a client that speaks the same disguise, writes its audit log where it points, and refuses a client that does not), `scripts/kubernetes-linux.sh` applying `deploy/kubernetes/` to a real single-node k3s and driving it from outside the cluster (14 checks: the image built under the tag the kustomization names, the Deployment's own probe, both tokens from the Secret, a client carrying bytes through a tunnel, the bandwidth ledger landing in the state volume the Deployment mounts, and the DHT resolving a name through the cluster's ClusterIP and through the node port from outside; it needs root, docker and a k3s binary, see 3.15 of `docs/PLATFORMS.md`), and a last section that runs the dashboard page in a **real browser** (`scripts/panel-checks.py`, 143 checks: the token prompt and a rejected token, every figure against the API, the banners under a failed request and a language switch, the disconnect button, the ledger view (its figures against `/api/ledger`, both tables, the redraw on a language switch, the failure banner, and the "off" state on a second deployment), the directory view (the same for `/api/dht`: node id, address, namespace, peer count, advertised host, announcement key, the names it announces, and that view's failure banner) and the dictionaries (both languages define the same keys, every key an element mentions exists in both, none is defined twice and none is dead weight), the layout — cards with their column names below 700 px, a proxy name that is too long for the screen wrapping inside its card, nothing sticking out at 360 px, a wide table scrolling inside its own wrapper — and what a screen reader gets: a name for every control, the drawer's `aria-expanded`, the skip link as the first stop, the navigation's name following the language), run by both Linux CI jobs and against the published Linux binaries, and on qemu via `scripts/emulate-linux-arm64.sh` where there is no arm64 machine), and `scripts/verify-release-linux.sh` (18 checks), which runs the published Linux binaries on a real kernel after they are uploaded |
+| Per-platform checks | ✅ works | the same 70 checks (eight proxy types, shared listeners, three visitor kinds, dashboard, metrics, audit, command-line subcommands, both ciphers, TLS with certificate verification, the disguise, identity authentication, DHT resolution, wildcard domains, a hostname socks5 target, how a stream reached the client read out of its log, and a half-closed request still getting its answer) run on every platform this machine can execute: **70/70** natively on linux/amd64 and **70/70** on linux/arm64 under qemu-aarch64. The windows/amd64 build (real PE) runs **71/71** under Wine through `scripts/wine-check.sh`, including the two log-reading checks that had never run on Windows (a banned client's log showing no session, and one after the window) and the four lines in which the security layers announce themselves, the diagnostics when the control port is already taken, audit rotation, `--reject-unknown-keys` and identity-key reuse. That script decides per argument whether a side goes through Wine, through qemu-aarch64, or runs directly, so the same 71 checks pass in **all nine combinations** of the three targets this machine can execute (windows/amd64, linux/amd64 and linux/arm64 under qemu), including the four mixed pairs with Windows — section 3.20 of [`docs/PLATFORMS.md`](docs/PLATFORMS.md) has the method, what it took to unblock and what it still does not cover; the earlier 66/66 came from a script that was never in the repository; plus a **cross-system matrix** — the two ends on different platforms — six platform pairs at 25 tunnel checks each and five pairs at 6 security-layer checks each, all passing. Which targets these checks cannot execute, and why, are in [`docs/PLATFORMS.md`](docs/PLATFORMS.md) |
 
 ### What this release deliberately does not do
 
@@ -399,8 +438,10 @@ say they are empty.
 
 - `/api/ledger` returns the signing public key, the chain head, the most recent entries and the
   per-client totals. The entries are already signed, so a reader can check them independently.
+  The dashboard's Ledger view renders this response (`?limit=` caps the entries it asks for).
 - `/api/dht` returns the DHT node identity, its bound address, the number of known peers, the
-  host it advertises and the proxy names it currently announces.
+  host it advertises and the proxy names it currently announces. The dashboard's Directory
+  view renders this response.
 
 ### Operations
 
@@ -440,16 +481,48 @@ answer for a tunnel address itself, and checks the ping, both interfaces' packet
 log. It needs root, `/dev/net/tun` and a network namespace; when one of those is missing it says
 which and exits 0 rather than turning a CI run red.
 
+`scripts/functional-linux.sh` is the Linux and arm64 counterpart of `scripts/smoke-test.ps1`. It
+starts the local echo services and a certificate, runs a server, an owner client and three
+visitor clients, and drives the paths that carry data: `tcp`, `udp`, `http` and the shared
+`https` listener (both selecting a tunnel by Host, both refusing a name with no policy),
+`socks5` (a target inside `allow_targets` reached, one outside refused), the `stcp`, `sudp` and
+`xtcp` visitors (including the wrong secret getting nothing; for `xtcp` it also checks that the
+path the server named and the `aethertunnel_p2p_*` counters agree), a **half-close**, where the
+service answers only after its peer closes its writing side, through the public port and through
+the socks5 exit, **finding the server by name** (`--dht-lookup` resolving a tcp name to its public
+port, `--discover` resolving a private name to the control port, an unknown name reported as
+unresolved, and a client with no `server_addr` at all reaching the server and carrying data), a
+**proxy pooled between two clients** (both members serving part of the connections, the pool
+keeping the first member's port, the late member's requested port never bound, and the pool
+still serving after a member leaves, with the removal in the audit log), the
+counters behind `/metrics` and `/api/status`, and the registration and visitor
+events in the audit log. It then turns encryption,
+post-quantum, TLS, identity and disguise on **at once** and transfers data again, checking each
+layer's own log line. It binds loopback ports only and needs no root; CI runs it on
+`ubuntu-latest` and on `ubuntu-24.04-arm`, and the release workflow runs it again against the
+published Linux binaries.
+
+```bash
+scripts/functional-linux.sh bin/aethertunnel-server bin/aethertunnel-client
+# last line: ALL LINUX FUNCTIONAL CHECKS PASSED (281 checks, 138 without a browser)
+```
+
 ### Build and test
 
 ```bash
 make build     # both binaries into bin/
 make test      # unit + end-to-end tests
-make test-race # the same under the race detector (needs CGO and a C compiler)
+make test-race # the same under the race detector (needs CGO and a C compiler; scripts/race-toolchain.sh unpacks one without root)
+make lint      # files that are not gofmt-ed, then go vet (the pair CI runs)
 make vet
 make cross     # 12 artifacts + dist/SHA256SUMS
-make check     # validate the example configs
+make check     # validate the example configs (an unknown key fails)
 ```
+
+With no arm64 machine to hand, `scripts/emulate-linux-arm64.sh <qemu-aarch64> [sysroot]`
+cross-compiles the arm64 artifacts, runs the whole unit suite under qemu, and hands wrapper
+scripts to `scripts/functional-linux.sh` for the 38 functional checks. The static binaries need
+no sysroot.
 
 ### Upgrading from an older release
 

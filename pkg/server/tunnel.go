@@ -43,6 +43,20 @@ func (t *Tunnel) openStream(visitor bool) (*dataConn, func(), error) {
 // address the stream should reach. A target is only used by a socks5 proxy, whose
 // client dials what the visitor asked for instead of its own local_addr.
 func (t *Tunnel) openStreamFor(visitor bool, target string) (*dataConn, func(), error) {
+	return t.openStreamWith(protocol.DataRequest{Proxy: t.Name, Visitor: visitor, Target: target})
+}
+
+// openSocksUDPStream asks the client for a data connection that carries socks5
+// UDP ASSOCIATE datagrams. The target is named in each datagram rather than in
+// the request, so the request only marks the stream's shape.
+func (t *Tunnel) openSocksUDPStream() (*dataConn, func(), error) {
+	return t.openStreamWith(protocol.DataRequest{Proxy: t.Name, SocksUDP: true})
+}
+
+// openStreamWith asks the client for the data connection described by request
+// and waits for it to dial back. The request's stream identifier is assigned
+// here.
+func (t *Tunnel) openStreamWith(request protocol.DataRequest) (*dataConn, func(), error) {
 	// A session that is draining still carries the streams it opened, but no new
 	// one starts: the visitor is refused now instead of waiting for a dial that
 	// would only be cut off when the grace period ends.
@@ -51,13 +65,13 @@ func (t *Tunnel) openStreamFor(visitor bool, target string) (*dataConn, func(), 
 	}
 
 	streamID := newID(8)
+	request.StreamID = streamID
 
 	waiting, err := t.Session.AddPending(streamID)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	request := protocol.DataRequest{Proxy: t.Name, StreamID: streamID, Visitor: visitor, Target: target}
 	if err := t.Session.Framer().WriteJSON(protocol.TypeDataRequest, request); err != nil {
 		t.Session.DropPending(streamID)
 		return nil, nil, fmt.Errorf("cannot ask the client for a stream: %w", err)
@@ -127,7 +141,13 @@ func (t *Tunnel) pipeStream(public net.Conn, dc *dataConn, label string) error {
 func (t *Tunnel) pipeDatagrams(visitor *protocol.Framer, dc *dataConn, label string) error {
 	defer dc.Close()
 
-	toClient, fromClient := relayDatagrams(visitor, dc.framer)
+	// A sudp proxy moves datagrams exactly as a udp proxy's pump does, and the
+	// per-datagram counter is the only thing that shows the path is carrying them, so
+	// it is fed here too. It counts each direction once, which is what the pump does
+	// for a udp proxy.
+	toClient, fromClient := relayDatagrams(visitor, dc.framer, func() {
+		t.metrics.udpDatagrams.Add(1)
+	})
 
 	t.BytesOut.Add(toClient)
 	t.BytesIn.Add(fromClient)
@@ -142,7 +162,10 @@ func (t *Tunnel) pipeDatagrams(visitor *protocol.Framer, dc *dataConn, label str
 
 // relayDatagrams copies TypeUDPPacket frames between two framers until one of
 // them fails. The frame boundary is what preserves the datagram boundary.
-func relayDatagrams(a, b *protocol.Framer) (aToB, bToA int64) {
+//
+// onDatagram, when set, is called once for every datagram forwarded, in whichever
+// direction it went.
+func relayDatagrams(a, b *protocol.Framer, onDatagram func()) (aToB, bToA int64) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -163,6 +186,9 @@ func relayDatagrams(a, b *protocol.Framer) (aToB, bToA int64) {
 				return total
 			}
 			total += int64(len(msg.Payload))
+			if onDatagram != nil {
+				onDatagram()
+			}
 		}
 	}
 
@@ -181,6 +207,117 @@ func relayDatagrams(a, b *protocol.Framer) (aToB, bToA int64) {
 
 	wg.Wait()
 	return aToB, bToA
+}
+
+// pipeSocksUDP relays wrapped socks5 UDP datagrams between a visitor's relay
+// socket and a member's data connection. The association ends when the visitor's
+// control connection goes away or either side fails.
+func (t *Tunnel) pipeSocksUDP(relay net.PacketConn, dc *dataConn, expectedIP net.IP, control net.Conn, label string) error {
+	defer dc.Close()
+
+	toClient, fromClient := t.relaySocksUDP(relay, dc, expectedIP, control)
+
+	t.BytesOut.Add(toClient)
+	t.BytesIn.Add(fromClient)
+	t.Total.Add(1)
+	t.Session.RecordTraffic(toClient, fromClient)
+	t.metrics.recordDatagramSession(t.Name, toClient, fromClient)
+
+	t.logger.Printf("proxy %q: socks5 udp association for %s finished (%d bytes out, %d bytes in)",
+		t.Name, label, toClient, fromClient)
+	return nil
+}
+
+// relaySocksUDP copies wrapped datagrams between a packet socket and a framed
+// data connection until the control connection closes or either side fails.
+// Replies are sent to the source of the most recent accepted datagram, and a
+// datagram from any other address is dropped when expectedIP is set.
+func (t *Tunnel) relaySocksUDP(relay net.PacketConn, dc *dataConn, expectedIP net.IP, control net.Conn) (toClient, fromClient int64) {
+	var (
+		wg     sync.WaitGroup
+		mu     sync.Mutex
+		source net.Addr
+	)
+
+	// Any exit path tears both sides down, so the two relay directions and the
+	// control watcher always unblock each other.
+	teardown := sync.OnceFunc(func() {
+		_ = relay.Close()
+		_ = dc.Close()
+	})
+
+	// The association lives as long as the visitor's control connection does.
+	go func() {
+		buf := make([]byte, 256)
+		for {
+			if _, err := control.Read(buf); err != nil {
+				teardown()
+				return
+			}
+		}
+	}()
+
+	wg.Add(2)
+
+	// relay -> client: accept wrapped datagrams from the visitor and forward them.
+	go func() {
+		defer wg.Done()
+		buf := make([]byte, 65535)
+		for {
+			n, addr, err := relay.ReadFrom(buf)
+			if err != nil {
+				teardown()
+				return
+			}
+			if expectedIP != nil {
+				if ip := ipOfAddr(addr); ip == nil || !ip.Equal(expectedIP) {
+					t.logger.Printf("proxy %q: dropping a socks5 udp datagram from %s, which is not the association's source",
+						t.Name, addr)
+					continue
+				}
+			}
+			mu.Lock()
+			source = addr
+			mu.Unlock()
+			datagram := append([]byte(nil), buf[:n]...)
+			if err := dc.framer.WriteFrame(&protocol.Message{Type: protocol.TypeUDPPacket, Payload: datagram}); err != nil {
+				teardown()
+				return
+			}
+			toClient += int64(n)
+			t.metrics.socksUDPDatagrams.Add(1)
+		}
+	}()
+
+	// client -> relay: read replies from the client and send them back to the visitor.
+	go func() {
+		defer wg.Done()
+		for {
+			msg, err := dc.framer.ReadFrame()
+			if err != nil {
+				teardown()
+				return
+			}
+			if msg.Type != protocol.TypeUDPPacket {
+				continue
+			}
+			mu.Lock()
+			addr := source
+			mu.Unlock()
+			if addr == nil {
+				continue
+			}
+			if _, err := relay.WriteTo(msg.Payload, addr); err != nil {
+				teardown()
+				return
+			}
+			fromClient += int64(len(msg.Payload))
+			t.metrics.socksUDPDatagrams.Add(1)
+		}
+	}()
+
+	wg.Wait()
+	return toClient, fromClient
 }
 
 // cryptoStreamConn adapts crypto.Stream (an io.ReadWriteCloser) to net.Conn so the

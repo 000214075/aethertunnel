@@ -32,6 +32,11 @@ go.work
 # === 依赖缓存 ===
 vendor/
 
+# === Python 字节码 ===
+# 用脚本读 scripts/panel-checks.py 时会在 scripts/ 下留一个 __pycache__。
+__pycache__/
+*.py[cod]
+
 # === IDE ===
 .vscode/
 .idea/

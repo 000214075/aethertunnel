@@ -84,8 +84,12 @@ type ProxyGroup struct {
 	proxy     *httputil.ReverseProxy
 
 	counter atomic.Uint64
-	once    sync.Once
-	done    chan struct{}
+	// probeCounter counts picks for the never-answered probe, separately from the
+	// counter the strategies use for their own rotation: sharing one would make the
+	// probe's cadence depend on which strategy is running.
+	probeCounter atomic.Uint64
+	once         sync.Once
+	done         chan struct{}
 }
 
 // Tunnel is one client's registration of a proxy: a member of a group.
@@ -453,7 +457,7 @@ func (g *ProxyGroup) bind() error {
 		addr := net.JoinHostPort(g.manager.cfg.Server.BindAddr, strconv.Itoa(g.RemotePort))
 		listener, err := net.Listen("tcp", addr)
 		if err != nil {
-			return fmt.Errorf("cannot publish %s on %s: %w", g.Name, addr, err)
+			return fmt.Errorf("cannot publish %s: %w", g.Name, flynet.ListenError(addr, err))
 		}
 		g.endpointMu.Lock()
 		g.listener = listener
@@ -506,7 +510,7 @@ func (g *ProxyGroup) bind() error {
 		addr := net.JoinHostPort(g.manager.cfg.Server.BindAddr, strconv.Itoa(g.RemotePort))
 		listener, err := net.Listen("tcp", addr)
 		if err != nil {
-			return fmt.Errorf("cannot publish %s on %s: %w", g.Name, addr, err)
+			return fmt.Errorf("cannot publish %s: %w", g.Name, flynet.ListenError(addr, err))
 		}
 		g.endpointMu.Lock()
 		g.listener = listener
@@ -622,10 +626,20 @@ func (g *ProxyGroup) pickExcluding(tried map[*Tunnel]bool) *Tunnel {
 		return candidates[rand.Intn(len(candidates))]
 
 	case config.LoadBalanceLatency:
+		// A member that has never answered has no average to compare, so it is
+		// tried first: that is how a newly joined member gets the chance to prove
+		// itself, and strategy_test.go holds the behaviour. The exception is a
+		// member that has already failed without ever answering — see neverAnswered
+		// — which waits behind the members that answer and is probed every so often
+		// so that a service that comes back is found again.
+		if probe := g.probeNeverAnswered(candidates); probe != nil {
+			return probe
+		}
 		best := candidates[0]
+		bestScore := best.latencyScore()
 		for _, member := range candidates[1:] {
-			if member.dialLatency.Load() < best.dialLatency.Load() {
-				best = member
+			if score := member.latencyScore(); score < bestScore {
+				best, bestScore = member, score
 			}
 		}
 		return best
@@ -636,6 +650,11 @@ func (g *ProxyGroup) pickExcluding(tried map[*Tunnel]bool) *Tunnel {
 		return candidates[0]
 
 	case config.LoadBalanceAdaptive:
+		// Same probe as the latency strategy, for the same reason: the cost
+		// function cannot bring back a member it has never had a measurement for.
+		if probe := g.probeNeverAnswered(candidates); probe != nil {
+			return probe
+		}
 		return g.pickByCost(candidates)
 
 	case config.LoadBalanceBandit:
@@ -762,11 +781,13 @@ func (g *ProxyGroup) pickByCost(candidates []*Tunnel) *Tunnel {
 }
 
 // cost is the adaptive strategy's estimate of what one stream through this member
-// costs, in nanoseconds. An unmeasured member scores zero.
+// costs, in nanoseconds. An unmeasured member that has not failed scores zero: it
+// is tried so that it can be measured. One that has failed without ever answering
+// scores neverAnswered instead.
 func (t *Tunnel) cost() int64 {
 	latency := t.dialLatency.Load()
 	if latency <= 0 {
-		return 0
+		return t.latencyScore()
 	}
 
 	// The penalty is capped so that a member with a long outage is still tried:
@@ -777,6 +798,69 @@ func (t *Tunnel) cost() int64 {
 		failures = maxCostFailures
 	}
 	return latency * (1 + 2*failures)
+}
+
+// latencyScore is what the two latency-based strategies compare: the member's
+// measured average, or a score for a member that has no measurement yet.
+//
+// An unmeasured member scores zero, which puts it first — that is what gives a
+// newly joined member its chance. A member that has already failed and has still
+// never answered is different: it never gets a measurement, so the free score would
+// keep it ahead of the members that do answer on every single visit. Measured on one
+// live member and one whose local service is down, that cost the latency strategy 31
+// of 30 visits and the adaptive strategy 30 of 30, against 15 for round-robin and 4
+// for the bandit. It now waits behind the members that answer, and while every
+// member is in that state (a pool whose members are all down) the strategies still
+// work through them: latency keeps registration order and adaptive rotates its
+// starting point, so a member that recovers is found again.
+func (t *Tunnel) latencyScore() int64 {
+	if latency := t.dialLatency.Load(); latency > 0 {
+		return latency
+	}
+	if t.failures.Load() > 0 {
+		return neverAnswered
+	}
+	return 0
+}
+
+// neverAnswered ranks a member that has failed and has never once answered behind
+// every member that has been measured. It is larger than any measured cost: a
+// nanosecond measurement with the failure penalty applied is worth a few seconds at
+// most.
+const neverAnswered = math.MaxInt64
+
+// neverAnsweredProbeEvery is how often the two latency-based strategies put a member
+// that has failed without ever answering back in the running. Ranking it last is what
+// stops a dead service from taking every visit, but on its own it would also mean a
+// service that came back is never found again: the member has no measurement for the
+// failure penalty to work on, so nothing else would bring it round. Probing it is the
+// same idea as the bandit's exploration, which samples the member it knows least
+// about, and it is what the comment on the capped penalty promises — a member with a
+// long outage is still tried.
+const neverAnsweredProbeEvery = 20
+
+// probeNeverAnswered returns such a member on every neverAnsweredProbeEvery-th pick,
+// and nil on the others. When every member is in that state the strategies keep
+// working through them anyway, so the probe only has to cover the mixed pool.
+func (g *ProxyGroup) probeNeverAnswered(candidates []*Tunnel) *Tunnel {
+	if len(candidates) < 2 {
+		return nil
+	}
+	if (g.probeCounter.Add(1)-1)%neverAnsweredProbeEvery != 0 {
+		return nil
+	}
+	var probe *Tunnel
+	for _, member := range candidates {
+		if member.dialLatency.Load() > 0 || member.failures.Load() == 0 {
+			continue
+		}
+		// The one that has failed least often, so a member that failed once is
+		// preferred over one that has never worked at all.
+		if probe == nil || member.failures.Load() < probe.failures.Load() {
+			probe = member
+		}
+	}
+	return probe
 }
 
 // maxCostFailures bounds how many consecutive failures are counted against a member.
@@ -815,6 +899,17 @@ func (g *ProxyGroup) acceptLoop() {
 // A socks5 endpoint speaks the SOCKS5 greeting before anything is dialled, so it
 // has its own handler; every other type is handed straight to serveVisit.
 func (g *ProxyGroup) serveVisit(public net.Conn) {
+	// acceptLoop serves every visitor on a goroutine of its own, and the guard the
+	// control connection has (see Server.handleConn) does not reach it: a panic while
+	// serving one visitor would end the process that is carrying every tunnel. The
+	// visitor's own connection is what is given up instead.
+	defer func() {
+		if rec := recover(); rec != nil {
+			g.logger.Printf("proxy %q: panic while serving a visitor from %s: %v", g.Name, public.RemoteAddr(), rec)
+			_ = public.Close()
+		}
+	}()
+
 	if g.Type != protocol.ProxyTypeSOCKS {
 		g.serveStream(public)
 		return
@@ -830,8 +925,17 @@ func (g *ProxyGroup) serveVisit(public net.Conn) {
 	if err != nil {
 		// ReadRequest answers the negotiation itself; a caller that got an error
 		// only has to make sure the visitor is not left waiting.
+		//
+		// This counts as its own series, not as a visitor denied by a list: it is a
+		// connection that did not carry a SOCKS5 request, and an operator watching
+		// for policy refusals should not have to read a scanner's garbage as one.
 		g.logger.Printf("proxy %q: socks5 request from %s refused: %v", g.Name, public.RemoteAddr(), err)
-		g.metrics.visitorDenied.Add(1)
+		g.metrics.socksMalformed.Add(1)
+		return
+	}
+
+	if request.Command == socks.CmdAssoc {
+		g.serveSocksUDP(public, request)
 		return
 	}
 
@@ -875,6 +979,85 @@ func (g *ProxyGroup) serveVisit(public net.Conn) {
 	_ = socks.WriteReply(public, socks.ReplyFor(lastErr))
 	g.logger.Printf("proxy %q: %s asked for %s and was refused: %v",
 		g.Name, public.RemoteAddr(), request.Target, lastErr)
+}
+
+// serveSocksUDP serves a SOCKS5 UDP ASSOCIATE request: it allocates a relay
+// socket, tells the visitor where to send datagrams, and relays each wrapped
+// datagram through a member's data connection. The association lives until the
+// visitor's control connection closes.
+func (g *ProxyGroup) serveSocksUDP(public net.Conn, request socks.Request) {
+	relay, err := net.ListenPacket("udp", net.JoinHostPort(g.manager.cfg.Server.BindAddr, "0"))
+	if err != nil {
+		_ = socks.WriteReply(public, socks.ReplyGeneralFailure)
+		g.logger.Printf("proxy %q: udp associate from %s refused: cannot open a relay socket: %v",
+			g.Name, public.RemoteAddr(), err)
+		return
+	}
+	defer relay.Close()
+
+	member, stream, err := g.openSocksUDP()
+	if err != nil {
+		_ = socks.WriteReply(public, socks.ReplyFor(err))
+		g.logger.Printf("proxy %q: udp associate from %s refused: %v", g.Name, public.RemoteAddr(), err)
+		return
+	}
+	defer stream.release()
+	defer stream.dc.Close()
+
+	// The reply names the address the visitor sends datagrams to: the address it
+	// already reached us on, with the relay's port. Reporting the wildcard the
+	// relay may have bound would send the visitor to an unreachable 0.0.0.0.
+	ip := ipOfAddr(public.LocalAddr())
+	if ip == nil {
+		_ = socks.WriteReply(public, socks.ReplyGeneralFailure)
+		return
+	}
+	port := relay.LocalAddr().(*net.UDPAddr).Port
+	if err := socks.WriteReplyBound(public, socks.ReplySucceeded, ip, port); err != nil {
+		return
+	}
+	g.metrics.socksUDPAssoc.Add(1)
+
+	// Restrict the relay to the address the association came from, unless the
+	// visitor asked for a specific client address in its request.
+	expectedIP := ipOfAddr(public.RemoteAddr())
+	if host, _, err := net.SplitHostPort(request.ClientAddr); err == nil {
+		if address := net.ParseIP(host); address != nil && !address.IsUnspecified() {
+			expectedIP = address
+		}
+	}
+
+	member.pipeSocksUDP(relay, stream.dc, expectedIP, public, public.RemoteAddr().String())
+}
+
+// openSocksUDP picks a member and asks it for a socks5 UDP data connection,
+// moving on to another member when the first cannot answer.
+func (g *ProxyGroup) openSocksUDP() (*Tunnel, *openedStream, error) {
+	tried := make(map[*Tunnel]bool)
+	attempts := g.memberCount()
+	if attempts == 0 {
+		return nil, nil, errors.New("no client is publishing this proxy")
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		member := g.pickExcluding(tried)
+		if member == nil {
+			break
+		}
+		tried[member] = true
+
+		stream, err := g.openSocksUDPStream(member)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return member, stream, nil
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no client could provide a stream")
+	}
+	return nil, nil, lastErr
 }
 
 // serveStream matches one public connection with a member, moving on to the next
@@ -939,8 +1122,22 @@ func (g *ProxyGroup) openStream(member *Tunnel, visitor bool) (*openedStream, er
 // openStreamFor asks a member for a stream, optionally naming the address it
 // should reach. Only a socks5 proxy passes a target.
 func (g *ProxyGroup) openStreamFor(member *Tunnel, visitor bool, target string) (*openedStream, error) {
+	return g.openStreamWith(member, func() (*dataConn, func(), error) {
+		return member.openStreamFor(visitor, target)
+	})
+}
+
+// openSocksUDPStream asks a member for the data connection that carries a socks5
+// UDP ASSOCIATE.
+func (g *ProxyGroup) openSocksUDPStream(member *Tunnel) (*openedStream, error) {
+	return g.openStreamWith(member, member.openSocksUDPStream)
+}
+
+// openStreamWith wraps a member's stream open with the latency and failure
+// bookkeeping the load-balancing strategies read.
+func (g *ProxyGroup) openStreamWith(member *Tunnel, open func() (*dataConn, func(), error)) (*openedStream, error) {
 	started := time.Now()
-	dc, release, err := member.openStreamFor(visitor, target)
+	dc, release, err := open()
 	if err != nil {
 		if errors.Is(err, errServerDraining) {
 			// The refusal is the server's decision, not a fault of this member, so
@@ -1032,7 +1229,7 @@ func (g *ProxyGroup) recordSession(toPeer, fromPeer int64) {
 		member.Total.Add(1)
 		member.Session.RecordTraffic(shareOut, shareIn)
 	}
-	g.metrics.recordStream(g.Name, toPeer, fromPeer)
+	g.metrics.recordDatagramSession(g.Name, toPeer, fromPeer)
 }
 
 // openForVisitor asks one member for a data connection, trying the others when
@@ -1091,13 +1288,17 @@ func (g *ProxyGroup) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	defer g.metrics.streamClosed(g.Name)
 
 	counter := &countingResponseWriter{ResponseWriter: w}
+	body := &countingReadCloser{ReadCloser: r.Body}
+	r.Body = body
 	proxy.ServeHTTP(counter, r)
 
-	toClient := r.ContentLength
-	if toClient < 0 {
-		toClient = 0
-	}
-	fromClient := counter.written
+	// The request side is what the reverse proxy actually read from the body: a
+	// chunked body has ContentLength -1, but its bytes still cross the tunnel.
+	toClient := body.read.Load()
+	// A protocol switch moves its bytes on the hijacked connection instead of
+	// through Write, so both directions are added back here.
+	toClient += counter.hijackRead.Load()
+	fromClient := counter.written + counter.hijackSent.Load()
 	g.recordHTTPTraffic(toClient, fromClient)
 	g.metrics.recordStream(g.Name, toClient, fromClient)
 }

@@ -84,9 +84,6 @@ func (s *datagramSession) idleFor() time.Duration {
 
 // Run reads datagrams until the socket is closed. It blocks.
 func (p *DatagramPump) Run() {
-	if p.sessions == nil {
-		p.sessions = make(map[string]*datagramSession)
-	}
 	buf := make([]byte, 65535)
 	for {
 		n, addr, err := p.Socket.ReadFrom(buf)
@@ -109,6 +106,15 @@ func (p *DatagramPump) Start() {
 	if p.IdleTimeout <= 0 {
 		p.IdleTimeout = 2 * time.Minute
 	}
+	// The map is created here, before the goroutines that read it, so a caller that
+	// asks Sessions() or shuts the pump down straight after Start never reads it
+	// while Run is assigning it. Every reader and writer of the field takes the
+	// lock, which Run's own lazy initialization did not.
+	p.mu.Lock()
+	if p.sessions == nil {
+		p.sessions = make(map[string]*datagramSession)
+	}
+	p.mu.Unlock()
 	go p.Run()
 	go p.reap()
 }
@@ -118,19 +124,31 @@ func (p *DatagramPump) deliver(addr net.Addr, datagram []byte) {
 	key := addr.String()
 
 	p.mu.Lock()
+	// A datagram that arrives as the pump shuts down has no session to join and no
+	// client left to carry it, so it is dropped rather than opening one that only
+	// the shutdown that is already running could have closed.
+	if p.closed.Load() {
+		p.mu.Unlock()
+		return
+	}
 	session, known := p.sessions[key]
 	if !known {
 		session = &datagramSession{pump: p, addr: addr, done: make(chan struct{})}
 		session.touch()
 		p.sessions[key] = session
+		// Counting the session under the same lock that publishes it keeps the gauge
+		// right when a shutdown races this datagram: the shutdown takes the lock to
+		// list the sessions, so it either misses this one or sees it after the +1 and
+		// balances it with its own -1. Counting after the unlock left an extra +1
+		// behind, because the shutdown's -1 and the release both ran first.
+		if p.OnSession != nil {
+			p.OnSession(1)
+		}
 	}
 	p.mu.Unlock()
 
 	session.touch()
 	if !known {
-		if p.OnSession != nil {
-			p.OnSession(1)
-		}
 		go p.establish(session, datagram)
 		return
 	}
@@ -175,11 +193,28 @@ func (s *datagramSession) pathCount() int {
 	return len(s.framers)
 }
 
-func (s *datagramSession) setFramers(framers []*protocol.Framer, releases []func()) {
+// setFramers installs the paths of a new session and reports whether the session
+// took them.
+//
+// It reports false when the session ended while its paths were being opened: the
+// shutdown, the reaper or a failed write can release a session before its first
+// path comes up, and closeFramers has already run by then — it saw no paths and
+// will not look again. Reporting that here is what lets establish close the paths
+// it just opened instead of leaking the data connections and the goroutines that
+// would read them.
+func (s *datagramSession) setFramers(framers []*protocol.Framer, releases []func()) bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	select {
+	case <-s.done:
+		return false
+	default:
+	}
+
 	s.framers = framers
 	s.releases = releases
-	s.mu.Unlock()
+	return true
 }
 
 // send forwards one datagram towards the stream.
@@ -228,7 +263,20 @@ func (p *DatagramPump) establish(s *datagramSession, first []byte) {
 		s.fail()
 		return
 	}
-	s.setFramers(framers, releases)
+	if !s.setFramers(framers, releases) {
+		// The session ended while its paths were being opened, and closeFramers has
+		// already run without seeing them, so they are closed here: otherwise the
+		// data connections stay open and the reader goroutines below never return.
+		for _, framer := range framers {
+			_ = framer.Close()
+		}
+		for _, release := range releases {
+			if release != nil {
+				release()
+			}
+		}
+		return
+	}
 
 	// Replies may arrive on any path, so every one of them is read.
 	for _, framer := range framers {

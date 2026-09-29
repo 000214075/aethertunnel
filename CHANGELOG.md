@@ -10,6 +10,1005 @@
 
 ---
 
+## [1.0.0] — 2026-09-29
+
+### 新增
+
+- **`scripts/wine-check.sh`：把 Windows 那一栏搬进仓库，并在它上面跑出 71/71**。Windows 的数字
+  一直来自一个不在仓库里的封装脚本（`docs/PLATFORMS.md` 第 4 节批评过这件事），而且从 3.1 那一轮
+  起就卡住了：`kernel.apparmor_restrict_unprivileged_userns = 1` 让非特权用户命名空间不可用，
+  Wine 的封装没法把解出来的 `share/wine` 绑到 `/usr/share/wine`，`wineserver` 读不到区域数据就
+  退出。这一轮拿到 root 后两条路都通了：root 建的挂载命名空间不受那条限制，或者直接把
+  `/usr/share/wine` 指向解包目录（这次用的后者，一条符号链接，用完可删）。新脚本要两个 PE 与一个
+  wine 可执行文件，`WINEPREFIX`/`WINEDLLPATH`/`LD_LIBRARY_PATH` 由调用者给；脚本头部写明 Windows
+  侧路径的写法（Wine 把 `/` 映射成 `Z:`，配置里要用 TOML **字面量**字符串，否则 `\` 会被当成
+  转义）。它跑 **71 项**：命令行与示例配置（5）、控制端口与面板与指标（6，含面板拒绝计数 +1）、共享 http 端口与虚拟主机（2）、目录（5）、已占用的控制端口（3，见下面的缺陷）、
+  已发布代理与双向字节（7）、半关闭之后仍收到应答（2）、私有代理与访问者（4）、socks5 出口与名单
+  （4）、四层安全一起（9，含身份密钥在 Windows 上生成、四层各自在自己日志里报名、以及同一份身份
+  密钥再次启动报出同一个公钥）、封禁窗口
+  （6，含"被拒的客户端日志里没有会话、窗口过后才有"这两条**从未在 Windows 上执行过**的检查）、
+  带宽账本（13，含经面板断开客户端后条目出现、错误公钥必须校验失败、`--ledger-proof` 的单条前缀
+  单独可校验）、审计轮转（3，`max_bytes` 到量滚出第一代后当前文件继续在写）、`--reject-unknown-keys`
+  （2，默认只是警告、加开关变成错误并点名未知键）。**71/71**。同一轮里它又扩成**按参数决定每一侧怎么跑**
+  （`.exe` 走 Wine，否则直接执行，配置里的路径按各自那一侧写成 `Z:\...` 或 Unix 形式），于是
+  2.1 节里一直标着"上一轮 22 项那套"的混合组合也能重跑了，并且扩到本机能执行的三种目标（windows/amd64、
+  linux/amd64、qemu 下的 linux/arm64）的**全部九对组合，各 71/71**——包括 Windows 参与的四对混合
+  组合，以及两对本机 ELF 的自检（用来把平台差异与脚本自身的问题分开）。arm64 那一侧是 `qemu-arm64:`
+  前缀，用 `qemu-aarch64` 执行、不给 `-L`（二进制静态），路径仍是 Unix 形式。没跑到的也写明：
+  `scripts/smoke-test.ps1` 要 PowerShell（本机没有 `pwsh`）；2.1 节那些**旧数字**没有替换（那是
+  另一套、项数不同的检查）。
+- **`scripts/race-toolchain.sh`：在没有 C 编译器、也没有 root 的机器上把 `go test -race` 变成一条
+  可复跑的路径**。竞态检测需要 cgo，cgo 需要 C 编译器，而 `docs/PLATFORMS.md` 一直只以散文写着
+  "可以按需解出 `gcc-14` 与 `libc6-dev`（同样不需要 root）"——照着做会卡住：**`gcc-14` 包里只有驱动
+  程序**，真正的编译器 `cc1` 在 `gcc-14-x86-64-linux-gnu` 里，而驱动按编译期路径去 `/usr/libexec`
+  找它。现在这段做法固定成脚本：`apt-get download` 收下 8 个包（`gcc-14`、
+  `gcc-14-x86-64-linux-gnu`、`cpp-14-x86-64-linux-gnu`、`gcc-14-base`、`libgcc-14-dev`、`binutils`、
+  `libc6-dev`、`linux-libc-dev`），`dpkg-deb -x` 解进一个缓存目录，写一个包装脚本按解出来的位置传
+  `-B`（cc1/collect2/as/ld）与 `-isystem`/`-L`（libc 头文件与启动对象），**不用 `--sysroot`**，所以
+  动态链接器仍指向系统那一份、跑出来的测试二进制照常执行；脚本在把路径交出去之前先编译并运行一个
+  测试程序自检，路径走 stdout、进度走 stderr，缓存命中就直接返回。空缓存实测 6.4 秒（下载 42.8 MB
+  + 解包 + 自检），`make test-race` 在没有给 `CC` 时自己调用它（`CC="$${CC:-$$(bash
+  scripts/race-toolchain.sh)}"`），系统上本来就有编译器时脚本直接打印 `cc`。本轮证据：`go test
+  -race ./...` 14 个包全过、**0 处数据竞争**；对并发最重的 `pkg/server`、`pkg/net`、`pkg/reliable`、
+  `pkg/dht`、`pkg/discovery`、`client` 与根包再跑 `-count=3`（`pkg/server` 三次共 108.5 秒），同样
+  0 处；根包与客户端在 `-race` 下也是全过。`docs/PLATFORMS.md` 第 3 节那条说明改成指向脚本（并写明
+  `gcc-14` 不够这件事），新增 3.16 记录本轮的运行数字；README 两处 `make test-race` 的说明也补上。
+- **`aethertunnel_data_connections_unmatched_total`：数据面配不上的连接现在有计数**。`DataOpen` 帧
+  在任何认证之前就被分发，所以谁都能发一个"格式正确但指向不存在的东西"的帧：会话未知或已过期
+  （`sessions.Get` 失败），或者会话是真的但没有访客在等这条流（`TakePending` 失败）。服务端每次都
+  写入一条 `DataOpenAck{OK:false}` 作为拒绝，但此前两个计数器都没动、审计也没有——第二种情况里的
+  答案只有发帧的人看得到，第一种除了服务端自己那行日志什么都没留下。控制端口的同类拒绝早已逐条
+  记账（`refuseFirstFrame` 的注释就写着"服务端自己写下的答案，此前没有记下来"），数据面是最后一处
+  只留日志的地方。现在这条计数覆盖这两类；**"客户端连不上自己本地服务"不算在内**：那种情况客户端
+  在帧里自带 `Error`、等这条流的访客会立刻收到错误，属于正常结果而不是配不上的连接，把它混进来会
+  让这条计数在本地服务挂掉时飙升、看起来像有人在扫数据面。`aethertunnel_data_connections_total` 的
+  说明也补上它一直包含"后面没能配对"的那些。回归测试
+  `TestADataConnectionTheServerCannotPairIsCounted`：手工发一个未知会话的 `DataOpen`（+1）、再用真实
+  会话发一个没人等的 `StreamID`（再 +1）、最后让一个没装拨号器的 socks5 客户端报告"服务不了这条流"
+  （计数必须**不动**，同时 `data_connections_total` 三种都 +1、`control_rejected` 一个都不动）；去掉
+  任意一处计数会让对应断言失败（`the unmatched counter is 0 after a data-open with an unknown
+  session, want 1` / `... with no waiting stream, want 2`），把第三类也计进去会失败（`the unmatched
+  counter is 3 after a client reported it could not serve the stream, want it to stay at 2`）。
+  `docs/CONFIGURATION.md` 的指标表补上这一行。
+- **`--reject-unknown-keys`：把未知配置键从警告变成错误**。`config.ValidateOptions` 一直有
+  `RejectUnknownKeys` 这个开关，`docs/CONFIGURATION.md` 的英文摘要还写着"`--check` fails when
+  `RejectUnknownKeys` is set"，但两个可执行程序从来没有把它接到命令行上——这个开关此前只出现在
+  `pkg/config` 自己的测试里，读者按文档去找也找不到"在哪里设置"。现在服务端与客户端都有
+  `--reject-unknown-keys`，用法是 `--check --reject-unknown-keys`。`make check` 与 CI 的两个
+  Linux 作业（linux/amd64 与矩阵里的 windows/amd64）都改成用它校验仓库里的两个示例配置，于是
+  "示例配置有效"这一步现在也能抓住"在示例里多打一个键"：改之前 `--check` 对未知键只打一行警告并
+  退出 0，往示例里加一个拼错的键不会让任何一步失败。实测：`server.toml.example` 与
+  `client.toml.example` 在严格模式下退出码都是 0（两个文件本来就没有未知键，所以这一步可以放心
+  收紧）；一个含 `bind_adr` 与 `pad_too` 的文件退出码为 1，并打印 `config … contains 2 key(s)
+  this version does not understand: server.bind_adr, obfuscation.pad_too`，改回不带开关时它仍然
+  只是"valid + 一行警告"。`docs/CONFIGURATION.md` 的用法段与 README 的"配置校验"一行都补上了这个
+  开关。验收方式：不往 `scripts/functional-linux.sh` 里加检查——那份件数被 README 与
+  `docs/PLATFORMS.md` 里多处逐次运行记录引用（281/138），而 CI 每一步都跑真实二进制、已经把这个
+  开关端到端跑了一遍，开关背后的库行为由 `pkg/config` 的
+  `TestUnknownKeysAreReportedNotIgnored` 与 `TestWarningsSurviveAValidationFailure` 覆盖。
+
+### 修复
+
+- **Windows 上，控制端口绑定失败时报的是一个要自己去查的错误码**。同一个失败在两个平台上的读法
+  完全不同：Linux 写 `bind: address already in use`（诊断就是结论），Windows 写
+  `bind: winapi error #10048`——Go 的 net 包把 socket 错误原样带出来，而 Windows 的这些代码没有
+  文本。原因在 Go 的 `syscall` 包本身：Windows 侧的 `syscall.EADDRINUSE` 是一个合成的
+  `APPLICATION_ERROR` 值，与网络栈真正报的 `WSAEADDRINUSE`（10048）**永不相等**，所以按 errno
+  分类在那一侧永远不会命中——这也是为什么这个缺口一直没被"到处都是现成的 errno 文案"掩盖住。
+  现在 `pkg/net` 新增 `ListenError`/`ListenCause`：两类最常见的拒绝（地址已被占用、权限不足）
+  在两个平台上都说出人话，第三种（地址本机没有）也一并认出，识别不了的错误保留 net 自己的文本并
+  带上所请求的地址；服务端的控制端口、共享 http 端口、面板端口、代理的两类公开端口（tcp 与 socks5）、xtcp 的
+  会合端口与客户端的两种访问者监听（tcp 与 udp）共八处绑定点全部走它。两个平台的现在读起来一样：
+  `server stopped: listen on 127.0.0.1:34807: the address is already in use (another process is
+  listening on it)`。回归测试 `pkg/net/listen_test.go` 直接喂 syscall 错误（不走网络栈，这样
+  Linux 上也能测 Windows 分支的映射逻辑）：三种可识别的失败各有其话、不认识的错误保留原文并带上
+  地址；两个变异（去掉地址占用的分支、识别出原因后仍保留 net 文本）都会让测试失败。Windows 侧的
+  端到端证据是 `scripts/wine-check.sh` 新增的"已占用的控制端口"一节：修复前那条检查失败（输出里
+  是 #10048），修复后通过。
+- **一条被填上的空洞会让乱序缓冲里的一段数据永远留在那里**（`pkg/reliable`）。接收侧把乱序段按
+  序号放在 `ooo` 里，等连续的一端走到它那里再取出来；取出的条件是**序号正好等于**空洞。重传并不
+  按第一次发送时的分段边界到达——这是重传的常态——所以一段已经缓冲的数据可能跨越空洞：它起在空洞
+  之前、伸到空洞之后。这时其中已经交付给读者的那一段必须先去掉，剩下的部分应该挂在空洞上，
+  而不是继续挂在它原来的序号上。原来的代码只做"序号完全相等"的匹配，于是这种条目**永远匹配不上
+  空洞**：它带着自己的字节留到连接关闭，`oooBytes` 一直计着它们，而对外通告的窗口
+  （`recvWindow - 缓冲中的连续数据 - oooBytes`）就按这个量长期变小，`oooHigh` 也一直非零、让对端
+  以为还有空洞而反复重传。极端情形是一条连接永久停摆。现在 `appendInOrderLocked` 在推进连续端之后
+  先把这类条目收拾干净：已经被交付的部分丢掉，剩下的重挂到空洞上并在同一趟里被排空；如果重挂时
+  空洞上已经有一个条目，留更长的那一个（两个条目描述的是同一起点之后的同一段流，短的那个是长的
+  前缀）。回归测试 `pkg/reliable/stale_ooo_test.go` 三个用例：跨空洞的重传（缓冲 1100..1500、
+  重传覆盖 1000..1300，要求 500 字节全部可读且 `ooo` 为空）、被完整覆盖的缓冲段（1100..1200 落在
+  1000..1300 里，条目必须消失）、以及两个缓冲段在空洞处相遇（1100..1500 与 1300..1600，必须留下
+  更长的那个）。三个变异都会让测试失败：去掉整段收拾、只删不重挂、重挂时不比较长短（第三个只有
+  第三个用例会失败）。回归之后 `gofmt -l .` 无输出、`go vet ./...` 无输出、`go test ./... -count=1`
+  14 个包全过、`scripts/functional-linux.sh` 281 项全过。
+- **面板与 `/metrics` 上的令牌拒绝不留任何痕迹**。控制端口那边的每一种拒绝都进计数与审计，唯独
+  面板监听器对"没带令牌 / 令牌不对"的请求只回一个 401：`auth_failures_total` 不动（它的 help 写着
+  "a wrong token"，而这正是它）、`control_rejected_total` 不动、审计文件**一个字节都不长**、服务端
+  **连一行日志都不写**。实测：对一个真在跑的服务端连发 5 个错令牌请求，五条都是 401，而
+  `/metrics` 里两条计数都是 0、审计文件 0 字节。这个监听器**自己没有任何限流**（令牌桶、封禁与
+  `max_connections` 都只作用于控制端口），而 `service.yaml` 把 7500 一并发布在 LoadBalancer 上——
+  也就是说，一个扫到这个端口的人、或者一个令牌被轮换掉的 scraper，无论在指标、审计还是日志里都
+  看不见。现在 `pkg/server/dashboard.go` 的 `withAuth` 与 `withMetricsAuth` 都走同一个
+  `refuseUnauthorized`，把请求计入新增的 `aethertunnel_dashboard_unauthorized_total`；
+  **只计数、不写审计**，理由写在代码与指标说明里：面板本身每隔几秒轮询若干端点，一次请求一行会
+  让一个拿着过期令牌的客户端把痕迹埋掉（控制端口每条一次成立，是因为一条连接只对应一次拒绝）。
+  `docs/CONFIGURATION.md` 的指标表与 `docs/SECURITY.md` 第 8 节同步（后者顺带写明 7500 被发布在
+  LoadBalancer 上意味着令牌明文过网，需要部署方自己加 TLS 与来源限制）。回归测试
+  `TestAnUnauthorizedDashboardRequestIsCounted`：五条覆盖 `/api/*` 与 `/metrics` 的拒绝各自计数、
+  带对令牌的请求一条都不计数、`/healthz` 这类公开端点同样不计数，且 `auth_failures` /
+  `control_rejected` / `control_connections` 三条控制端口的计数**都不动**（HTTP 请求不是控制连接）。
+  三个变异都会让它失败（`/api` 路径不计数、`/metrics` 路径不计数、公开端点也计数）。容器内实测
+  （20.10.24 与 29.2.1）：401 前后这条计数从 N 变到 N+1。
+- **首帧读不出来时，那次拒绝只写进了日志：指标里是 0、审计里什么都没有**。这一条是容器的功能
+  验证挖出来的：把服务端按 `deploy/kubernetes/configmap.yaml` 那份 `server.toml` 跑起来
+  （`[obfuscation] disguise = "tls-record"`），再让一个**没启用伪装**的客户端连上去，服务端日志写着
+  `handshake from 127.0.0.1:60300 failed: obfs: the stream is not carrying record-framed data: the first
+  byte is 0x01, want 0x17 for an application-data record`，而 `/metrics` 的
+  `aethertunnel_control_rejected_total` 还是 0、审计文件是空的。同一类缺口在这个仓库里已经补过两次
+  （访客入口的拒绝、垃圾请求帧），`refuseFirstFrame` 的注释甚至写着"以前只有一行日志"——但"连首帧
+  都读不出来"这一条漏在网外。它覆盖的正是最需要被看见的几种情况：伪装、加密或 TLS 两端不一致
+  （TLS 握手是懒的，失败也落在同一次读上），以及一个连上什么都不发就离开的对端。现在
+  `pkg/server/server.go` 新增 `refuseHandshake`：计入汇总 `aethertunnel_control_rejected_total`
+  （`admit()` 的那几种拒绝同样是不回答直接关闭，也计入这里），计入新增的
+  `aethertunnel_handshake_failures_total`，并写下 `handshake_failed` 审计记录，`detail` 就是日志里
+  那句话（含 `handshakeFailureHint` 给出的设置提示）。两处 help 文本跟着改准确，
+  `docs/CONFIGURATION.md` 的指标表与 `docs/SECURITY.md` 的事件列表同步。回归测试
+  `TestAFirstFrameThatCannotBeReadIsCountedAndAudited`：伪装开着的服务端、一个不带伪装的客户端、再加
+  一个连上不发的对端；三个变异都会让它失败（回到只写日志、只计数不审计、不移动汇总）。容器内实测
+  （20.10.24 / 24.0.9 / 26.1.4 / 27.5.1 / 28.4.0 / 29.2.1 六个版本）：`handshake_failed` 记录里带着
+  `record-framed`，两条计数都不是 0。这一轮的版本矩阵与十个场景记在 `docs/PLATFORMS.md` 的 3.18。
+- **非 root 进程打不开 tun 设备时，报错只有一句 errno；清单里的 `[vpn]` 用法注释照着做会让 Pod
+  起不来**。这两处都来自同一轮对容器的验证：把三个 docker 版本（20.10.24、28.4.0、29.2.1）并排
+  起在同一台机器上，各跑一遍同一个 21 项场景（构建、`USER`、面板端口、指标、审计、ledger、
+  隧道真的搬字节，再加 `--device /dev/net/tun --cap-add NET_ADMIN` 那一节），**63/63 全过**，
+  版本之间没有差异——差异出现在 uid 上。以 uid 0 跑时 `/api/vpn` 报 `enabled: true`、接口真的
+  建出来；以 **uid 65532** 跑时，同一个命令在三个版本上都只得到
+  `vpn: TUNSETIFF for "aetvpn0": operation not permitted`。原因是内核在进程变成非 root 用户时
+  清掉 permitted/effective 权限集合，而 docker 与 Kubernetes 都没有把它放进 ambient 集合，
+  所以"给容器加 `NET_ADMIN`"对非 root 进程不生效。运维看到的只有一个 errno，而 Deployment 里
+  那段注释写的恰好是这个办法（加 `NET_ADMIN`、挂 `/dev/net/tun`），照着做是一个起不来的 Pod。
+  程序侧现在把这句话换成能照着做的说明：`pkg/vpn/device_linux.go` 新增 `tunOpenError`、
+  `tunIoctlError` 与 `tunCapabilityHint`，`/dev/net/tun` 打不开时按 errno 分别指出"容器要拿到
+  设备"（`--device /dev/net/tun`、hostPath CharDevice）或"需要 CAP_NET_ADMIN"，并**在 uid
+  不是 0 时把它自己看到的 uid 与"要以 uid 0 跑隧道"一并写出来**；与设备、权限都无关的 errno
+  不加提示，免得把人指向错误的设置。打开路径多了一个参数化的 `openTunDevice`，让"设备不存在"
+  这一条能在有 `/dev/net/tun` 的机器上被测到。实测（容器内，20.10.24 与 29.2.1 各一次）：
+  `cannot start server: vpn: TUNSETIFF for "aetvpn0": operation not permitted; opening a tun device
+  needs CAP_NET_ADMIN (--cap-add NET_ADMIN in docker, securityContext.capabilities in Kubernetes),
+  and a process whose uid is 65532 rather than 0 does not receive a capability the container adds,
+  so run the tunnel as uid 0`。回归测试 5 条：两条纯函数检查（uid 0 与非 0 的提示必须不同、
+  EINVAL/EMFILE 这类与权限无关的失败**不得**带上权限提示）、一条让真实 `Open` 在不提权的环境里
+  走到 EPERM 并检查提示、两条驱动 `openTunDevice` 走 ENOENT 与 EACCES。变异验证：把任一处调用点
+  换回不带提示的 `fmt.Errorf`、或让 `tunCapabilityHint` 忽略 uid、或给所有 errno 都加提示，
+  对应断言都会失败。三个版本的完整结果记在 `docs/PLATFORMS.md` 的 3.17。
+- **`deploy/kubernetes/deployment.yaml` 里那段 `[vpn]` 用法注释整块取消注释会与本容器已有的键
+  重复**。它把 `securityContext:`、`volumeMounts:`、`volumes:` 都写在了同一个缩进上，而这三者
+  在本容器里已经有两个（`volumes` 在容器里根本不是合法字段，它属于 Pod）。解析器遇到重复键取
+  后一个，于是取消注释之后**容器会丢掉 `readOnlyRootFilesystem: true`、
+  `allowPrivilegeEscalation: false` 和 state 挂载**——最后一条正好是
+  `TestTheConfigOnlyWritesStateWhereTheDeploymentMountsIt` 防的那种"审计与 ledger 写进容器自己的
+  文件系统、Pod 一重建就没了"。而 `runAsNonRoot: true`/`runAsUser: 65532` 不在那个块里，所以照着
+  做即使键不重复也还是会得到 `TUNSETIFF … operation not permitted`（见上一条）。现在那段注释改成
+  四条"对已有键的修改"（在 `securityContext.capabilities` 加 `NET_ADMIN`、在 `volumeMounts` 加
+  一条、在 Pod 的 `volumes` 加一条、把 Pod 的 `runAsNonRoot`/`runAsUser` 去掉），并写明服务端会
+  用哪一句话拒绝启动。新增 `TestTheVPNRecipeIsEditsRatherThanABlockThatDuplicatesKeys`：
+  清单里不得出现可整块粘贴的 `# securityContext:`/`# volumeMounts:`/`# volumes:` 注释块，
+  且注释里必须点到 `runAsUser` 与 `uid`（**只在注释行里找**：Pod 自己的 `runAsUser: 65532` 会
+  让整文件检索白白通过，这一条在第一版里正是这样假过的）。变异验证：把注释改回可粘贴的块、
+  或删掉那段 uid 说明，用例都会失败。
+
+- **文档里"直接执行脚本"的写法在丢了可执行位的检出上会失败**。`Makefile` 的 `cross` 目标写的是
+  `./scripts/build-release.sh`，README 与 `docs/MIGRATION.md` 写的是
+  `sudo scripts/vpn-linux-test.sh …` / `sudo scripts/kubernetes-linux.sh …`；这些文件需要一个可执行
+  位，而**这个检出里所有脚本都被记成 100644**（本仓库的 git 配置里 `core.fileMode = false`，
+  `git ls-files -s scripts/` 逐条都是 100644），实测 `./scripts/build-release.sh` 直接报
+  `权限不够`。发布流程其实早就撞上过这件事——`.github/workflows/release.yml` 在跑它之前先
+  `chmod +x scripts/build-release.sh`——但那个绕行只救了 CI，`make cross` 与照着 README 敲命令的人
+  仍然踩坑；仓库里 Linux 侧的其它调用（`functional-linux.sh`、`vpn-linux-test.sh`、
+  `verify-release-linux.sh`）本来就写成 `bash scripts/…`，说明这已经是本仓库的习惯。现在这些调用统一
+  走 `bash`：`Makefile` 的 `cross`（附一条说明为什么）、README 的两条 `sudo` 命令、
+  `docs/MIGRATION.md` 的一条、`docs/PLATFORMS.md` 里三处 `emulate-linux-arm64.sh` 的用法行，并把
+  `release.yml` 里那行 `chmod +x` 去掉（它绕的问题已经不存在了）。这样无论检出的模式位是什么都能跑。
+  实测：`bash scripts/build-release.sh test-version` 退出码 0，`dist/` 里 13 个文件 = 12 个产物 +
+  `SHA256SUMS`，与 README 的"12 个产物 + `dist/SHA256SUMS`"一致。
+- **数值范围检查有的取决于所在段是否启用，而且同一个块里前后不一致**。`--check` 承诺"负数的时长
+  与计数"会被拒绝，`docs/MIGRATION.md` 也照着这个说法写，但实际上有的范围检查与 `enabled` 无关
+  （`audit.max_bytes`、`obfuscation.jitter_millis`、以及 `pad_to` 的**上限**），有的却被它挡掉：
+  `obfuscation.pad_to = -1` 会被接受，而同一个键的上限检查就在 8 行之外、并不看 `enabled`；
+  `[vpn] mtu = -1` 会被接受；`[dht] announce_ttl_seconds = 1`（迁移文档专门交代"升级前先把它改成
+  2 或更大"的那个值）、`ttl_seconds = -1`、`republish_seconds = -1` 也都会被接受。后果是
+  `--check` 对一份写着错值的文件报 "valid"，直到你把那个段打开才失败——而迁移文档给的恰恰就是
+  "升级前跑一次 `--check`"这条路径，实测过：`[obfuscation] enabled = false` 配 `pad_to = -1`、
+  `[vpn] enabled = false` 配 `mtu = -1`、`[dht] enabled = false` 配 `announce_ttl_seconds = 1`，
+  三种都打印 "is valid" 并退出 0。现在规则统一为：**单个数值的范围检查与段的 `enabled` 无关**
+  （`pad_to` 的负数、`vpn.mtu` 的 576–9000、三个 DHT 数值的负数与 `announce_ttl_seconds >= 2`），
+  **需要该段真的在用的检查仍然只在启用时执行**（要能解析的地址与密钥，以及两个值之间的关系：
+  未启用时 `republish_seconds = 0` 表示"按 TTL 推导"，无从与 `announce_ttl_seconds` 比较——这一条
+  也是这条边界的技术依据）。这条边界写进了 `docs/CONFIGURATION.md` 顶部，并补在 `docs/MIGRATION.md`
+  关于负数与 `announce_ttl_seconds` 的两条上。回归测试 `TestRangeChecksApplyToDisabledSections`
+  （四个"段未启用但值写错"的用例必须被拒，外加一个"段未启用但值正常"的用例必须通过，防止收得太
+  紧）；把任意一条范围检查重新挂回 `Enabled &&` 会让对应子用例失败（`expected an error containing
+  "obfuscation.pad_to cannot be negative", got nil`）。仓库自己的配置——两个示例、Kubernetes
+  ConfigMap、`scripts/vpn-linux-test.sh` 与功能脚本生成的配置——用的都是正常值，逐个看过，
+  行为不变。
+- **配置校验失败时，未知配置项与其他加载警告一起被丢掉**。`config.Load` 把"这个版本不认识的键"和
+  "哪些凭据来自环境变量"收进 `cfg.Warnings`，但校验失败时返回的是 `nil, err`，调用方
+  （`main.go`、`client/main.go`）先 `if err != nil { Fatalf }`，那些警告再也拿不到。README 承诺
+  "未知配置项会**报出来**而不是静默忽略"，实际只在文件**其余部分都合法**时成立：一个文件里同时
+  有拼错的键和缺的必填项时，`--check` 只报后者，使用者改完再跑一次才看到前者——而这两处通常就是
+  同一个手误。现在 `Load` 在校验失败时连同它构建出的配置一起返回（只有这一条路返回非 nil 的配置，
+  文档注释写明该配置不可使用、只用来取警告），两个入口都先打印 `cfg.Warnings` 再处理错误。实测
+  （对服务端 `--check` 喂一个同时含 `[serverr]`、`bind_adr`、`BindPort`、`max_connection`、
+  `pad_too`、`[nested]` 六个错处的配置）：改之前只输出三行校验失败；改之后先输出
+  `contains 10 key(s) this version does not understand: …` 再输出那三行，退出码仍是 1。回归测试
+  `TestWarningsSurviveAValidationFailure`（校验失败时返回的配置非 nil，警告里同时出现 `webrtc` 与
+  `bind_adr`；同时保持 `RejectUnknownKeys` 那条路径仍以错误形式报告）；把返回值改回 `nil, err`
+  会失败（`the rejected configuration is nil, so its warnings cannot be reported`）。
+- **`Makefile` 声明了两个并不存在的目标**。`.PHONY` 里列着 `lint` 与 `release`，文件里却没有这两条
+  规则，`make lint` / `make release` 只会得到 "No rule to make target"；README 也从没提过它们。现在
+  补上 `lint`：先报出没有 gofmt 过的文件（`make fmt` 会写文件，不能拿来当检查），再跑
+  `go vet ./...`——正是 CI 的 Linux 作业在测试前跑的那一对。gofmt 的路径由 `$(GO) env GOROOT` 推出，
+  不假设它在 PATH 上：否则 gofmt 不在 PATH 时该命令会失败、输出为空，这条检查就**静默通过**了
+  （本机在没有 PATH 的情况下实测到这一点，所以加了这一层）。`release` 从 `.PHONY` 去掉，它的等价物
+  是 `cross`。两个 README 的 `make` 命令清单都补上 `make lint`，与 `Makefile` 保持一致。
+- **访客连接与数据打开的"首帧不可用"没记在这条序列上**。控制端口上有三种帧类型可以起一个连接：
+  认证请求（`TypeAuthRequest`）、访客连接（`TypeVisitorConnect`）、数据打开（`TypeDataOpen`）；三条都在
+  任何认证之前被分发，所以载荷解析不了的帧就是一枚打向这个端口的垃圾帧，无论它自称是哪种。
+  `aethertunnel_unusable_request_frames_total` 只在认证请求那一条计数：用访客连接或数据打开发垃圾
+  的扫描在这条序列上显示为零，而它正是操作者用来把"垃圾帧扫描"和"策略拒绝"分开看的序列，
+  `docs/CONFIGURATION.md` 的说明也只列了认证请求一种。现在访客连接的坏载荷在（上一轮已加上的）
+  汇总计数与审计记录之外也记进这条序列；数据打开的坏载荷记进这条序列并补一条日志——它此前连
+  日志都没有，连接被静默关闭，四类拒绝里只有这一种什么都不留。数据打开**不**进
+  `aethertunnel_control_rejected_total`：那条计数说的是"控制端口上被拒绝的连接"，而数据连接从未
+  成为会话，把它算进去会让"已接受 + 已拒绝"超过服务端作答过的连接数。回归测试
+  `TestAMalformedVisitorOrDataFrameIsCountedAsUnusable`：访客坏载荷让不可用计数 +1、汇总 +1、审计里
+  留下 `visitor_rejected` 记录；数据坏载荷让不可用计数再 +1，而汇总计数、已接受计数与数据连接计数
+  都不动。删掉访客那处 `unusableFrames.Add(1)` 会失败（`the unusable-first-frame counter is 0 after
+  a malformed visitor-connect, want 1`），删掉数据那处会失败（`... after a malformed data-open too,
+  want 2`）。`docs/CONFIGURATION.md` 的指标说明与 `metrics.go` 的 help 文字相应改成列出三种载荷，
+  并写明数据打开那一帧不计入汇总。
+- **访客的拒绝几乎不进 `aethertunnel_control_rejected_total`，有几处也不进审计日志**。控制端口上
+  两条入口共用一套规则：普通客户端的拒绝会同时进聚合拒绝计数、进审计日志，`refuseControl` 的注释
+  把这条写成了不变式（"每一次已作答的拒绝都要动它"，因为这是原因无关时告警看的那条序列）。访客
+  入口只在**令牌错误**那一条这么做了，其余十处——身份断言失败、代理不存在、代理不是私有的、传输
+  类型不匹配、请求里没带抗量子密钥、抗量子协商失败、协商出的密钥不可用、NIZK 证明失败、
+  `secret_key` 不通过、首帧不是一个可用的 `VisitorConnect`——都不计数；其中代理不存在、代理不是
+  私有的、首帧不可用，以及抗量子相关的那三处（缺密钥、协商失败、密钥不可用），一共六处连审计
+  记录都没有，全部不留痕迹。后果是：从访客入口扫代理名、扫 `secret_key`
+  或用不匹配的传输类型试探，在这两条观察面上几乎不可见，聚合计数也不再等于"服务端作答过的连接"
+  减"已接受的连接"。现在新增 `refuseVisitor`（计数 + 审计 + 在线上拒绝三件事一起做），十处接受
+  之前的拒绝都走它，审计事件与拒给访客的理由文字保持不变；**接受之后**才发生的失败（中继建不
+  起来：没有成员在发布该代理、应答写不回去等）仍只走 `rejectVisitor`，因为那条连接已经计入已
+  接受，再记一次会让"已接受 + 已拒绝"超过服务端作答过的连接数。回归测试
+  `TestAVisitorRefusalBeforeAcceptanceMovesTheRejectionCounter`（令牌错/代理不存在/`secret_key`
+  错/传输不匹配四种拒绝各断言聚合计数恰好 +1、且不计为已接受）、
+  `TestOnlyThePreAcceptanceRefusalIsBooked`（用 `net.Pipe` 直接区分两个 helper：接受之后的
+  `rejectVisitor` 不动计数，接受之前的 `refuseVisitor` 恰好 +1）与
+  `TestAnAcceptedVisitorIsNotCountedAsRejected`（握手成功的访客让已接受 +1、拒绝不动）；把
+  `refuseVisitor` 里的计数删掉会让四条子用例全部失败（`the rejection counter is 0 after one
+  visitor refusal, want 1`），把计数折进 `rejectVisitor`（看上去像顺手的整理）会让
+  `TestOnlyThePreAcceptanceRefusalIsBooked` 失败（`the rejection counter moved to 1 for a refusal
+  after acceptance, was 0`）。`docs/SECURITY.md` 第 7 节与 `docs/CONFIGURATION.md` 的指标表因此
+  把这条计数与 `aethertunnel_control_rejected_total` 的 help 文字都改成"控制端口上被作答为拒绝的
+  连接，含凭据不通过与访客入口的拒绝"。
+- **`aethertunnel_auth_failures_total` 的说明比它实际计的东西窄**。这一条计数的是所有凭据类失败：
+  错误的令牌、无效的身份断言、失败的抗量子密钥协商，以及访客在私有代理上 `secret_key` / NIZK
+  证明不通过；但暴露在 `/metrics` 里的 help 文字一直写的是"Authentication attempts with an invalid
+  token"，只提令牌一种。抓指标配告警或写规则时，这句话会让人以为身份断言与协商失败不会体现在这条
+  序列上。现在 help 文字改成"a wrong token, a failed identity assertion, a failed key agreement, or
+  a visitor's failed proof for a proxy's secret key"，与 `docs/CONFIGURATION.md` 里"凭据错误的认证
+  尝试"那句一致。改的只是 help 文字，序列名、类型与取值都不变，`functional-linux.sh` 与
+  `smoke-test.ps1` 都按序列名取值，不受影响。
+- **换一种首帧就能绕过 `ban_after_failures`：访客入口不记认证失败**。控制端口上有两条入口都带着
+  同一份凭据：`AuthRequest`（普通客户端）与 `VisitorConnect`（访客）。两条都检查同一个
+  `auth_token`、同一份身份断言、同一套抗量子密钥协商，但只有前者在失败时调
+  `recordAuthFailure`——而那是唯一施加封禁的地方，它自己的注释就写着"每一种认证失败都要算"。
+  于是攻击者只要把猜测包成 `VisitorConnect` 帧，就可以无限次猜令牌、身份或协商密钥，永远不会被
+  封；文档 §7 承诺的"认证失败达到次数后在握手前拒绝该来源"被这一条绕过。现在访客入口的五处
+  凭据失败（令牌、身份断言、抗量子协商、NIZK 证明、`secret_key`）与成功后的清零都走
+  `recordAuthFailure` / `recordAuthSuccess`，与控制连接一致。`ban_after_failures` 默认为 0
+  （关闭），所以没有开启封禁的部署行为不变。回归测试
+  `TestAVisitorThatFailsACredentialCheckIsBanned`（三种凭据失败各一条子用例，断言该来源真的进了
+  封禁名单、计数也记了）与 `TestAVisitorThatAuthenticatesClearsItsFailureCount`（先失败两次、
+  成功一次、再失败一次，阈值 3 时不应被封）；去掉 `recordAuthFailure` 会失败
+  （`the list reports 0 banned sources after a visitor credential failure, want 1`），只去掉
+  `recordAuthSuccess` 会失败（`a source that authenticated once and then failed once was banned`）。
+  `docs/SECURITY.md` §7 的括号里补上访客的 `secret_key` / NIZK 证明，并写明用访客入口猜令牌不会
+  绕过封禁。
+- **文档把账本说成会覆盖 `xtcp` 直连的流量，实际上那部分根本到不了服务端**。`docs/SECURITY.md`
+  第 9 节原来写"`xtcp` 按直连或中继的流"记账，读起来是直连那条流也会被计；但打洞成功后两端直接
+  对话，服务端看不到任何字节，也**没有**任何机制会把它们补上——客户端只有上线、注册、心跳、数据与
+  打洞这几类帧，没有上报用量的帧。所以那条直连流在账本里是 0 字节，指标的两个双向字节与按隧道的
+  字节同样不含它；服务端能记下的只有这次尝试与它报告的结果。靠账本计费时这一点是实质性的：直连
+  省掉的正是账本看不到的那部分。现在 `docs/SECURITY.md` 第 9 节把记账范围逐项写清（`tcp`/`stcp`
+  按流、`udp`/`sudp` 按数据报会话、`http`/`https` 按请求、`xtcp` 按下**经服务端中继**的流）并单独
+  说明直连流量为什么不在其中；`docs/CONFIGURATION.md` 的指标一节与 README 的账本一行也补上同一句；
+  面板「账本」页那条说明（`ledger.note`，中英两处加静态回退文案）同样写明"账只记服务端搬过的
+  字节"。行为本身没有改：现有测试已经钉住了"访客回报直连时服务端不中继"（`p2p_relayed` 为 0），
+  这次修的是文档与面板的说法。
+- **`sudp` 代理转发的数据报不计入任何计数器**。`aethertunnel_udp_datagrams_total` 的说明是
+  "转发的 UDP 数据报"，`docs/CONFIGURATION.md` 的指标表也这么写，但实际上只有 `udp` 代理的数据报泵
+  在加它（`startUDP` 里 `OnDatagram` 那个回调）；`sudp` 访客走的是 `relayDatagrams`，那条路上一个
+  计数都没有，于是只搬数据报的 `sudp` 代理在 Prometheus 里恒为 0，而字节计数在涨——看这个序列的人
+  会读成"隧道没在干活"。现在 `relayDatagrams` 收一个 `onDatagram` 回调，`pipeDatagrams` 用它把每个
+  转发的数据报计进 `udpDatagrams`，与 `udp` 代理的语义一致（双向各计一次）。指标说明与
+  `docs/CONFIGURATION.md` 一并写清：这一条覆盖 `udp` 与 `sudp`，socks5 出口的数据报有它自己那条
+  `aethertunnel_socks5_udp_datagrams_total`；`aethertunnel_udp_sessions_active` 仍然只反映 `udp`
+  代理按来源地址维护的会话（`sudp` 的访客是一条独立的流，不进这个数）。回归测试在
+  `TestSUDPVisitorRelaysDatagrams` 里断言一次往返之后计数至少为 2；去掉那个回调会失败
+  （`aethertunnel_udp_datagrams_total is 0 after one datagram round trip, want at least 2`）。与
+  同类的 `streams_total` 那一条一样，这一处只加在集成测试里：功能套件已经用真实二进制覆盖了
+  `sudp` 访客搬数据报这一段，而计数器本身在进程内就能断言，不必再多一项检查。
+- **访客连接与三层路由的协程没有 panic 防护，一个坏输入能带走整个进程**。`docs/SECURITY.md` 的资源
+  表写着"每个连接的处理器带 `recover`，panic 只关掉那条连接"，而实际上只有控制连接那条路径
+  （`Server.handleConn`）有这道防护：`acceptLoop` 为每个访客 `go g.serveVisit(conn)`，那条协程上
+  没有任何 recover，三层路由的读循环（`go router.Run(ctx)`）与每个对端的收/发方向（`Peer.serve`
+  里各起一条协程）同样没有。上一版修掉的那个空 IP 包 panic 正是因为这个原因才是**进程级**的：包从
+  客户端的控制连接进来，但 `Validate` 跑在路由的对端协程上，`handleConn` 的 recover 够不到它。
+  现在这三处都加了防护，语义与既有的那道一致：`serveVisit` 记一行日志并关掉这条访客连接；
+  `Router.Run` 记数并返回一个说明 panic 的错误（此前调用方会永远等下去，因为 goroutine 带着
+  panic 死掉、`done` 上什么也不会来）；对端的收发方向各自记数并结束，`serve` 随即摘掉那个对端、
+  释放它的地址，其余客户端的隧道不受影响。回归测试
+  `TestVisitorHandlerSurvivesAPanic`、`TestStreamVisitorHandlerSurvivesAPanic`（把 `Read` 会
+  panic 的连接交给 `serveVisit`，它必须正常返回）、`TestRouterRunSurvivesADevicePanic` 与
+  `TestPeerLoopPanicDetachesOnlyThatPeer`（后一个还断言同路由上另一个对端仍在、被终结的地址可以
+  被下一个会话重新占用）；去掉任意一道防护，对应的测试都会 panic 并带走测试进程。
+- **空 IP 包让 `vpn.Validate` 越界 panic，整进程退出**。`Validate` 用 `Version(packet)` 分发，而
+  `Version` 对空切片返回 0（长度不够，读不出首字节的版本 nibble），落到 `default` 分支后那句
+  `fmt.Errorf(..., packet[0])` 去读一个不存在的字节——`index out of range [0] with length 0`。
+  这条路径是**对端可达**的：`[vpn]` 启用时，控制连接上的 `TypeVPNPacket` 帧由
+  `transport.Deliver(msg.Payload)` 直接送进隧道，而 `ReadFrame` 对长度为 0 的帧给出的 payload 是
+  nil，于是 `Peer.receiveLoop`/`transportToDevice` 调 `Validate` 时进程崩掉。服务端 879 行那处没有
+  任何长度检查，所以一个拿到隧道地址的客户端发一个空 payload 的帧就能带走整个服务端（连同上面所有
+  其它隧道）；反过来服务端也能用一个空帧让客户端崩。现在 `Validate` 对空包返回
+  `ErrMalformedPacket`（"the packet is empty"），与其它畸形包一样只记一次丢弃并继续。回归测试：
+  `TestValidateAcceptsIPv6AndRejectsNonsense` 增加 `Validate(nil, …)` 与 `Validate([]byte{}, …)`
+  两例；`TestTunnelDropsPacketsThatAreNotValidIP` 从**对端方向**投递一个 nil 包，断言它被丢弃、进程
+  存活、计数加一。去掉这个判断会 panic（`index out of range [0] with length 0`）。
+- **socks5 出口会把一个含方括号的域名当作目标发出去**。`ReadRequest` 与 `ParseUDPDatagram` 把
+  域名地址（ATYP=3）的字节和端口拼成 `host:port` 用的是 `net.JoinHostPort`，而它只给**含冒号**的
+  主机加方括号：域名 `a[` 会拼成 `a[:80`，这个串再用 `net.SplitHostPort` 是拆不开的
+  （`unexpected '[' in address`）。目标串在本项目里处处用 `SplitHostPort` 读——服务端拿它比对代理的
+  `allow_targets`、隧道另一头的客户端按它解析并拨号、应答再原样带回——所以一个访客只要发一个域名
+  里带 `[` 的 CONNECT，服务端就会先把请求送进隧道、开出一条数据连接，客户端再回一句"目标不是
+  host:port"：白开一条流，错误还指向客户端自己的解析。现在两处拼接都走 `joinHostPort`，含 `[` 或
+  `]` 的主机在此被拒（`ErrBadAddress`，CONNECT 回 `ReplyAddressNotSupported`）。这两个字节本来
+  就不可能是主机名的一部分，所以拒它不会拒掉访客真正想要的目标；会被加方括号、拆回来仍然是原样的
+  名字（如 `a:b`）照常通过。回归测试
+  `TestReadRequestRefusesADomainThatCannotBeHostPort`（两种命令 × 四个名字）、
+  `TestParseUDPDatagramRefusesADomainThatCannotBeHostPort` 与
+  `TestReadRequestResolvesTheAmbiguousDomainForms`（`a:b`、`example.com`、`xn--…` 都照常解析且
+  拆得开）；去掉这个判断，下面的 fuzz 语料会失败。
+- **网络入口的解析器此前没有任何模糊测试**。新增 14 个 fuzz 目标，覆盖本项目里所有**直接吃不可信
+  字节**的解析器：`pkg/protocol` 的 `FuzzReadFrame`（控制端口，握手之前就能到）、
+  `FuzzDecodePunchRequest` 与 `FuzzDecodePunchResponse`（会合端口，服务端唯一没有握手挡在前面的
+  端口）、`pkg/socks` 的 `FuzzReadRequest` 与 `FuzzParseUDPDatagram`（公开的 socks5 端口，CONNECT
+  与 UDP ASSOCIATE 各一条）、`pkg/dht` 的 `FuzzDecode`（UDP 端口）、`pkg/vpn` 的 `FuzzValidate` 与
+  `FuzzSetIPv4Checksum`（对端写入的每个 IP 包）、`pkg/crypto` 的 `FuzzSchnorrVerify`（访客的 NIZK
+  证明，从帧里直接读一个 P-256 点和一个标量）、`FuzzHybridServerFinish`（认证之前就解析的 X25519
+  与 ML-KEM 公钥）、`FuzzCipherOpen`（开着加密时每个帧都要过的解密）与 `FuzzVerifyIdentity`（身份
+  断言），以及 `pkg/obfs` 的 `FuzzRecordRead`（伪装流的记录读取）与 `pkg/reliable` 的
+  `FuzzParseSegment`（打洞传输的数据报解析）。这些目标都带断言：解析成功的地址必须是可还原的
+  `host:port`、解码出的 token 长度必须正确、`Validate` 接受的包必须版本可读且地址可解析、写好的
+50→  IPv4 头校验和必须验证通过、验证通过的 Schnorr 证明换个上下文必须失败、协商成功的会话密钥长度
+  必须是 32、解开的密文不会比输入长、解析出的数据报负载必须正好是去掉帧头与 MAC 之后的尾部。每个
+  目标另有测试期用的内存 `net.Conn`（`fuzzConn`），因为用 `net.Pipe` 时解析器提前返回会让写端永久
+  阻塞，一次一泄漏的 goroutine 会在找到问题之前先耗尽内存。
+  上面第一条修复是 `FuzzValidate` 的种子语料（一个空包）在跑基线覆盖时就直接 panic 出来的；两条
+  socks5 修复是 `FuzzReadRequest` 与 `FuzzParseUDPDatagram` 跑出来的，那两条失败输入已作为语料留在
+  `pkg/socks/testdata/fuzz/`（`go test ./...` 会把语料当普通用例重放，所以它们不会再溜回来）。
+  `pkg/crypto`、`pkg/obfs`、`pkg/reliable` 这几个新增目标各跑 40 秒、其余各跑 45 秒后全部通过，
+  没有再找到问题。CI 的 Linux 作业新增一步，对每个目标跑 10 秒的有界模糊测试。
+- **数据报泵在关闭与建链竞态时会漏掉会话记账、漏掉数据连接**。`pkg/net` 的 `DatagramPump` 有两处：
+  一是 `deliver` 把新会话插进 `sessions` 并解锁之后才调 `OnSession(1)`，若此时泵正在关闭，关闭会先
+  把该会话算进快照、调用 `OnSession(-1)` 并把它移出，随后那句 `+1` 就永久留在
+  `aethertunnel_udp_sessions_active` 上（面板与指标从此多一个并不存在的会话）；现在 `+1` 与插入
+  会话在同一把锁里完成，关闭要么看不到这个会话、要么在 `+1` 之后再减一。二是建链在别的 goroutine
+  里开数据连接，若会话在连接开好之前就已结束（关闭、空闲回收、首次写失败），`closeFramers` 早已跑
+  过且当时没有路径可关，`establish` 却仍把后到的路径装进会话——那条数据连接、以及读它的 goroutine
+  就再也没人关；现在 `setFramers` 在会话的锁下检查会话是否已结束并如实返回，`establish` 对返回
+  假的情况当场关闭刚开的路径。顺带把 `sessions` 映射的创建从 `Run` 的 goroutine 挪进 `Start`：它
+  原来在锁外赋值，而 `Sessions()`、`Shutdown()`、`deliver()` 都在锁内读同一个字段，启动后立刻读
+  就是一个数据竞争。回归测试 `TestDatagramPumpIgnoresDatagramsAfterShutdown`（关闭后再投递一个
+  数据报，会话数、会话计数与已开连接都必须是 0）与
+  `TestDatagramPumpClosesThePathsOfASessionThatEndedWhileTheyOpened`（让 `Open` 阻塞，先关闭再放行，
+  断言那条路径被释放、会话计数回到 0）；去掉关闭保护会失败（`the session gauge is 1 after a datagram
+  arrived post-shutdown, want 0`），让 `setFramers` 无条件接受会失败
+  （`the path opened for a session that had already ended was never released`）。
+- **udp 代理的数据报会话被当成"流"计数**。`ProxyGroup.recordSession` 在会话结束时调
+  `metrics.recordStream`，于是 `udp` 代理每释放一个数据报会话，`aethertunnel_streams_total` 与
+  `aethertunnel_tunnel_streams_total{tunnel}` 就各加一——一个只搬数据报、从没建过流的代理，
+  面板与告警里的"累计流数"却在涨。同一项目里另外两条数据报路径（`sudp` 走 `pipeDatagrams`、
+  socks5 UDP ASSOCIATE 走 `pipeSocksUDP`）都调 `recordDatagramSession`（只计双向字节、不碰流数），
+  文档（`docs/MIGRATION.md`、`docs/CONFIGURATION.md`）也写明"数据报不计为流、`streams_total` 不受
+  影响"，只有 `udp` 这一条不一致。现在 `recordSession` 改成 `recordDatagramSession`：字节照记，
+  流数不动。回归测试 `TestUDPTunnelSessionCountsBytesWithoutCountingStreams` 起一个 `udp` 代理、
+  搬一个数据报往返（把 `read_timeout_seconds` 调成 1 秒让空闲会话尽快释放并记账），断言字节计数
+  涨了而 `streams_total` 与按隧道的流数都是 0；改回 `recordStream` 会失败
+  （`aethertunnel_streams_total is 1 after a datagram session, want 0`）。
+- **socks5 UDP 中继不限制并发目标套接字**。客户端按每个目标缓存一个 UDP 套接字，直到空闲超时
+  才关；socks5 端口是公开的，一个访客可以发 UDP ASSOCIATE 后朝 `allow_targets` 里的成百上千个
+  不同地址各发一个数据报，把客户端的文件描述符耗尽（连带的其它隧道也会跟着打不开新流）。现在中继
+  把套接字缓存封顶在 256（`maxSocksUDPTargets`），超了就逐出**最久没用**的那个目标；逐出发生在新
+  目标加入、且只在新加入时才检查，所以活跃目标不会被误逐。回归测试
+  `TestSocksUDPRelayEvictsTheLeastRecentlyUsedTarget` 用一个 cap=2 的中继验证：加第三个目标后
+  缓存仍是 2，被逐出的是最久没碰的那个、刚碰过的和新加的都在；把逐出改成空操作会失败
+  （`holds 3 sockets after adding a third, want 2`）。
+- **IPv6 地址在拼端口时没有加方括号**。`config.go` 里七个拼地址的函数（`ProxyConfig.LocalAddr`、
+  `VisitorConfig.ListenAddr`、`Config.ListenAddr`/`HTTPAddr`/`HTTPSAddr`/`P2PAddr`/`DashboardAddr`）
+  用 `fmt.Sprintf("%s:%d", …)` 把主机和端口接起来：IPv4 没问题，IPv6 的 `::1` 会变成 `::1:7001`
+  ——一个多义的串，`net.Listen`/`net.Dial` 直接报"too many colons"或拨错地址。实测 `bind_addr = "::1"`
+  的服务端能起，但客户端拨 `[::1]:…` 之前，服务端自己已经拼出 `:::7001` 这样绑不上的地址。现在这七个
+  函数都改用 `net.JoinHostPort`（`::1` → `[::1]:7001`）。同一处还有一个自定义 `splitHostPort` 用
+  `strings.LastIndex` 找冒号，把 `[::1]:7001` 的 host 拆成带括号的 `[::1]`，作为 TLS `ServerName`
+  就是错的（x509 按 IP SAN 匹配用的是裸 `::1`）；它也换成 `net.SplitHostPort`。另外 `[dht]` 的
+  `advertise_host` 校验用 `strings.Contains(host, ":")` 判端口，会把裸 IPv6 地址误判成带端口；
+  现在改成 `net.SplitHostPort` 成功才判为带端口，裸 IPv6 地址能过校验（`serverAddrFor` 本来就能
+  给 IPv6 加方括号）。单测覆盖七种拼地址、TLS ServerName 去括号、裸 IPv6 advertise_host 三个点；
+  另用真实二进制在 IPv6 回环上走了一遍"服务端 `::1` 起、客户端 `[::1]:…` 连、访客 `::1` 搬字节"。
+- **http/https 反向代理转不动 WebSocket 之类的协议升级，转动的字节也不进账**。`serveHTTP` 把
+  访客的 `http.ResponseWriter` 包进 `countingResponseWriter`（用来数应答字节），但这个包装只实现
+  `Write` 与 `Flush`，没有暴露底层的 `Hijacker`；`httputil.ReverseProxy` 处理 `101 Switching
+  Protocols` 时要用 `http.ResponseController.Hijack()` 把访客连接拿过去做双向字节拷贝，拿不到就
+  走错误处理器返回 `502 Bad Gateway`（实测一个 `Upgrade: test` 的请求得到 502）。现在包装自己实现
+  `Hijack()`：把底层 writer 的 `Hijacker` 暴露出来、把拿到的 `net.Conn` 再包一层 `hijackedConn`
+  数双向字节，升级路径就能拿到连接并原样转发，而且升级后的字节照常计入 `recordHTTPTraffic` 的
+  双向计数（指标、账本、面板三者读的是同一个数）。回归测试
+  `TestHTTPProxyCarriesAProtocolSwitch` 起一个会答 `101` 的后端，经共享 HTTP 端口走一遍
+  `Upgrade: test` 再搬字节并断言这些字节进了计数：去掉 `Hijack` 会失败
+  （`got "HTTP/1.1 502 Bad Gateway"`），去掉劫持后的字节计数会失败
+  （`the upgraded bytes were not counted: in=0 out=0`）。
+- **http 代理对 chunked 请求体记零**。`serveHTTP` 用 `r.ContentLength` 数访客发来的请求体，而
+  chunked（无 `Content-Length`）请求的 `ContentLength` 是 -1，于是整个上传在账本、指标、面板里都是
+  0 字节（实测一个 4096 字节的 chunked POST 被记成 `out=0`）。现在把 `r.Body` 包一层
+  `countingReadCloser`，按**实际读走的字节**记账，不再看 `ContentLength`；`read` 用原子计数，因为
+  HTTP 传输在它自己的 goroutine 里读请求体。回归测试 `TestHTTPProxyCountsAChunkedRequestBody`
+  起一个会读请求体的后端、经共享 HTTP 端口发一个 chunked POST 并断言后端收到全部 4096 字节、
+  组计数器也记了 4096；改回按 `ContentLength` 记账会失败（`out=0, want 4096`）。
+- **侧边栏的可访问名是唯一一句写死在 HTML 里的话，切换语言后只有它还是英文**。其余每一处
+  文案都在两份字典里（`data-i18n`/`data-i18n-label`/`t()`），`applyI18n()` 会在切换时把
+  `aria-label` 一并改写；而导航那一行写的是 `aria-label="Sections"`，没有走字典。实测
+  （真实 Chrome，读**无障碍树**而不是 DOM 属性）：英文模式下导航的名字是 "Sections"，切到中文后
+  其余控件都变成「概览」「代理」「客户端」「配置」「语言」「退出登录」「跳到主要内容」，
+  **导航仍叫 "Sections"**——用屏幕阅读器的人会在一屏中文里听到一个英文词，而它正是这一组链接的
+  组名。现在改成 `data-i18n-label="nav.sections"`，两份字典各加一条（`Sections` / 「栏目」）。
+  回归检查在无障碍树里比对两种语言下导航的名字，把那一行改回写死的版本会让它失败
+  （`the navigation's accessible name follows the language switch -> want true got False`）。
+- **切换语言后，屏幕上的两条横幅仍停在切换前的语言**。控制台把每一句文案都放在两份字典里
+  （`data-i18n` 属性与 `t()`），切换语言时重画状态、表格、计数与连接徽标——但错误横幅与
+  「连接断开 — 正在重试」横幅不在其中：前者由 `showError` 直接写入**已经格式化好的句子**，后者
+  在 `setConnected` 里写。实测（真实 Chrome，DevTools 协议；先让浏览器把 `/api/config` 判为
+  失败，再切换语言）：错误横幅仍是 `Failed to load /api/config: boom`，而同一屏的连接状态已经是
+  「已连接」、客户端计数已是「已连接 1 个」。轮询路径上的两条横幅（`err.status`/`err.clients`）
+  最多错 2 秒就自我修正，**配置页的那一条不会**——配置加载不在轮询路径上，除非用户重新点一次
+  刷新，它会一直停在旧语言。现在横幅以**生成它的键与参数**保存在状态里（`state.lastError`），
+  连接横幅抽成 `renderConnBanner()`（这样重画不会像一次成功的请求那样顺手改写 `lastSuccessAt`），
+  切换语言时两条都按新语言重画、保留服务端给的原因原文。回归证据：把语言切换里那两行重画删掉，
+  浏览器检查里对应两项失败（`the banner follows the language switch -> want true got False`、
+  `the disconnected banner follows the switch -> want true got False`）。
+- **首帧不是可用请求时，服务端会回答、却什么都不记**。`handleConn` 只看首帧类型：认证请求的
+  载荷解不开、或首帧类型不能开局（例如心跳）时，服务端都会**回答一句再关闭**——前者回
+  `"malformed auth request"`，后者回 `"first frame must be ... got ..."`——但这两次拒绝不增加任何
+  计数器、不写审计，而前者连一行日志都没有（后者至少有日志）。实测（无加密、开着审计与指标，
+  向控制端口先后发三个解不开的认证请求）：`aethertunnel_control_rejected_total` 仍是 **0**、审计
+  文件 **0** 行、服务端日志 **0** 行，客户端却每次都拿到明确的拒绝。于是一台服务器完全无法得知
+  有人在拿垃圾帧扫它的控制端口，而同一个计数器在别处的注释是"不关心原因时看的那条"，
+  `guard_test.go` 里也写着"每条在握手前拒绝连接的路径都必须移动它"。现在这两条路径都走
+  `refuseControl`：计入汇总的 `aethertunnel_control_rejected_total`、写一条审计
+  `control_rejected`（`detail` 说明是"载荷解不开"还是"这个类型不能开局"）、留一行日志；另外新增
+  `aethertunnel_unusable_request_frames_total` 单独计这两种帧——与上一轮为 socks5 出口加
+  `aethertunnel_socks5_malformed_requests_total` 同一个理由：协议垃圾与策略拒绝应当分得开。同一轮
+  还补上另外三条**同样有回答、却什么都没记**的握手拒绝路径：`post_quantum` 要求密钥交换而客户端
+  没给（此前没有计数、没有审计、也没有日志）、抗量子协商失败（此前没有审计记录）、会话密钥不可用
+  （此前只有日志）。回归测试 `TestAnUnusableFirstFrameIsRefusedAndCounted`（两条路径的计数、审计，
+  以及"被拒绝的不算已接受"）与扩写后的
+  `TestPostQuantumServerRefusesAClientWithoutAKeyExchange`（拒绝也要进汇总与审计）；套件里新增一组
+  6 项，把 `refuseFirstFrame` 改回空操作会让其中 5 项失败
+  （`both unusable first frames are counted on their own -> want '2' got '0'`、
+  `an unusable first frame also moves the shared rejection counter -> want '6' got '4'`）。
+  指标表里 `aethertunnel_control_rejected_total` 的含义与新增序列一并更新。
+- **`aethertunnel_visitors_denied_by_proxy_total` 把三种东西算成一个数，而它的说明只写了其中一种**。
+  这个计数器实际统计：被**服务端**为某个名字定的策略拒绝的访客、被**代理自己的**名单拒绝的访客，
+  以及**在 socks5 出口上发了一句不是 SOCKS5 请求的内容**的连接。它的帮助文本只写"refused by a
+  proxy's own allow/deny lists"（漏了服务端策略那一半），而 `CONFIGURATION.md` 明确写着服务端策略
+  的拒绝要计入这个计数器——两边说法不一致；至于"不是 SOCKS5 请求"那一种，两份文档都没提。实测
+  （一个名字带服务端 `deny_cidrs`、一个代理带自己的 `deny_cidrs`、再向 socks5 出口发一句垃圾）：
+  打开的正常代理 200、计数器不动；两次策略拒绝都是 403 且各 +1；那句垃圾也让计数器 +1，而它并
+  不是任何名单拒绝的访客。现在把协议错误拆成自己的序列
+  `aethertunnel_socks5_malformed_requests_total`（审计与日志里本来就有那行拒绝记录），并把两个
+  策略来源都写进帮助文本与指标表——按"被策略拒绝"与"有人在往端口里灌垃圾"分别告警，是运维真正
+  需要区分的事。套件里新增一组（见下）覆盖这两侧加这一种连接，把这次改动改回去会让它报
+  `a connection that is not a SOCKS5 request is counted on its own -> want '1' got '0'`。
+- **`latency` 与 `adaptive` 会把每一次访问都押在"从未应答过"的成员上**。`dialLatency` 只在成功
+  开流时写入，因此本地服务已下线的成员永远是 0；而 `latency` 比较的是最小值、`adaptive` 的
+  `cost()` 把"未测量"记为 0（原意是"先试它一次，好让新成员有机会被测量"），于是一个永远失败的
+  成员每一次都比会应答的成员更"便宜"。实测（30 次访问、两名成员、其中一名的本地服务无人监听、
+  池的端点从面板读回而不是假定）：`latency` 浪费 **31** 次、`adaptive` **30** 次，而
+  `round-robin` 是 15 次、`random` 13–16 次、`bandit` 4 次、`failover` 0 次——两个"按延迟选"
+  的策略反而最差，与它们文档里的说法相反。现在**已经失败且从未应答**的成员排在所有被测量过的
+  成员之后（`neverAnswered`），而"未测量且尚未失败"仍然优先——后者是新成员被测量到的方式，也是
+  `strategy_test.go` 里既有的断言（`TestLatencyStrategyKeepsChoosingTheFasterMember` 明确要求
+  未测量的成员必须被试用）。修复后同一实验里两者各浪费 **2** 次（首次访问时谁都没有测量值，加上
+  下面那次探测）。回归测试 `TestAMemberThatFailedWithoutAnsweringWaitsBehindTheOthers` 在修复前对
+  两个策略都失败、修复后通过；套件里对应的端到端一组把规则换回旧版，会报
+  "9 wasted attempt(s) in 10 visits"（探测那一步的证据见下一条）。
+- **只把"从未应答过"的成员排到最后，会把恢复过来的成员永久埋掉**。接上一条：排序本身解决不了
+  恢复问题——那个成员没有测量值可供惩罚，只要还有成员应答，它就永远排在后面。实测：一名成员的
+  本地服务下线、随后又起来，30 次访问里它被用到 **0** 次，而这与 `cost()` 上那句"惩罚有上限，
+  否则一个长时间故障的成员永远回不来"的注释相矛盾（上限只对**测量过**的成员生效）。因此
+  `latency` 与 `adaptive` 现在每 20 次选择用一次探测去问那个成员（`neverAnsweredProbeEvery`；
+  探测用**独立的计数器**，否则 `adaptive` 自己的轮转计数器会让探测节奏漂移，这一点是写单元测试
+  时才发现的）。恢复后它会被重新纳入（30 次访问里 1 次），代价是那一次探测可能失败：同一实验里
+  这两个策略 30 次访问浪费 2 次，仍是 `round-robin`（15 次）的七分之一。单元测试断言 40 次选择
+  里那个成员恰好被选 2 次；套件里的端到端一组把探测关掉就会报 "it served none of 25 visits"。
+- **Windows 构建脚本写出的 `SHA256SUMS` 无法被校验**。两个发布脚本写出的校验和文件形状不同：
+  `scripts/build-release.sh`（发布流水线在 Linux 上用的那个）按 `sha256sum ./*` 的写法把条目
+  写成 `./<文件名>`、行尾是 LF；而 `scripts/build-release.ps1`（给没有 make/POSIX shell 的
+  Windows 机器用的）写成裸文件名、行尾是 CRLF。`scripts/verify-release-linux.sh` 认不出后者：
+  它按 `(^|/)<名字>$` 查条目，裸文件名前面没有 `/` 所以不匹配，行尾的 CR 又让 `$` 锚点失效，
+  两种情况它都报成 "want ''"——看起来像哈希不符，实际是根本没查到条目。现在 `.ps1` 写出与
+  `.sh` 相同形状的文件（`./` 前缀、LF 行尾），`verify-release-linux.sh` 也接受两种写法并容忍
+  CRLF，查不到条目时给出明确信息而不是空的期望值。这条差异此前没被发现，是因为流水线只用
+  `.sh` 构建、从不执行 `.ps1`。
+- **`go.mod` 把直接依赖标成了间接依赖**：`golang.org/x/sys` 标着 `// indirect`，但
+  `pkg/vpn/device_linux.go`（`//go:build linux`）直接导入 `golang.org/x/sys/unix`。这个标记
+  是此前在 Windows 上跑 `go mod tidy` 留下的——那里只有 `device_other.go` 参与编译，`unix`
+  不算直接依赖。在 Linux 上 `go mod tidy` 会去掉它，于是同一个文件在两个平台上互相打架：
+  谁跑一次 `make tidy`，谁就留下一个看起来"多余"的改动。这里按 Linux 的结果保留（发布流水线
+  与 CI 都在 Linux 上构建），并记下原因，免得下次在 Windows 上又被改回去。
+- **`docs/PLATFORMS.md` 说 CI 里没有 arm64 的执行作业，但作业早就在**：`.github/workflows/ci.yml`
+  的 `test-arm64`（`runs-on: ubuntu-24.04-arm`）会跑 `go vet`、`go test ./...`、构建两个二进制、
+  用随发布的示例配置做 `--check`、打印版本，并在真机 arm64 上真的传数据。该文件 2026-09-24
+  更新时仍写着"CI 里还没有 arm64 的执行作业"，把已经做到的证据说小了；结论表与第 4 节已按实际
+  作业改写，并写明 CI 那一栏跑到的是哪几项、和 70 项的那组数字不是同一套。
+
+- **配置页的数值不跟随语言切换**。标签是 `data-i18n`，切换语言时会被重画，但「加密已启用 /
+  需要令牌 / 隧道状态」这几格是渲染时用 `t()` 取过一次的 `yes`/`no`，切到中文后仍停在英文，
+  直到用户按一次刷新或重新打开配置页。前几轮修过的横幅、账本、目录都是同一个毛病，只有配置页
+  漏了。这一轮在一条**活的**隧道上用真实浏览器抓到的：`the configuration values follow the
+  language switch -> want ['否','是','是'] got ['no','yes','yes']`；把最后一份配置响应留在状态里、
+  切换语言时重画之后，同一项通过（同一台部署、同一个检查器，只有面板重新编译过）。
+- **面板检查器在没有已注册代理的部署上会误报**。卡片版式那两项要求「一行里的每个单元格都是卡片
+  块」，桌面那两项要读一个单元格的计算样式；一个只跑着 `[vpn]`、没有任何客户端注册代理的部署
+  没有这样的行，前两项于是失败、后一项直接对 `null` 调用 `getComputedStyle` 抛异常。现在与行有关
+  的断言在没有行时打印 `SKIP`，桌面那段也不再读一个不存在的单元格。这个是拿检查器去核对隧道
+  面板时发现的——套件自己的部署永远有代理，所以此前看不见。
+
+- **`--dht-lookup` 把查询节点绑在回环地址上，换一台机器解析就永远收不到回答**。
+  `LookupProxy` 写死了 `settings.ListenAddr = "127.0.0.1:0"`，那里的注释只说"别占用配置里那个
+  端口"——端口是对的意图，主机被顺带写成了回环。Kademlia 的对端把回答发给**请求的源地址**，
+  源地址是 `127.0.0.1` 时回答被送回对端自己的回环地址：同一台机器上照常通过（套件里所有 DHT
+  检查都在 127.0.0.1 上，所以一直没暴露），换一台机器一定超时。这是把 `deploy/kubernetes/`
+  真的 apply 到一个 k3s 集群后发现的：集群里另一个 pod bootstrap `10.42.0.23:7003` 只得到
+  `dht: request timed out`。现在绑 `0.0.0.0:0`，源地址交给路由决定，同一个集群里的同一个查询
+  随后解析出 `kubernetes-probe -> aethertunnel.aethertunnel.svc.cluster.local:18080`。单测
+  `TestLookupProxyQueriesFromAnAddressTheAnswerCanReach` 用一条只记录源地址、从不回答的裸
+  socket 把这条钉住：改回回环绑定会失败并打印
+  `the request came from 127.0.0.1:47794, an address only a node on this machine answers`。
+- **Service 没有发布 DHT 的 UDP 端口，而 ConfigMap 指向的正是它；补上时又发现端口号不能重复**。
+  Deployment 声明了 `containerPort: 7001/UDP`（DHT），ConfigMap 让 DHT 听在 7001，
+  `dht.advertise_host` 写的是 Service 的集群内域名，而 Service 只发布了 7001/TCP、7002/UDP、
+  7500/TCP——集群里另一个 pod 用 ClusterIP 去 bootstrap DHT 只会拿到 `dht: key not found`，
+  集群外的客户端更是无从加入。补这个端口时撞上第二件事：Service 的端口列表按 `port`（数字）合并，
+  控制端口已经是 7001，于是 `kubectl apply` 把两条 7001 当成同一个条目——**实测先 apply 旧清单、
+  再 apply 带 `dht 7001/UDP` 的新清单，命令报 `configured`，控制端口却从活对象里消失了**，再
+  apply 一次也修不回来（`kubectl apply` 不会重新添加它认为两边都没变的条目）。因此 DHT 挪到
+  **7003/udp**（ConfigMap、Deployment、Service 与 `Dockerfile` 的 `EXPOSE` 四处一致），并加单测
+  `TestTheServiceGivesEveryPortItsOwnNumber`：同一个 Service 里任何两个端口的数字重复、或
+  ConfigMap 绑了一个 Service 没发布的端口，都直接失败。修好之后的升级路径也实测过：先 apply
+  旧清单再 apply 新清单，四个端口都在，控制端口不再丢。
+- **ConfigMap 里 `ban_ignore_cidrs` 的注释说错了它保护的东西**。原文写着"never ban the kubelet's
+  probe address"，但封禁列表只由**控制端口**的握手失败喂饱（`recordAuthFailure` 只在控制端口的
+  处理函数里被调用），kubelet 的探针打在面板的 HTTP 端口上、走面板自己的令牌比对，根本不进这个
+  列表。那句话把读者引向一个不存在的风险；真正被 `127.0.0.1/32` 保护的是 pod 内部连
+  `127.0.0.1:7001` 的客户端。注释改成实测到的事实。
+
+- **套件里的 ConfigMap 一节把 DHT 端口写死成 7001，改了清单之后它会去绑清单里那个号**。把
+  DHT 挪到 7003 之后，那一节的改写规则（把 `listen_addr = "0.0.0.0:7001"` 换成一个空闲端口）
+  不再匹配，被抽查的服务端于是直接去绑清单里写的 7003：单跑一次看不出来（7003 恰好空着），
+  两套套件同时跑就撞成 `listen udp 0.0.0.0:7003: bind: address already in use`——实测 arm64
+  服务端那一对因此 5 项失败。现在规则按"ConfigMap 给 DHT 的那个号"匹配（`0\.0\.0\.0:\d+`），
+  与清单里写几号无关。
+
+- **`scripts/kubernetes-linux.sh` 跑完留下的东西比它说得多**。第一版只做到"杀掉 k3s 进程组、
+  删掉工作目录"，看上去干净；把 `containerd-shim`、`ip netns`、veth、`/run/k3s` 与
+  `/var/lib/rancher/k3s` 一项项列出来之后才看到：每跑一次留下两个 pod 的网络命名空间、两个 veth、
+  两个 shim 进程和 containerd 的运行时目录——k3s 被杀掉之后 pod 的 sandbox 会活下来，而
+  `/run/k3s` 里它留下的 overlay 挂载让目录也删不掉（`设备或资源忙`）。现在先让集群自己删掉 pod
+  （containerd 顺手把 sandbox、命名空间与挂载收走），再按"这次跑之前有哪些"的差集清掉残留，
+  最后卸载 `/run/k3s` 下的挂载再删目录。**第一版这么做之后仍有一个进程活下来**：容器自己的进程
+  （`/usr/local/bin/aethertunnel-server`）不是 sandbox、也不叫 `pause`，杀掉 shim 之后它连着自己
+  的网络命名空间一起留着；它所在的 `/proc/<pid>/cgroup` 写着 `/kubepods/burstable/pod<uid>/…`，
+  而机器上只可能有这一个集群（脚本在已经有 k3s 在跑时直接退出），于是把落在 `kubepods` 里的进程
+  一并收掉。k3s 自己解包的运行时只在这次跑之前不存在时才删。实测跑完：容器进程 0、sandbox 0、
+  shim 0、命名空间 0、veth 0。
+
+### 新增
+- **socks5 出口补上 UDP `ASSOCIATE`**：此前 `pkg/socks` 只实现 `CONNECT`，`UDP ASSOCIATE` 与
+  `BIND` 一起被拒（`only the CONNECT command is supported`）。现在访客可以走标准 SOCKS5 UDP：
+  服务端在 socks5 TCP 端点上接受 `UDP ASSOCIATE`，开一个 UDP 中继、把它的真实地址写回应答
+  （`WriteReplyBound`），再把每个按 RFC 1928 §7 包好的数据报原样经隧道转发给客户端；客户端用
+  `ParseUDPDatagram` 取出每个数据报自己的目标，按 `allow_targets` 拨号并发送数据，用
+  `WrapUDPDatagram` 把应答包回去。中继只收**建立该关联的那个来源地址**的数据报（除非访客在
+  请求里写了具体地址），所以别的来源不能往一个访客的关联里注包。`BIND` 仍被拒。两个新序列
+  `aethertunnel_socks5_udp_associations_total` 与 `aethertunnel_socks5_udp_datagrams_total`
+  分别计关联数与双向转发的数据报数。单测覆盖 `socks` 包的封装/解析/边界地址回写，集成测试用一个
+  真 UDP 回显服务走完整条 `ASSOCIATE → 发数据报 → 收应答` 的路径，另有一条断言来自另一来源的
+  数据报被丢弃；客户端的中继逻辑也在 `client` 包里有单独测试。`scripts/functional-linux.sh` 也补了
+  三项（中继搬一次数据报、关联计数、双向数据报计数），套件因此长到 281 项（无浏览器时 138 项）。
+  协议只给 `DataRequest` 加了一个可选字段（`socks_udp`），帧布局与消息集合不变，`ProtocolVersion` 仍为 4。
+- **`deploy/kubernetes/` 第一次被 apply 到一个真集群上**（`scripts/kubernetes-linux.sh`，
+  **14 项全过**，本机一次 72 秒）。此前清单只在 CI 里被 `kubectl kustomize` 渲染过，而渲染出来的
+  YAML 不会告诉你 Service 有没有把 pod 的端口发布出去、探针会不会通过、状态卷能不能写。脚本起一个
+  自己的单节点 k3s（数据目录落在工作目录里，`--disable coredns,local-storage,metrics-server,
+  servicelb,traefik`，不碰机器上已有的任何东西），用仓库里的两个二进制搭出清单点名的那个镜像，
+  apply 之后从集群外驱动它：Deployment 自己声明的探针通过；`/healthz`、`/readyz` 200；
+  `/api/status` 不带令牌 401、带 Secret 里的令牌 200 且 `auth_required` 为真；`/metrics` 不带
+  令牌 401；一个客户端用 Secret 里的令牌把本地服务发布到 18080，访问者的字节穿过
+  Service → pod → 隧道再回来；面板列出这条代理；会话结束后带宽账本里出现条目（容器根文件系统是
+  只读的，读得回来才说明它写进了 Deployment 挂的状态卷）；DHT 既从集群内的 ClusterIP 解析出名字，
+  也从集群外的 NodePort 解析出名字。清单里那个镜像的基础镜像在这台机器上拉不到，所以用的是按
+  `Dockerfile` 的运行时契约（同一路径的静态二进制、uid 65532、同样的工作目录、入口与命令）搭的
+  替身，脚本会把这一点打印出来——**这不是那个 Dockerfile 的验证**，它由 CI 负责。脚本需要 root、
+  可用的 docker daemon 与一个 k3s 二进制，缺任一即打印缺什么并以 0 退出；跑完把集群、镜像与工作
+  目录都清掉（`--keep` 可留下）。
+
+- **三层隧道与本机第一次跑它**（`scripts/vpn-linux-test.sh` **23/23**）。这个套件此前只在 CI 的
+  `ubuntu-latest` 上对着真实 tun 设备跑过——本机缺的不是设备（`/dev/net/tun`、`ip`、`ping` 都在），
+  而是 root。这一轮用一次密码弹窗（`pkexec`）拿到 root 后完整跑了一遍：两个命名空间由 veth 相连，
+  服务端开出真实 tun 设备 `at0`（192.168.99.0/24，MTU 1400），客户端在第二个命名空间里拿到
+  192.168.99.2，**两个方向各 ping 3/3**，两侧接口的收发包计数都动了（`at0 rx 6 tx 14`、
+  `at1 rx 6 tx 12`），`GET /api/vpn` 与 `GET /api/config` 的 `[vpn]` 段和审计里的地址分配一致，
+  客户端退出后地址归还，`vpn.require = true` 时一个不带隧道请求的会话被拒并留痕。
+- **面板的隧道状态进了真实浏览器**。`[vpn]` 打开时的那一栏此前是唯一"只由 CI 覆盖"的面板状态。
+  自建一条活隧道（两个命名空间 + veth + 真实 tun 设备，ping 5/5）后，用 Chrome 打开配置页逐项核对：
+  接口、服务端隧道地址、子网、MTU、地址池已用/总数、对端数、从接口读到与送入接口的包（各自要求
+  落在**前后两次 API 读数之间**的窗口里，因为流量随时可能再走一轮）、丢失包等于不可路由加丢弃、
+  `/api/vpn` 与 `/api/config` 描述同一条隧道，并记录当时真的搬过包（`28 from the interface,
+  5 to it, 1 peer`）。面板检查因此从 140 项长到 143 项。
+- **Kubernetes ConfigMap 的凭证契约进了套件**（8 项，不需要 root 也不需要 Docker）。清单里那份
+  `server.toml` 一直只有单测"能加载"，没有人真的用它启动过服务端。现在套件把它原样取出来：
+  **单独校验不通过**（`server.auth_token is required`）、带上 `AETHERTUNNEL_AUTH_TOKEN` 与
+  `AETHERTUNNEL_DASHBOARD_TOKEN` 后校验通过、服务端起来、面板对不带令牌的请求回 401、带令牌回
+  200 且 `auth_required` 为真、一个启用了**同样伪装**的客户端能穿过它搬运字节、审计日志落在
+  ConfigMap 指的路径上，而一个没启用伪装的客户端被拒（服务端日志 `not carrying record-framed
+  data`）。写这一节时我自己的断言错了两处（`--check` 不带环境变量自然通不过；测试客户端必须与
+  服务端用同一种伪装），两次都是被测配置纠正了我。
+- **镜像与清单之间的一致性有了单元测试**。`Dockerfile` 的 `CMD ["--config", …]` 指向
+  `/etc/aethertunnel/server.toml`，而这个文件在容器里只有一个来源：Deployment 把 ConfigMap 挂在
+  `/etc/aethertunnel`。两者分家的话，Pod 会在监听之前退出，而 `docker run` 会去找一个镜像里根本
+  没有的路径。新增的测试要求 `CMD` 的路径等于「Deployment 的挂载点 + ConfigMap 的键」，端口在
+  `Dockerfile`、Deployment、Service 三处一致，并且 ConfigMap 里每条 `path`/`signing_key_file`
+  都落在 Deployment 的 state 挂载点之下。
+- **Docker 装上了（`docker.io` 29.1.3），容器运行时在这里第一次被验证**。`Dockerfile` 的基础镜像
+  来自 Docker Hub，而这台机器到 `registry-1.docker.io`/`auth.docker.io` 的 443 全部超时（Ubuntu
+  源与 GitHub 正常），所以**那个镜像本身仍然只能由 CI 验证**（`ci.yml` 会 build 并跑起来检查
+  `/healthz`）。能验证的部分改用一个本地 `FROM scratch` 镜像补齐：同一个静态二进制、同样的
+  `USER 65532:65532`、同一份 ConfigMap 配置、端口与状态卷按清单发布与挂载——`docker inspect`
+  报 `User=65532:65532`，`/healthz` 200，`/api/status` 不带令牌 401、带环境变量里的令牌 200，
+  一个客户端发布的隧道**从宿主机穿过容器**搬运了 21 字节，容器以 uid 65532 写出的 `audit.jsonl`、
+  `ledger.jsonl`、`ledger.key`、`dht.key` 都落在挂载的状态卷里（密钥 0600）。
+
+
+- **arm64 与竞态检测这两条"只能靠 CI"的路，现在本机也能跑，而且这一轮跑了**。此前
+  `docs/PLATFORMS.md` 把 linux/arm64 记成"只有交叉编译 + 作者本机 qemu 的结果"，`-race` 记成
+  "本机没有 C 编译器时只能靠 CI"；两者都只是缺一套可复跑的做法，不是缺机器。新增
+  `scripts/emulate-linux-arm64.sh <qemu-aarch64> [sysroot]`：交叉编译三个 arm64 产物、给每个
+  写一个 `exec qemu-aarch64 … "$@"` 的包装脚本，先跑整套单测（`go test -exec <透传包装>`），
+  再把包装脚本交给 `scripts/functional-linux.sh`，套件本身不知道自己在跑 arm64。**结果**：arm64
+  上单测 14 个包全过、那 38 项功能检查 **38/38**（带 sysroot 与不带 sysroot 各一遍）；跨架构
+  两组（amd64 服务端 + arm64 客户端、arm64 服务端 + amd64 客户端）同样各 **38/38**；另外用解出
+  来的 `gcc-14` 加 `CGO_ENABLED=1` 把 `go test ./... -race` 完整跑了一遍，14 个包全过。套件长到
+  281 项之后这三条在同一台机器上又跑了一遍：arm64 单测 14 个包全过、arm64 功能检查 **281/281**
+  （含真实浏览器那一节的 143 项）、跨架构两组各 **281/281**，逐项结果记在 `PLATFORMS.md` 的 3.12。
+  写这个脚本时踩到一处细节并写进文档：`go test -exec` 会把自己构造的测试二进制路径追加到命令之后，
+  所以那里的包装脚本必须透传，若写成某个具体产物的启动器，那个产物会把测试二进制当参数收下
+  （表现为"解析配置时遇到控制字符 0x7f"）。文档里 linux/arm64 与 linux/amd64 两栏、以及
+  `PLATFORMS.md` 新增的 3.9 节（含每条的实测结果）都按这次的结果改写。
+- **面板受保护端点的端到端覆盖**：此前 `/healthz`、`/readyz`、`/metrics`、`/api/status`
+  有测试，但 `/api/clients`、`/api/proxies`、`/api/config`、`/api/ledger`、`/api/dht`、
+  `/api/vpn` 与 `DELETE /api/clients/{id}` 没有。新增 `pkg/server/dashboard_api_test.go`：
+  逐个端点核对"无令牌 401、错令牌 401、正确令牌放行"，核对 `/api/vpn` 关掉时带出原因、
+  `/api/ledger` 的 `?limit=` 拒绝非负整数以外的输入，以及 `/api/config` 不把服务端令牌、
+  面板令牌、指标令牌或加密口令写进响应。用例经过变异测试验证：把任意一个端点的鉴权摘掉、
+  让 `/api/config` 回显口令、去掉 `?limit=` 校验，对应用例都会失败。
+- **Linux 与 arm64 的功能检查进了仓库**：`docs/PLATFORMS.md` 里的 70 项检查一直是作者在自己
+  机器上（qemu / Wine）跑的，脚本不在仓库里，所以那组数字没人能复跑，Linux 上的功能路径
+  在 CI 里也没有覆盖——CI 只有 Windows 的 101 项与 tun 设备那一套。新增
+  `scripts/functional-linux.sh`（有浏览器时 281 项、没有时 138 项）：起本地服务（TCP/UDP/HTTP 回显，外加一个只在对端
+  半关闭之后才回答的服务）与证书，拉起服务端、一个发布方客户端与三个访问者客户端，验证
+  `tcp`/`udp`/`http` 与共享 `https` 监听（两者都按 Host 选隧道，未配置的名字都被拒）、
+  `socks5`（`allow_targets` 内可达、范围外被拒）、`stcp`/`sudp`/`xtcp` 三种访问者（密钥错误
+  必须拿不到数据；`xtcp` 那一项还会核对服务端报出的打洞路径与三个 `aethertunnel_p2p_*` 计数
+  彼此对得上，一条从未被上报结果的打洞不算成功）、半关闭之后仍能收到应答（公网端口与 socks5
+  两条路径各一项）、只凭一个名字找到服务端（`--dht-lookup` 把 tcp 名解析到公网端口、`--discover`
+  把私有名解析到控制端口、未知名字报错、以及一个 `server_addr` 留空的客户端真的连上去并传了一次
+  数据）、**两个客户端组成的代理池**（7 项：池报出两名成员、端点仍是第一名成员的端口、后到
+  成员请求的端口没有被监听、六次连接后两名成员都服务过、杀掉一名成员后池只剩一名、剩下的成员
+  继续服务、移除进了审计）、**成员服务已下线时策略该选谁**（另起一台 `load_balance = "latency"`
+  的服务端，一名成员的本地服务无人监听：10 次访问全部被服务，只把 1 次尝试浪费在不会应答的成员上；
+  随后在那个端口上起一个会应答的服务，再看 25 次访问里它是否被重新用到——这一组是上面那条修复
+  与其后续探测的端到端证据）、**访客名单的两侧**（6 项：服务端为某个名字定的策略拒绝一次、代理
+  自己的名单拒绝一次，访客都拿到 403，而计数器各涨 1 且审计 `detail` 分别指出是哪一边；再向
+  socks5 出口发一句不是 SOCKS5 请求的内容，验证它只计进自己那个序列）、**服务端侧的拒绝路径**
+  （33 项，见下一条）、**带宽账本的端到端**（23 项，见更下面一条）、**真实浏览器里的控制台**（143 项，见更下面一条）、指标与 `/api/status` 的
+  计数、审计里的
+  `proxy_registered` 与 `visitor_accepted`，最后把加密、后量子、TLS、身份认证与伪装同时打开再传一次
+  数据并逐层核对日志行。CI 的 `ubuntu-latest` 与 `ubuntu-24.04-arm`（真机 arm64）两个作业都跑它，
+  发布流程也用已发布的 Linux 二进制再跑一遍。只绑回环端口、不需要 root。用例同样做过变异测试：
+  去掉 `allow_targets`、关掉审计、把伪装改成 `none`、把 `require_identity` 改成 `false`、把 tcp
+  代理指向没人监听的端口、不启动共享 `https` 监听、在 `pkg/net/pipe.go` 里把半关闭改成整条关闭、
+  在 `pkg/server/visitor.go` 里不再记录打洞结果、让服务端不再发布 DHT 公告、把第二名成员的
+  `group` 去掉、把 `pickExcluding` 的 round-robin 分支改成永远返回 `candidates[0]`、把
+  `latencyScore` 换回"直接返回测量值"的旧版、让 `probeNeverAnswered` 永不触发、去掉服务端为某个
+  名字定的策略、去掉代理自己的那份名单、以及把 socks5 的协议错误计回"被名单拒绝"那个计数器，
+  对应检查都会失败（分别失败 12、2、1、1、2、2、2、1、3、3、1、1、1、3、3、2 项）。
+- **服务端侧的拒绝路径补上端到端覆盖**（`scripts/functional-linux.sh` 从 56 项到 89 项）。
+  `deny_cidrs`、令牌桶、`ban_after_failures`、`max_connections` 与不可用首帧的拒绝此前只有单元
+  测试（或只有 Windows 那套脚本）覆盖，仓库里能在 Linux 与 arm64 上复跑的那一套几乎一条都没有
+  ——而它们正是运维最依赖、也最容易在改动中被绕过的边界。一共起四台专用服务端（在被测的那台上
+  改这些设置，会把后面所有检查一起拒掉）：
+
+  - **握手前就被拒的连接**（10 项）。一台 `deny_cidrs = ["127.0.0.2/32"]`（本机的第二个回环
+    地址）外加 `rate_limit_per_second = 0.01`、`rate_limit_burst = 2` 的服务端：三条来自被拒
+    来源的连接在发出任何一个字节之前就被关闭（客户端的读有 1 秒上限，否则一个仅仅被挂起的
+    连接也会被算成"被拒"）、`aethertunnel_connections_denied_by_acl_total` 恰好 +3 并同样计入
+    共享的 `aethertunnel_control_rejected_total`、被拒来源不算已接受的连接、日志与审计分别
+    记下这次决定并指出来源；随后两次连接落在突发额度内（计数不动），再三次全部被令牌桶拒绝
+    （计数 +3、审计三行 `rate_limited`、日志三行 `denied by rate limit`）。读取一个没有被测
+    服务端的面板，用的是新加的 `metric_at`/`wait_metric`（拒绝是在关闭连接的那个 goroutine
+    里计数的，单次读取可能落在自增之前）。
+  - **自动封禁与它的窗口**（9 项）。一台 `ban_after_failures = 3`、`ban_seconds = 10` 的服务端
+    上，一个只有令牌写错的客户端每秒重试：三次失败后来源被封（`aethertunnel_sources_banned_total`
+    = 1、三次失败都进了审计且 `outcome` 为 denied 并带来源、封禁记录写着 "banned after 3 failed
+    attempt(s)"）；此时换一个**令牌正确**的客户端仍然进不去（没有任何会话、拒绝计数在涨、客户端
+    日志里没有 session 行），等 `ban_seconds` 过去后它连上了——一拒一放才说明前面拒的是这个来源，
+    而不是一个本就连不通的客户端配置。
+  - **`ban_ignore_cidrs`**（3 项）。一台 `ban_after_failures = 2` 且忽略回环地址的服务端上，同一个
+    错令牌客户端反复失败（实测 5–6 次，阈值是 2）也不会被封禁，也不会被当成被封禁的来源拒绝。
+    这个键此前只有单元测试（`ban_test.go`、`guard_test.go`），它配错的方向是"运维的负载均衡
+    地址被误封"。
+  - **连接上限与不可用首帧**（11 项）。`max_connections = 1` 的服务端上，第一个客户端占住唯一的
+    会话，第二个令牌同样正确的客户端被拒：`aethertunnel_control_connections_total` 仍然是 1、
+    `aethertunnel_control_rejected_total` 在涨、审计里是 "server is at its connection limit"、
+    客户端日志里也写着这句（客户端被告知了原因，而不只是超时）；同一台服务端上（它既没有令牌桶
+    也没有封禁，所以来自回环的连接能走到帧读取）再发两个首帧——一个解不开的认证请求、一个不能
+    开局的帧类型——每个都被回答，并分别计进 `aethertunnel_unusable_request_frames_total`、
+    汇总计数与审计，日志里也各留一行。
+
+  这 33 项同样做过变异测试：让 `AccessControl.CheckAddr` 不再做判断（失败 8 项）、让令牌桶永远
+  放行（3 项）、让封禁名单永不建立（5 项）、让会话上限不再生效（4 项）、把 `ban_ignore_cidrs`
+  从配置里去掉（3 项）、让两条不可用首帧的拒绝不再记入指标与审计（5 项）。
+- **控制台页面第一次有了真正的检查：在真实浏览器里跑**。此前仓库里没有任何东西运行过
+  `web/dashboard/index.html`——Go 测试覆盖它读的 API，功能套件覆盖隧道，而这一页本身
+  （单文件、内联 CSS 与 JS、会切换语言、有抽屉与确认框）从没被执行过。新增
+  `scripts/panel-checks.py`（起初 53 项，这一轮先长到 74 项、又补上账本与字典几组到 143 项，见下面两条）：它用远程调试端口启动
+  Chrome，自己实现最小的 WebSocket 与
+  DevTools 协议客户端（标准库没有 WebSocket，而这里的帧足够简单：客户端帧永远带掩码、没有
+  分片），然后对**渲染后的页面**断言——令牌提示（未带令牌、错误令牌、正确令牌三条路径）、每个
+  数字与表格是否与同一进程自己抓到的 `/api/*` 回答一致、配置页各字段、两个表格与代理池的成员列、
+  审计那一栏的四种状态、在没有轮询路径上时用 `Fetch` 域让浏览器把 `/api/config` 与 `/api/status`
+  判为失败以升起两条横幅、**横幅在屏幕上时切换语言**（上面那条修复的回归检查）、380 px 视口下的
+  汉堡与遮罩（`matchMedia` 与 CSS 类一起验证）、断开按钮（先让 `window.confirm` 返回 false 确认
+  不发请求，再返回 true，行从表格消失、服务端不再列出该客户端、审计里出现 `dashboard_action`）。
+  `scripts/functional-linux.sh` 把它作为最后一节运行（还为它起了两个客户端，让面板的成员列不是
+  空跑，其中一个发布一个 58 字符、没有任何空格的代理名——那正是「360 px 下不会被截断」这句话
+  针对的情况），把它的 PASS/FAIL 计入套件总数：**有浏览器时 281 项、没有时 138 项**（整段跳过并
+  打印 `SKIP`，所以没有 Chrome 的机器上套件照常通过）。顺带补上 `.gitignore` 里缺的一条
+  Python 规则（`__pycache__/`、`*.py[cod]`）：用脚本读一次 `panel-checks.py` 就会在 `scripts/`
+  下留一个字节码目录，而 `.gitignore` 里此前没有任何一条与 Python 有关。
+  变异测试：把语言切换里那两行重画删掉，
+  这一节失败 2 项，其余仍过——它测的正是它声称测的东西。
+- **面板检查补上「版式」与「无障碍」两组**（53 → 74 项）。`web/dashboard/README.md` 写着
+  「700 px 以下表格每行重排为带标签的卡片，360 px 屏幕上不会出现被截断的内容」，这句话此前只有
+  肉眼看着对；现在在浏览器里断言：380 px 下每个单元格的计算样式是卡片块、`::before` 的内容
+  就是同列的表头文字、整个页面没有元素越界（把每一个元素的 `getBoundingClientRect().right`
+  与视口比较）且文档不横向滚动；那个 58 字符的名字必须在卡片内换行而不是把页面撑宽
+  （单元格 `scrollWidth ≤ clientWidth` 且高度超过一行）；回到桌面视口后单元格是 `table-cell`、
+  表头回来、每格标签消失、汉堡隐藏、侧边栏回到布局里，而宽于窗口的表格是在**自己的容器**里
+  滚动（`overflow-x: auto` 且文档不越界）。无障碍一组读的是 Chrome 的**无障碍树**
+  （`Accessibility.getFullAXTree`），不是 DOM 属性：每个控件都有非空名字、抽屉按钮的
+  `aria-expanded` 在开合时分别报 true/false、`aria-current="page"` 只落在正在显示的那一栏、
+  键盘最先到达的是跳转链接且指向主区域，以及上面那条修复的回归检查。变异测试：把
+  `@media (max-width: 700px)` 整块删掉（回到「表格永远是表格」），版式一组失败 3 项
+  （`every cell of a row is a card block`、`every card carries its column name`、
+  `the page does not scroll sideways at 380 px`）；把导航那一行改回写死的 `aria-label`，
+  无障碍一组失败 1 项。
+- **面板有了「账本」页：带宽账本此前只有接口，没有界面**。`README.md` 把「带宽账本」列为一等
+  功能（Ed25519 签名、哈希链、`--verify-ledger`、`--ledger-proof`），`GET /api/ledger` 也一直
+  返回公钥、链头、最近条目与按客户端汇总，但 `web/dashboard/README.md` 里明写这一页不渲染它，
+  要看只能自己 `curl` ——这是整个面板里唯一"有数据、没有地方显示"的功能。现在新增第五个栏目
+  「账本 / Ledger」：是否启用、文件、链上的条目数、链头（单元格里是缩写，完整哈希在 `title`
+  里）、尚未入账的活动用量与完整公钥，下面两张表是按客户端汇总（条目数、入站、出站）与最近
+  条目（序号、时间、客户端、代理、双向字节、服务器签名的哈希）。`[ledger]` 关闭时接口返回
+  `{"enabled": false}`，页面照实显示「否」并说明原因——画一排 0 会被读成"没有任何用量"，那是
+  另一件事。两张表与其它表格走同一条重画路径，切换语言时连列标签一起重画；页面上那把公钥就是
+  `--verify-ledger <文件> --ledger-key <公钥>` 需要的那把，所以屏幕上的数字可以脱离服务器与
+  文件对账。变异测试（真实浏览器）：把语言切换里的那行重画删掉，账本一组失败 2 项
+  （`the ledger state row follows it too -> want '是' got 'yes'`、
+  `and the rows are redrawn with their new column names -> want '时间' got 'Time'`）；让条目表
+  永不填行，失败 3 项（行数与 API 不符、没有第一行、列标签拿不到）。
+- **面板补上「目录」页：`/api/dht` 此前也是"有接口、没界面"**。与账本同一条思路——DHT 是
+  客户端按名字找服务器的机制，运维要能看见本节点在不在通告、通告了哪些名字、对外给的是哪把
+  公钥。现在新增第六个栏目「目录 / Directory」：是否启用、节点标识（行内缩写、完整值在 `title`
+  里）、绑定地址、键的命名空间、路由表里的节点数、对外通告的主机名、通告签名公钥（未配置时
+  显示「未签名」——那是对这个节点的陈述，而不是缺一个值），以及正在通告的名字表格；`[dht]`
+  关闭时接口返回 `{"enabled": false}`，页面照实显示「否」并说明。切换语言时两张表与各行一起
+  重画，请求失败时横幅点名端点，故障排除后恢复。变异测试：删掉语言切换里的重画，目录一组失败
+  2 项（`the directory state row follows the language switch -> want '是' got 'yes'`、
+  `and the rows are redrawn with their new column name -> want '名字' got 'Name'`）。
+- **去中心化目录的通报生命周期第一次有了检查**（`scripts/functional-linux.sh` 再增 14 项）。
+  `/api/dht` 的字段第一次被逐项核对：节点标识是 160 位十六进制、绑定地址是 `[dht]` 里那个、
+  命名空间是默认的 `aethertunnel`、对外主机名来自配置，而 `-dht-key` 打印的公钥必须与 API
+  发布的 `signing_key` 相同——那把公钥正是运维要交给 `trusted_keys` 的，两边不一致的后果是
+  "看起来签过名、实际全被拒"。更重要的是通报本身：**名字跟着组走，不跟着成员走**，第二个客户端
+  加入同名池时不得把名字撤下，只有最后一名成员离开才撤下。此前没有任何检查走过这条路径（撤回
+  只发生在拆会话时，而过去的查询从没让会话结束）。变异测试：把 `Unregister` 里"池空了才撤回"
+  改成"任一成员离开就撤回"，套件失败 3 项
+  （`and the name stays announced while that member is there -> want 'True' got 'False'`、
+  `one member leaving leaves the other serving the name -> want '1' got 'error: list index out of range'`，
+  以及池那一节原有的 `the pool drops the member that left -> want '1' got '0'`）。
+- **面板检查补上「字典」一组，并长到 143 项**（74 → 118）。页面在启动时会比对两份字典，把不一致
+  `console.warn` 出来——而控制台里没有人看：一个键只存在于一种语言时，那句话会一直用另一种语言
+  显示，一个谁都没提到的键则白占空间（这个文件被编译进二进制）。这一组直接读页面自己的标记：
+  两种语言定义的键数相同、元素或脚本提到的每个键在两份字典里都存在、没有键被定义两次、没有键是
+  多余的，并且在浏览器里核对没有任何元素把键当成句子显示出来（缺条目时 `t()` 会回退成键本身，
+  那正是用户会看到的东西）。写这一组时自己的第一版有个漏洞：它把"键的定义本身"也算成了一次引用，
+  而每个键当然出现在自己的定义里，于是「没有多余的键」这一项在任何文件上都会通过。规则改成先把
+  两份字典从文件里整段去掉、再在其余部分里找引用之后，它当场找出了本轮新加的 `err.ledger`
+  从未被使用（账本加载失败时只写了那段说明文字），于是把这个键接到错误横幅上，与配置页失败时的
+  表现一致。变异测试：从中文字典里删掉 `ledger.entriesTitle`，这一组失败 3 项
+  （`both languages define the same number of keys -> want (159, 159) got (159, 158)`、
+  `every element's key exists in both languages -> want [] got ['ledger.entriesTitle']`，以及
+  中文页面上那行标题仍是 `Recent entries`）。同一轮还新增了账本页一组（与 `/api/ledger` 逐项
+  比对、两张表的内容、切换语言重画、请求被浏览器判为失败时横幅点名端点且两张表不再装作有数据、
+  失败排除后能恢复），在**关闭了 `[dht]`** 的部署上把「目录未启用」画出来，以及在另一台**同时关闭了 `[ledger]` 与 `[dht]`** 的部署（套件里那台
+  `max_connections = 1` 的服务端）上把「未启用」这个状态画出来——同一个文件有两种状态，只在一种
+  上验证不算验证。窄屏那一组也从代理表扩到账本页：条目同样是带栏目名的卡片，64 个字符、
+  连不成一个词的公钥必须在行内换行而不是把页面撑宽（实测 390 px 视口下 `scrollWidth` 仍是 390）。写这一组时被变异测试抓到自己的一个错误：挑"小于一千字节"的汇总行来逐字比对
+  字节单元格时只看了 `bytes_in`，而变异用的部署恰好有一行入站 32 字节、出站 478 KB，检查于是报
+  `a client's billed bytes-out match /api/ledger -> want '489440 B' got '478.0 KB'`，看起来像产品
+  算错了。现在两个方向都必须小于一千字节才选它，否则打印 `SKIP`；条目表的第一行也改成防御式
+  读取，表格没画出行时是一个 FAIL，而不是一段 traceback。
+- **带宽账本第一次有了端到端覆盖**（`scripts/functional-linux.sh` 163 → 281 项，其中账本这一节 23 项）。账本是唯一
+  "离开服务器"的用量记录：审计与指标都只活在这台机器上，只有它会交给别人核对，而 `[ledger]`
+  在此前所有可复跑的检查里**一次都没有打开过**——`--verify-ledger` 与 `--ledger-proof` 这两个
+  子命令、以及"改一个字节就会失败"这句承诺，都只有单元测试。现在套件的主部署开着账本，并新增
+  一节（23 项）：起一个只发布一个代理的客户端，把 40 字节搬过隧道再结束这个会话（条目是在
+  拆会话时写的），然后核对条目里的客户端与双向字节数正是隧道实际搬运的那些、链头等于文件最后
+  一条的哈希、服务器为每条记录写了一行日志；随后只凭 `/api/ledger` 给出的公钥离线校验整个
+  文件（`--verify-ledger`）、换一把同长度的公钥必须失败、把第一条的 `bytes_in` 改 1 个字节必须
+  失败、`--ledger-proof --proof-index 0` 写出的前缀能单独校验且链头正是它停下的那条、越界的
+  索引被拒。**把 `[ledger] enabled` 改回 `false`，这一节失败 14 项**（"on"、公钥长度、文件路径、
+  条目、字节、日志、离线校验、前缀……每一项都指向同一个根因），而面板那一节会正确地切换到
+  「未启用」状态的检查而不是级联报错。
+- **套件里有一节把共用的读数助手悄悄指向了另一台服务端**。`api_field`/`metric_value` 读的是
+  `DASHBOARD_PORT`/`DASHBOARD_TOKEN` 两个全局变量，而 `latency` 池那一节为了读自己的面板直接
+  `DASHBOARD_PORT=$LAT_DASHBOARD`，此后再调用这两个助手的检查都会读到那台 `latency` 服务端——
+  上面的面板一节就是这么被带偏的（它对着 latency 服务器跑完了 53 项，并因此报出两条本不该有的
+  失败）。现在助手改成 `api_field_at <port> <token> <path> <expr>`，`api_field` 只是用被测部署
+  的端口调用它，`latency` 那一节用 `LAT_FIELD` 明确指向自己的面板，`DASHBOARD_PORT` 只在一处
+  赋值。
+- **套件现在会先确认端口可用再启动，并把失败说清楚**。上一轮把套件的输出接到 `| head` 时管道
+  提前关闭，脚本没走到自己的清理，残留进程占着端口；下一次运行于是级联失败 29 项，看起来像
+  产品坏了，实际只是端口被占。现在 `scripts/functional-linux.sh` 在启动服务端之前逐个确认要用
+  的端口还能绑定，被占就打印"某个进程或上一次被中断的运行仍占着它"并以退出码 2 结束（实测：
+  硬编码一个被占的端口，退出码 2、只输出一行）。它**不是**那 70 项，差别写在该文件里。
+
+### 文档
+
+- **三条"文档断言"用当前代码重新跑实，并把其中一条接进配置参考**。三层隧道那套 23 项
+  （`scripts/vpn-linux-test.sh`，要 root 与真实 tun 设备）在 3.13 之后一直没有用新代码重跑过——
+  这一轮在 root 下重跑，**23/23、0 失败**，3.13 写的每一条（两端互 ping、两侧接口的收发包计数、
+  `/api/vpn` 与 `/api/config` 与审计的一致、地址归还、`vpn.require` 拒绝）都在现在的二进制上重新
+  成立，3.13 里补了一句。另一条是给 Windows 用户的：**CRLF 行尾与 UTF-8 BOM 的配置文件可以直接
+  用**——这个此前没人验证过，也没有测试锁住，而 Windows 编辑器写出的文件默认就长这样（记事本
+  还会加 BOM）。实测通过后加了 `TestAConfigWrittenByAWindowsEditorLoads` 锁住它：带 BOM 与 CRLF
+  的配置加载无警告、令牌与两处端口分毫不差；这条是行为锁定测试，被锁的行为在 `BurntSushi/toml`
+  里，没有可变异的实现分支。`docs/CONFIGURATION.md` 的英文摘要下补了一句给 Windows 用户的说明。第三条是 3.15 的 **Kubernetes 清单套件**（`scripts/kubernetes-linux.sh`，要 root、docker 与
+  k3s）：14 项在当前二进制上 **14/14、0 失败**，收尾后系统 docker 的容器数与镜像数都是 0。
+- **`-race` 那一节也用当前代码复跑了一遍**。3.16 的记录停在这轮的改动之前（`pkg/net` 的绑定
+  诊断与它接进的八处绑定、配置的 CRLF/BOM 测试都是之后落进树的），于是按 3.16 的命令把整套单测
+  在竞态检测器下重跑：14 个包全过、**0 处数据竞争**（`pkg/server` 37.7s、`pkg/reliable` 14.1s、
+  新的 `pkg/net` 2.4s）；缓存恰好是空的，"空缓存首次解包"也顺带重证了一遍（42.8 MB、11 秒）。
+  3.16 末尾补了这段记录。
+- **Windows 那一栏从"上一轮的数字"换成实测，并说明它此前为什么跑不起来**。`docs/PLATFORMS.md`
+  新增 3.20：非特权用户命名空间那条限制、root 之下两条绕开它的做法（root 的挂载命名空间，或一条
+  `/usr/share/wine` 符号链接）、新脚本的分节与项数、四对平台组合各 55/55 的那张表、以及没跑到的
+  两件事（`scripts/smoke-test.ps1` 要 PowerShell；`windows/amd64 ↔ linux/arm64` 两对因本机没有
+  arm64 硬件没跑）。2.1 节下面补一段说明：那份表里 `windows/amd64` 的四行仍是旧脚本的数字，
+  3.20 的 55 项是**第三套**检查，两套数字不要互换。结论表里 `windows/amd64` 一行的
+  `**本轮未跑**` 换成 **55/55**；3.1 节保留原来的记录并补一句它已不再阻塞；README 的
+  「逐平台功能验证」一行把"其后新增的两项/三项尚未在 Windows 上执行"换成指向 3.20 的
+  `scripts/wine-check.sh` **55/55**（README 与 3.1 原来一个说两项、一个说三项，本轮不再引用那个
+  数字）。
+- **把 `docs/SECURITY.md` 第 9 节那句"直连流量的账本条目是 0 字节"从断言变成实测，并把这条语义
+  接到 `[ledger]` 的配置说明上**。第 9 节一直写着账本只覆盖服务端真正搬过的字节、`xtcp` 打洞后的
+  流量不在其中，但仓库里没有任何一次运行量过它。这一轮用三个容器（服务端、发布方、访问方）跑一条
+  `xtcp`，从访问方的监听端口搬一次数据，并让发布方**优雅停止**——条目只在会话结束时追加——然后同时
+  读三处：搬字节成功（`True`）；服务端 `bytes_from_clients_total` 与 `bytes_to_clients_total` 都是
+  **0**，而 `p2p_punches_total=1`、`p2p_direct_total=1`、`p2p_relayed_total=0`；账本是
+  `idx=0 proxy='p2p' bytes_in=0 bytes_out=0`；审计里是
+  `visitor_accepted, p2p_direct, proxy_removed, client_disconnected`。三处结论一致：直连的字节不进
+  账本、不进双向字节指标，"这条路是直连"写在审计与 p2p 计数里。同一次运行还确认了写入时机：会话
+  结束时追加，所以**被 `docker rm -f` 强杀的服务端不留条目**——3.18 的 `private` 那一节 state 目录里
+  账本是空的，而 `core` 会 `docker stop` 客户端再等文件出现，两者差别在此，不是程序行为不一致。
+  `docs/CONFIGURATION.md` 的 `[ledger]` 一节补上这句限定与指向第 9 节的引用（原来只写"双向字节"，
+  读者可能以为它统计全部用量），`docs/PLATFORMS.md` 3.19 记下这次的读数。
+- **矩阵的第十一个场景：把程序放进 musl 用户态跑一遍（Alpine 的 minirootfs），并在同一轮里修掉一个
+  会伪造失败的端口分配问题**。3.18 的十个场景全跑在 `FROM scratch` 上——那个镜像里没有 libc、没有
+  shell、没有 `/etc`，所以它证明的是"这个静态二进制什么都不需要"，并不能说明这个程序在一个真实
+  发行版里跑得起来。这一轮补上这一维：Docker Hub 依旧不可达（没有 `alpine` 镜像可拉），但 Alpine
+  把 minirootfs 作为 tarball 发布、而 `docker import` 能把 tarball 变成镜像，于是同一个静态二进制
+  可以在 musl + BusyBox 之下跑同样的功能路径。新场景 **13 项**：镜像导入、用户态确实是 musl
+  （存在 `/lib/ld-musl-x86_64.so.1`）、BusyBox 可执行、二进制在 musl 下启动、**musl 自己的 `ldd`
+  回答 `Not a valid dynamic program`**（这一条把"程序在 musl 用户态里跑"与"这个二进制依赖 musl
+  才能跑"分开，后者会让这一维看起来通过而什么都没测）、`/healthz`、面板令牌 401/200、无 panic、
+  两个 musl 容器之间搬字节、审计写在该容器里且属主是 uid 65532、mode 0600、客户端无 panic。
+  七个版本全过：**六个版本各 95 项、570/570，七个版本合计 573/588**（19.03.15 仍是 cgroup v2
+  那条界线）。同轮的另一个发现在 harness 里：场景的端口是"绑定 0 端口、记下号码、立刻关闭"分配的，
+  内核可能把同一个号码再分给下一个刚关闭的 socket——**实测 1000 组、每组 10 个端口里有 4 组重复**
+  （更早一次抽样 5000 组里 16 组）。同一场景里两个用途拿到同一个号码时，服务端会因
+  `address already in use` 退出，而外面只看到"面板连接被拒"与"客户端首字节是 `0x65`"（`e` 来自
+  echo 的 `echo:` 应答）；28.4.0 上出现过一次这样的 8 条失败，连跑四遍不再出现，按分配器一测即复现。
+  分配器现在跳过已发出的号码，同样 1000 组实测 0 组重复，此后整套连跑三遍每遍都是 573/588、
+  19.03.15 之外 0 条失败。这一轮同样**没有改程序代码**：改的是临时 harness 与
+  `docs/PLATFORMS.md`（新增 3.19，并更新第 4 节的数字）。
+- **七个 Docker 版本的矩阵补齐：十个场景、494/504，19.03.15 的失败定位到它自己的 daemon**。
+  3.18 那一轮结束时有两件事只做到一半，两处都写明了"要一次提权才能重跑"：19.03.15 的 daemon 因为
+  启动脚本固定传 `--ip6tables` 而起不来（`unknown flag: --ip6tables`），以及所有私有 daemon 还在
+  共用系统那个 containerd。本轮拿到一次授权之后把两件都重跑了，并把场景从七个扩到十个（新增
+  `tls`、`post_quantum`、`vpn_client`），每个版本 **82 项**。结果：**六个版本各 82 项、492/492
+  全过；19.03.15 上十节里只有两项成立（`docker server` 版本号与 `FROM scratch` 的镜像构建），
+  合计 494/504**。19.03 那 10 项失败来源只有一个：daemon 起来并回答 `client=19.03.15
+  server=19.03.15`（说明那次 `dockerd --help` 探测是对的），但每次 `docker run` 都以退出码 125
+  失败，device 那一节报出
+  `docker: Error response from daemon: cgroups: cgroup mountpoint does not exist: unknown.`——
+  这台机器的 `/sys/fs/cgroup` 是 cgroup2fs。这句话起初归因于 runc，两次替换把它定位到了 daemon
+  自己：把 20.10 那份 runc 1.2.5 放到 19.03 的 containerd 前面（containerd 1.4 走 runtime v1，
+  按 PATH 找 `runc`），错误不变；再把 19.03 的 dockerd 嫁给 24.0.9 的 containerd 1.6.33 与同一个
+  runc 1.2.5，错误仍然不变——而 dockerd 的日志把它记在自己处理请求的那一行
+  （`Handler for POST /v1.40/containers/…/start returned error: cgroups: cgroup mountpoint does not
+  exist: unknown`，前面还有 cpu/cfs/rt 各一行 `Your kernel does not support cgroup …` 与一行
+  `Unable to find blkio cgroup in mounts`），同一时刻 containerd 的日志里一次 task 创建都没有。
+  也就是说拒绝来自 **dockerd 19.03 的 daemon 侧**，而 docker 从 20.10 起才支持 cgroup v2——这正是
+  20.10.24 能跑满 82 项、19.03.15 一项也跑不了的那条界线。所以这一栏是"在老 daemon 上跑容器"
+  这件事本身的边界，不是程序的结论：19.03 的控制面（API、镜像构建、版本号）可用，容器运行不可用。
+  另外，矩阵的每一项都用**那个版本自己的 `docker` 客户端**驱动它自己的 daemon：系统那份 29.1.3
+  的客户端对旧 daemon 直接拒绝（`Error response from daemon: client version 1.52 is too new.
+  Maximum supported API version is 1.40`），拿它的 `--format` 读 `server` 只会得到空字符串，那不是
+  daemon 没起来。两处基础设施改动重跑后的证据：
+  七个私有 dockerd 的命令行里 `--containerd` 各指自己的 socket，进程表里除系统那个 containerd
+  之外多了七个（8 个进程、7 个各自的 `--address`）；系统 dockerd 的日志里 `could not find
+  container` 从重跑前 20 分钟的 **1155** 行降到重跑后的 **0** 行，系统 docker 的容器数与镜像数
+  都回到 0。本轮**没有改程序代码**，改的是这台机器上的做法，以及 `docs/PLATFORMS.md` 3.18 与
+  第 4 节里的数字（"七个场景 / 65 项 / 390/390" 全部换成 "十个场景 / 82 项 / 六个版本 492/492、
+  七个版本 494/504"）。验收按同一套流程走了一遍：`gofmt -l .` 无输出、`go vet ./...` 无输出、
+  `go test ./... -count=1` 14 个包全过、`scripts/functional-linux.sh` 281 项全过（含真实浏览器
+  那 143 项），与上一轮一致。
+- **`docs/MIGRATION.md` 两处把未知键说成会让 `--check` 失败**。第 2.3 节的 `[vpn]` 旧键一行写着
+  "**未知键**：启动时列出、`--check` 失败"，第 4.1 节的 `[obfuscation] default_type` 一行写着
+  "现在会被当作未知键，`--check` 会失败并指出该行"；按默认行为 `--check` 只会打一行警告并退出 0
+  （实测：把 `[obfuscation] default_type = "tls-record"` 放进配置，输出 `c.toml is valid`、退出码
+  0）。迁移文档恰恰是让人"升级前跑一次 `--check`"的地方，照着它读会以为这一步能把残留的旧键挡住。
+  两处都改成写明默认只是警告、并指出 `--check --reject-unknown-keys` 才是失败；第 5 节检查清单的
+  第 2 步也改用这个组合，让残留的旧键在升级检查里直接失败。同一次核对里用真实二进制验了迁移文档
+  另外几条 `--check` 断言，都对：同一客户端里两个同协议代理抢同一个 `remote_port`（拒绝并点名两个
+  代理）、`http_port` 与 `bind_port` 撞同一地址（拒绝并点名两个键）、`dial_timeout_seconds = -1`
+  （拒绝）、`pad_to` 超过帧上限（拒绝并给出上限）、`max_reconnect_seconds < reconnect_seconds`
+  （拒绝）、以及服务端 `[[proxies]]` 里写客户端专属键时逐条给出警告。
+- **`docs/ARCHITECTURE.md` 的调度策略表少了 `bandit`**。表格列了 `round-robin`、`random`、
+  `latency`、`failover`、`adaptive` 五种，而实现里是六种：`config.LoadBalanceBandit`（UCB1）在
+  `README.md`、`docs/CONFIGURATION.md` 与 `pkg/server/bandit_test.go` 里都在；只有架构文档的
+  表格与它下面那段（讲移动平均与连续失败数）还停在五种，读架构文档的人会以为在线学习那一种不在
+  实现里。现在补上表格一行（UCB1 索引 = 平均奖励 + `sqrt(2·ln(候选被选次数之和+1) / 本成员被选次数)`）与一段
+  说明：奖励按 `1 / (1 + 秒数 / 0.05)` 记，每 20 次选择强制去测观测最少的成员，学习只来自这个池子
+  服务过的流，没有离线训练与模型文件。文字与 `pickByUCB`、`banditRewardFor`、
+  `banditRecoveryInterval` 的当前实现逐条对照过。这一条只改文档，`gofmt`、`go vet`、全部单元测试与
+  `scripts/functional-linux.sh`（281 项）仍全过。
+
+---
+
 ## [3.7.4] — 2026-09-22
 
 本版本把面板的代理池一行补全：`/api/proxies` 在每个成员上返回 `latency_ms` 与

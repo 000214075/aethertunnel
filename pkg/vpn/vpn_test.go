@@ -332,6 +332,15 @@ func TestValidateAcceptsIPv6AndRejectsNonsense(t *testing.T) {
 	if err := Validate([]byte{0x70, 0x00, 0x00, 0x00}, 1500); !errors.Is(err, ErrMalformedPacket) {
 		t.Fatalf("a packet that is neither version returned %v, want ErrMalformedPacket", err)
 	}
+	// An empty packet has no version nibble to read. It reaches this check from the
+	// network — a peer can send a tunnel frame with no payload — and the check used
+	// to index the first byte to name it, which took the process down.
+	if err := Validate(nil, 1500); !errors.Is(err, ErrMalformedPacket) {
+		t.Fatalf("an empty packet returned %v, want ErrMalformedPacket", err)
+	}
+	if err := Validate([]byte{}, 1500); !errors.Is(err, ErrMalformedPacket) {
+		t.Fatalf("a zero-length packet returned %v, want ErrMalformedPacket", err)
+	}
 	if err := Validate([]byte{0x60, 0, 0, 0, 0, 8}, 1500); !errors.Is(err, ErrMalformedPacket) {
 		t.Fatalf("a short IPv6 packet returned %v, want ErrMalformedPacket", err)
 	}
@@ -681,8 +690,11 @@ func TestTunnelDropsPacketsThatAreNotValidIP(t *testing.T) {
 	// A packet from the device that is not IP at all, and one that is above the MTU.
 	device.incoming <- []byte{0x70, 0x00, 0x00, 0x00}
 	device.incoming <- ipv4Packet("10.7.0.2", "10.7.0.1", make([]byte, 1500))
-	// A packet from the peer that is truncated.
+	// A packet from the peer that is truncated, and one that carries nothing at all:
+	// a peer can put an empty payload in a tunnel frame, and the check that names the
+	// version used to index the first byte of it.
 	transport.in <- []byte{0x45, 0x00}
+	transport.in <- nil
 
 	// One good packet, so the test can tell the drops apart from a stall.
 	good := ipv4Packet("10.7.0.2", "10.7.0.1", []byte("ok"))
@@ -696,8 +708,8 @@ func TestTunnelDropsPacketsThatAreNotValidIP(t *testing.T) {
 	// made this test depend on scheduling. Wait for both.
 	waitFor(t, func() bool {
 		s := tunnel.Stats().Snapshot()
-		return s.Dropped == 3 && s.FromDevice == 1
-	}, "the three invalid packets were not all dropped and the valid one not accounted for")
+		return s.Dropped == 4 && s.FromDevice == 1
+	}, "the four invalid packets were not all dropped and the valid one not accounted for")
 
 	cancel()
 	if err := <-done; err != nil {
@@ -705,8 +717,8 @@ func TestTunnelDropsPacketsThatAreNotValidIP(t *testing.T) {
 	}
 
 	stats := tunnel.Stats().Snapshot()
-	if stats.Dropped != 3 {
-		t.Errorf("Dropped = %d, want 3", stats.Dropped)
+	if stats.Dropped != 4 {
+		t.Errorf("Dropped = %d, want 4", stats.Dropped)
 	}
 	if stats.FromDevice != 1 {
 		t.Errorf("FromDevice = %d, want 1", stats.FromDevice)

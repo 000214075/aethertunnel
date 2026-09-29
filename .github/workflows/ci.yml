@@ -4,7 +4,8 @@ name: CI
 # `@latest` (both unmaintained, and gosec fails the job on any finding), and the
 # build workflow tried `go get` on a module that go.mod replaced with a local stub.
 # This workflow runs only what the project actually needs: fmt check, vet, tests,
-# and a native build on all three supported systems.
+# a bounded fuzz run over the untrusted-input parsers, and a native build on all
+# three supported systems.
 
 on:
   push:
@@ -76,6 +77,38 @@ jobs:
         if: runner.os == 'Linux'
         run: go test ./... -count=1 -race -timeout 600s
 
+      # Every parser that reads untrusted bytes, fuzzed for a bounded time. The seed
+      # corpus under testdata/fuzz is replayed by `go test ./...` above, which is what
+      # keeps an input that once failed from coming back; this step is what looks for
+      # new ones. These targets found real bugs the first time they were run — an empty
+      # IP packet taken straight from a tunnel frame, and a socks5 domain name that
+      # could not be written as host:port — so the budget is not decoration. One target
+      # per invocation: go test -fuzz accepts only one.
+      - name: the input parsers survive a bounded fuzz run
+        if: runner.os == 'Linux'
+        run: |
+          for target in \
+            ./pkg/protocol:FuzzReadFrame \
+            ./pkg/protocol:FuzzDecodePunchRequest \
+            ./pkg/protocol:FuzzDecodePunchResponse \
+            ./pkg/socks:FuzzReadRequest \
+            ./pkg/socks:FuzzParseUDPDatagram \
+            ./pkg/dht:FuzzDecode \
+            ./pkg/vpn:FuzzValidate \
+            ./pkg/vpn:FuzzSetIPv4Checksum \
+            ./pkg/crypto:FuzzSchnorrVerify \
+            ./pkg/crypto:FuzzHybridServerFinish \
+            ./pkg/crypto:FuzzCipherOpen \
+            ./pkg/crypto:FuzzVerifyIdentity \
+            ./pkg/obfs:FuzzRecordRead \
+            ./pkg/reliable:FuzzParseSegment
+          do
+            pkg="${target%%:*}"
+            name="${target##*:}"
+            echo "fuzzing $name in $pkg"
+            go test "$pkg" -run "^${name}\$" -fuzz "^${name}\$" -fuzztime 10s -count=1
+          done
+
       # The layer-3 path runs on a real tun device, with the two ends in separate
       # network namespaces so that no packet can take a shortcut through the local
       # routing table. It skips itself, with a message, where the runner cannot
@@ -94,10 +127,19 @@ jobs:
           go build -o bin/aethertunnel-server${{ matrix.exe }} .
           go build -o bin/aethertunnel-client${{ matrix.exe }} ./client
 
-      - name: the example configurations are valid
+      # The same kinds of paths scripts/smoke-test.ps1 drives on Windows, run here
+      # against these binaries on this kernel: the proxy types, the private proxies
+      # and their visitors, the socks5 exit and its target policy, the counters, the
+      # audit log, and every security layer at once. macOS is left out because the
+      # script is written for Linux; that platform is covered by its own job entry.
+      - name: the functional paths carry data
+        if: runner.os == 'Linux'
+        run: bash scripts/functional-linux.sh bin/aethertunnel-server bin/aethertunnel-client
+
+      - name: the example configurations are valid, with no key this version does not know
         run: |
-          ./bin/aethertunnel-server${{ matrix.exe }} --config server.toml.example --check
-          ./bin/aethertunnel-client${{ matrix.exe }} --config client.toml.example --check
+          ./bin/aethertunnel-server${{ matrix.exe }} --config server.toml.example --check --reject-unknown-keys
+          ./bin/aethertunnel-client${{ matrix.exe }} --config client.toml.example --check --reject-unknown-keys
 
       - name: the binaries report their version
         run: ./bin/aethertunnel-server${{ matrix.exe }} --version
@@ -110,6 +152,53 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/smoke-test.ps1
+
+  # The six release targets are cross-compiled above, which proves they build and
+  # nothing more. This job executes one of them on real arm64 hardware: the four arm64
+  # artifacts are otherwise never run by any workflow, on any machine.
+  test-arm64:
+    name: test (ubuntu-24.04-arm)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: uname
+        run: uname -m
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./... -count=1 -timeout 300s
+
+      - name: build
+        run: |
+          go build -o bin/aethertunnel-server .
+          go build -o bin/aethertunnel-client ./client
+
+      - name: the example configurations are valid, with no key this version does not know
+        run: |
+          ./bin/aethertunnel-server --config server.toml.example --check --reject-unknown-keys
+          ./bin/aethertunnel-client --config client.toml.example --check --reject-unknown-keys
+
+      - name: the binaries report their version
+        run: |
+          ./bin/aethertunnel-server --version
+          ./bin/aethertunnel-client --version
+
+      # A real transfer through a real tunnel on this architecture, and every other
+      # functional path with it: the steps above only show that the binaries start,
+      # and this shows they carry data. It is the same script the ubuntu-latest job
+      # runs, on arm64 hardware instead of an emulator.
+      - name: the functional paths carry data on arm64
+        run: |
+          uname -m
+          bash scripts/functional-linux.sh bin/aethertunnel-server bin/aethertunnel-client
 
   delivery:
     name: delivery (image and manifests)

@@ -219,8 +219,17 @@ func TestPostQuantumSessionAgreesAKey(t *testing.T) {
 }
 
 func TestPostQuantumServerRefusesAClientWithoutAKeyExchange(t *testing.T) {
+	dir := t.TempDir()
+	auditPath := dir + "/audit.jsonl"
+
 	cfg := postQuantumConfig(t)
+	cfg.Audit.Enabled = true
+	cfg.Audit.Path = auditPath
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("config: %v", err)
+	}
 	rs := startServer(t, cfg)
+	refusedBefore := rs.server.metrics.controlRejected.Load()
 
 	client, err := newTestClient(t, rs.addr, true)
 	if err != nil {
@@ -237,6 +246,17 @@ func TestPostQuantumServerRefusesAClientWithoutAKeyExchange(t *testing.T) {
 	}
 	if !strings.Contains(response.Error, "post-quantum") {
 		t.Fatalf("unexpected refusal: %s", response.Error)
+	}
+
+	// The refusal used to reach the client and nothing else: no counter and no audit
+	// record, so a client that could never connect because of this setting left no
+	// trace on the server.
+	if got := rs.server.metrics.controlRejected.Load(); got != refusedBefore+1 {
+		t.Errorf("the rejection counter is %d after the refusal, want %d", got, refusedBefore+1)
+	}
+	events := waitForAuditEvents(t, auditPath, 1)
+	if events[0].Event != EventControlRejected || !strings.Contains(events[0].Detail, "post-quantum") {
+		t.Errorf("the refusal is not in the audit log with its reason: %+v", events[0])
 	}
 }
 

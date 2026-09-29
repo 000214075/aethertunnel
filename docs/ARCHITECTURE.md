@@ -107,9 +107,16 @@ them on disconnect; every number the dashboard shows is read from those managers
 | `latency` | 时延移动平均最小者 |
 | `failover` | 注册顺序第一个健康成员 |
 | `adaptive` | 代价最小者，代价 = 时延移动平均 × (1 + 2 × 连续失败数)，失败数上限 4 |
+| `bandit` | UCB1：平均奖励 + 探索项 `sqrt(2·ln(候选被选次数之和+1) / 本成员被选次数)` 最大者 |
 
 成员每次回答一条流时更新移动平均（新值 = 旧值 − 旧值/4 + 本次/4，单位纳秒），
 失败时连续失败数加一、成功时清零。未测量过的成员代价为 0，因此总会被优先尝试。
+
+`bandit` 不比较时延本身，只按"这条流多久被回答"记奖励：`reward = 1 / (1 + 秒数 / 0.05)`，
+立刻回答记 1，越慢越小；每个成员各自累计被选中次数与奖励总和，估计值就是平均奖励。它另外
+每 20 次选择强制去测观测最少的成员（同样观测次数时挑估计最差的那个）：只靠探索项不够，奖励
+差距大时 `ln` 增长太慢，曾经慢过的成员恢复后会被一直跳过。学习只来自这个池子实际服务过的流，
+没有离线训练，也没有模型文件。
 
 ## 5.1 打洞与结果上报
 
@@ -255,6 +262,7 @@ Dockerfile              多阶段构建 → distroless
 scripts/build-release.* 跨平台构建与校验和
 scripts/smoke-test.ps1  端到端运维脚本（101 项检查）
 scripts/vpn-linux-test.sh  真实 tun 设备上的三层隧道检查（两端各在一个网络命名空间）
+scripts/kubernetes-linux.sh  把 deploy/kubernetes 接到一个自己的单节点 k3s 上并驱动它（需要 root）
 ```
 
 ## 11. 扩展点

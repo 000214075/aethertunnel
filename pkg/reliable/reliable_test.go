@@ -931,3 +931,51 @@ func TestNoGoroutineLeak(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// TestLossyLinkLeavesNoOutOfOrderBytesBehind covers the receive-side bookkeeping of
+// the out-of-order buffer. Bytes a gap is holding up are counted in oooBytes, and
+// that count is subtracted from the window the stream advertises, so an entry that
+// is never removed keeps the window small for the rest of the connection even
+// though nothing is being held. The lossy link is what exercises the out-of-order
+// path, so this is where a stale entry would show up.
+func TestLossyLinkLeavesNoOutOfOrderBytesBehind(t *testing.T) {
+	cfg := testConfig()
+	cfg.HandshakeTimeout = 5 * time.Second
+
+	a, b := punchPair(t, cfg,
+		func(pc packetConn) packetConn { return newLossy(pc, 71, 0.2) },
+		func(pc packetConn) packetConn { return newLossy(pc, 72, 0.2) })
+
+	payload := pattern(0x99, 256<<10)
+	errc := make(chan error, 1)
+	go func() { errc <- writeFrame(a, payload) }()
+
+	got, err := readFrame(b)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("read %d bytes, first mismatch at %d", len(got), firstDiff(got, payload))
+	}
+	if err := <-errc; err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	receiver, ok := b.(*stream)
+	if !ok {
+		t.Fatalf("the connection is a %T, not a *stream", b)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		receiver.mu.Lock()
+		held, heldBytes := len(receiver.ooo), receiver.oooBytes
+		receiver.mu.Unlock()
+		if held == 0 && heldBytes == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the drained stream still reports %d out-of-order segments worth %d bytes", held, heldBytes)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

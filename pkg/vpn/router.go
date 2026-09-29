@@ -57,7 +57,7 @@ type RouterStats struct {
 	Unroutable int64 `json:"unroutable"`
 	// Dropped is packets rejected as malformed, above the MTU, or unbuffered.
 	Dropped int64 `json:"dropped"`
-	// Errors is read and write failures.
+	// Errors is read and write failures, and the panics a peer's loop was ended by.
 	Errors int64 `json:"errors"`
 }
 
@@ -173,10 +173,22 @@ func (r *Router) PeerFor(address net.IP) (*Peer, bool) {
 // Peers are served by their own goroutines, so Run only owns the read side. It does
 // not close the device: the caller owns it, and closing a shared interface would
 // take down every peer at once.
-func (r *Router) Run(ctx context.Context) error {
+func (r *Router) Run(ctx context.Context) (err error) {
 	if r.closed.Load() {
 		return ErrClosed
 	}
+
+	// This loop reads the device and hands each packet to the peer that owns its
+	// destination, on a goroutine the router owns rather than one a connection does:
+	// a panic in it would end the process instead of the tunnel, and the caller that
+	// is waiting on this function's result would wait forever.
+	defer func() {
+		if rec := recover(); rec != nil {
+			r.errors.Add(1)
+			r.logf("vpn: panic while routing packets: %v", rec)
+			err = fmt.Errorf("vpn: the packet router panicked: %v", rec)
+		}
+	}()
 
 	buffer := make([]byte, MaxMTU)
 	for {
@@ -347,10 +359,12 @@ func (p *Peer) serve() {
 	finished := make(chan struct{}, 2)
 	go func() {
 		defer func() { finished <- struct{}{} }()
+		defer p.guard("send loop")
 		p.sendLoop()
 	}()
 	go func() {
 		defer func() { finished <- struct{}{} }()
+		defer p.guard("receive loop")
 		p.receiveLoop()
 	}()
 
@@ -361,6 +375,23 @@ func (p *Peer) serve() {
 	// A peer whose transport failed is detached, so the router stops trying to
 	// deliver to it and its address becomes free.
 	p.router.remove(p.key)
+}
+
+// guard ends one direction of a peer instead of letting a panic end the process.
+//
+// Each direction runs on its own goroutine, which the control connection's own guard
+// (see Server.handleConn) cannot reach: the packet that caused the panic arrived on a
+// client's connection, but the code that trips over it runs here. Recovering ends this
+// peer — the signal serve waits on is deferred after this guard, so it still runs —
+// while every other client's tunnel keeps running.
+//
+// The panic is counted on the router, not on the peer: the peer is detached a moment
+// later, and its own counters go with it.
+func (p *Peer) guard(direction string) {
+	if rec := recover(); rec != nil {
+		p.router.errors.Add(1)
+		p.router.logf("vpn: peer %s: panic in the %s: %v", p.key, direction, rec)
+	}
 }
 
 // sendLoop drains the outbound queue to the peer.

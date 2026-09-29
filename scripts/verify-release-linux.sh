@@ -46,10 +46,20 @@ cd "$WORK" || exit 1
 echo "== the published linux binaries"
 for name in aethertunnel-server-linux-amd64 aethertunnel-client-linux-amd64; do
     if [ -f "$DIR/SHA256SUMS" ]; then
-        # The sums name their entries as ./<file>.
-        want=$(grep -E "(^|/)${name}\$" "$DIR/SHA256SUMS" | head -n 1 | awk '{print $1}')
+        # The sums name their entries as ./<file>, and a leading space is accepted
+        # too so that a release built before build-release.ps1 wrote the prefix can
+        # still be checked. The carriage return is dropped because a sums file
+        # written on Windows ends its lines with CRLF, and the $ anchor would then
+        # match nothing, reporting every artifact as missing from the file.
+        want=$(tr -d '\r' < "$DIR/SHA256SUMS" | grep -E "(^|[ /])${name}\$" | head -n 1 | awk '{print $1}')
         got=$(sha256sum "$DIR/$name" | awk '{print $1}')
-        check "$got" "$want" "$name matches the published SHA256SUMS"
+        if [ -z "$want" ]; then
+            # Without this the check reports "want '' got <hash>", which reads like a
+            # hash mismatch when the real fault is that the file lists no entry.
+            bad "$name matches the published SHA256SUMS" "SHA256SUMS lists no entry for $name"
+        else
+            check "$got" "$want" "$name matches the published SHA256SUMS"
+        fi
     fi
     reported=$("$DIR/$name" --version)
     case "$reported" in

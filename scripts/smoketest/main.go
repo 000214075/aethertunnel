@@ -32,6 +32,10 @@ type endpoints struct {
 	TCP  string `json:"tcp"`
 	UDP  string `json:"udp"`
 	HTTP string `json:"http"`
+	// HalfClose accepts a connection, reads until the peer closes its writing
+	// side, and only then answers. A relay that turns a half-close into a full
+	// close loses the answer, and a service that echoes as it reads hides that.
+	HalfClose string `json:"halfclose"`
 }
 
 func main() {
@@ -64,6 +68,13 @@ func main() {
 	}
 	result.UDP = udpSocket.LocalAddr().String()
 	go serveUDPEcho(udpSocket, logger)
+
+	halfCloseListener, err := net.Listen("tcp", *host+":0")
+	if err != nil {
+		logger.Fatalf("half-close service: %v", err)
+	}
+	result.HalfClose = halfCloseListener.Addr().String()
+	go serveHalfClose(halfCloseListener, logger)
 
 	httpListener, err := net.Listen("tcp", *host+":0")
 	if err != nil {
@@ -104,6 +115,23 @@ func serveUDPEcho(socket net.PacketConn, logger *log.Logger) {
 		if _, err := socket.WriteTo(buf[:n], addr); err != nil {
 			return
 		}
+	}
+}
+
+// serveHalfClose answers only after the peer has closed its writing side. The
+// answer is what proves the relay kept this direction open after the other one
+// ended.
+func serveHalfClose(listener net.Listener, logger *log.Logger) {
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		go func() {
+			defer conn.Close()
+			_, _ = io.Copy(io.Discard, conn)
+			_, _ = io.WriteString(conn, "answered-after-half-close")
+		}()
 	}
 }
 

@@ -20,6 +20,16 @@ spec:
       port: 7001
       targetPort: control
       protocol: TCP
+    # The DHT node is the address the ConfigMap's dht.listen_addr names and the one
+    # dht.advertise_host is published for. Without this entry a client outside the
+    # cluster cannot join the DHT, and the hostname the server advertises resolves to
+    # a port nothing answers on. The number differs from the control port's because a
+    # Service merges its ports by number: with both on 7001, kubectl apply drops one
+    # of them and reports success.
+    - name: dht
+      port: 7003
+      targetPort: dht
+      protocol: UDP
     - name: rendezvous
       port: 7002
       targetPort: rendezvous

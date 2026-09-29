@@ -67,20 +67,26 @@ func (v *visitorSession) switchFramer(opts protocol.FramerOptions) *protocol.Fra
 func (s *Server) handleVisitor(conn net.Conn, framer *protocol.Framer, msg *protocol.Message) {
 	var req protocol.VisitorConnect
 	if len(msg.Payload) == 0 || json.Unmarshal(msg.Payload, &req) != nil {
-		s.rejectVisitor(conn, framer, "malformed visitor-connect")
+		// Counted on the series that names this reason too, exactly as a malformed
+		// AuthRequest is: the frame type is dispatched before anything is
+		// authenticated, so a payload that does not parse is a garbage frame aimed at
+		// this port rather than a policy decision.
+		s.metrics.unusableFrames.Add(1)
+		s.refuseVisitor(conn, framer, AuditEvent{
+			Event: EventVisitorRejected, Detail: "malformed visitor-connect",
+		}, "malformed visitor-connect")
 		return
 	}
 
 	remote := conn.RemoteAddr().String()
 	if !crypto.EqualTokens(req.AuthToken, s.cfg.Server.AuthToken) {
 		s.metrics.authFailures.Add(1)
-		s.metrics.controlRejected.Add(1)
-		s.auditor.Record(AuditEvent{
-			Event: EventAuthFailed, Remote: remote, Proxy: req.Proxy,
-			Outcome: "denied", Detail: "visitor connection with an invalid auth token",
-		})
+		s.recordAuthFailure(conn)
 		s.logger.Printf("visitor from %s rejected: invalid auth token", remote)
-		s.rejectVisitor(conn, framer, "invalid auth token")
+		s.refuseVisitor(conn, framer, AuditEvent{
+			Event: EventAuthFailed, Proxy: req.Proxy,
+			Detail: "visitor connection with an invalid auth token",
+		}, "invalid auth token")
 		return
 	}
 
@@ -91,22 +97,27 @@ func (s *Server) handleVisitor(conn net.Conn, framer *protocol.Framer, msg *prot
 		Signature: req.IdentitySignature,
 	}); err != nil {
 		s.metrics.authFailures.Add(1)
-		s.auditor.Record(AuditEvent{
-			Event: EventAuthFailed, Remote: remote, Proxy: req.Proxy,
-			Outcome: "denied", Detail: err.Error(),
-		})
+		s.recordAuthFailure(conn)
 		s.logger.Printf("visitor from %s rejected: %v", remote, err)
-		s.rejectVisitor(conn, framer, err.Error())
+		s.refuseVisitor(conn, framer, AuditEvent{
+			Event: EventAuthFailed, Proxy: req.Proxy, Detail: err.Error(),
+		}, err.Error())
 		return
 	}
 
 	group, err := s.tunnels.Get(req.Proxy)
 	if err != nil {
-		s.rejectVisitor(conn, framer, fmt.Sprintf("no proxy named %q is registered", req.Proxy))
+		reason := fmt.Sprintf("no proxy named %q is registered", req.Proxy)
+		s.refuseVisitor(conn, framer, AuditEvent{
+			Event: EventVisitorRejected, Proxy: req.Proxy, Detail: reason,
+		}, reason)
 		return
 	}
 	if !group.Private {
-		s.rejectVisitor(conn, framer, fmt.Sprintf("proxy %q is not a private proxy", req.Proxy))
+		reason := fmt.Sprintf("proxy %q is not a private proxy", req.Proxy)
+		s.refuseVisitor(conn, framer, AuditEvent{
+			Event: EventVisitorRejected, Proxy: req.Proxy, Detail: reason,
+		}, reason)
 		return
 	}
 
@@ -135,12 +146,10 @@ func (s *Server) handleVisitor(conn net.Conn, framer *protocol.Framer, msg *prot
 		reason := fmt.Sprintf(
 			"proxy %q carries %s, and a %q visitor carries %s: use a %s visitor",
 			req.Proxy, carries, req.Type, asked, want)
-		s.auditor.Record(AuditEvent{
-			Event: EventVisitorRejected, Remote: remote, Proxy: req.Proxy,
-			Outcome: "denied", Detail: reason,
-		})
 		s.logger.Printf("visitor from %s rejected for proxy %q: %s", remote, req.Proxy, reason)
-		s.rejectVisitor(conn, framer, reason)
+		s.refuseVisitor(conn, framer, AuditEvent{
+			Event: EventVisitorRejected, Proxy: req.Proxy, Detail: reason,
+		}, reason)
 		return
 	}
 
@@ -151,20 +160,30 @@ func (s *Server) handleVisitor(conn net.Conn, framer *protocol.Framer, msg *prot
 	var kexResponse []byte
 	if s.cfg.PostQuantum() {
 		if len(req.KEX) == 0 {
-			s.rejectVisitor(conn, framer, "this server requires a post-quantum key exchange (encryption.post_quantum)")
+			reason := "this server requires a post-quantum key exchange (encryption.post_quantum)"
+			s.refuseVisitor(conn, framer, AuditEvent{
+				Event: EventVisitorRejected, Proxy: req.Proxy, Detail: reason,
+			}, reason)
 			return
 		}
 		response, key, err := crypto.HybridServerFinish(req.KEX)
 		if err != nil {
 			s.metrics.authFailures.Add(1)
+			s.recordAuthFailure(conn)
 			s.logger.Printf("visitor from %s: post-quantum key agreement failed: %v", remote, err)
-			s.rejectVisitor(conn, framer, "post-quantum key agreement failed")
+			s.refuseVisitor(conn, framer, AuditEvent{
+				Event: EventVisitorRejected, Proxy: req.Proxy,
+				Detail: fmt.Sprintf("post-quantum key agreement failed: %v", err),
+			}, "post-quantum key agreement failed")
 			return
 		}
 		visitorCipher, err = crypto.NewCipherFromKey(s.cfg.Encryption.Algorithm, key)
 		if err != nil {
 			s.logger.Printf("visitor from %s: the agreed key is unusable: %v", remote, err)
-			s.rejectVisitor(conn, framer, "post-quantum key agreement failed")
+			s.refuseVisitor(conn, framer, AuditEvent{
+				Event: EventVisitorRejected, Proxy: req.Proxy,
+				Detail: fmt.Sprintf("the agreed key is unusable: %v", err),
+			}, "post-quantum key agreement failed")
 			return
 		}
 		kexResponse = response
@@ -179,6 +198,10 @@ func (s *Server) handleVisitor(conn net.Conn, framer *protocol.Framer, msg *prot
 	case config.AuthMethodNIZK:
 		if err := s.challengeVisitor(session, group, kexResponse); err != nil {
 			s.metrics.authFailures.Add(1)
+			s.recordAuthFailure(conn)
+			// challengeVisitor has already written the refusal on the wire, so this is
+			// only the accounting half of what refuseVisitor does for the other paths.
+			s.metrics.controlRejected.Add(1)
 			s.auditor.Record(AuditEvent{
 				Event: EventVisitorRejected, Remote: remote, Proxy: req.Proxy,
 				Outcome: "denied", Detail: err.Error(),
@@ -189,17 +212,17 @@ func (s *Server) handleVisitor(conn net.Conn, framer *protocol.Framer, msg *prot
 	default:
 		if !group.matchesSecret(req.Secret) {
 			s.metrics.authFailures.Add(1)
-			s.auditor.Record(AuditEvent{
-				Event: EventVisitorRejected, Remote: remote, Proxy: req.Proxy,
-				Outcome: "denied", Detail: "invalid secret key",
-			})
+			s.recordAuthFailure(conn)
 			s.logger.Printf("visitor from %s rejected for proxy %q: invalid secret key", remote, req.Proxy)
-			s.rejectVisitor(conn, framer, "invalid secret key")
+			s.refuseVisitor(conn, framer, AuditEvent{
+				Event: EventVisitorRejected, Proxy: req.Proxy, Detail: "invalid secret key",
+			}, "invalid secret key")
 			return
 		}
 	}
 
 	s.metrics.controlAccepted.Add(1)
+	s.recordAuthSuccess(conn)
 	s.auditor.Record(AuditEvent{
 		Event: EventVisitorAccepted, Remote: remote, Proxy: req.Proxy,
 		Outcome: "ok",
@@ -261,6 +284,26 @@ func (s *Server) challengeVisitor(session *visitorSession, group *ProxyGroup, ke
 		return err
 	}
 	return nil
+}
+
+// refuseVisitor answers a visitor the server has not accepted with a refusal and books
+// it. A visitor arrives on the control port and is answered the way an ordinary client
+// is, so its refusals have to reach the same two places a control connection's do: the
+// aggregate rejection counter — the one an alert watches when the reason does not
+// matter — and the audit log, which is what makes the refusal attributable afterwards.
+// Refusing the connection and the visitor being told are the same event, so the reason
+// on the wire and in the log is one argument.
+//
+// A refusal after acceptance, which is a relay that cannot be set up rather than a
+// connection that was turned away, goes through rejectVisitor alone: the connection was
+// already accepted, and counting it again would make accepted plus rejected exceed the
+// connections the server answered.
+func (s *Server) refuseVisitor(conn net.Conn, framer *protocol.Framer, event AuditEvent, reason string) {
+	event.Remote = conn.RemoteAddr().String()
+	event.Outcome = "denied"
+	s.metrics.controlRejected.Add(1)
+	s.auditor.Record(event)
+	s.rejectVisitor(conn, framer, reason)
 }
 
 // rejectVisitor reports a refusal to a visitor and closes its connection.
