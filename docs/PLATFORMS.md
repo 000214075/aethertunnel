@@ -831,3 +831,26 @@ server stopped: listen on 127.0.0.1:34807: the address is already in use (anothe
   TOML 解析器以 `invalid escape in string` 拒绝，必须写成 `key_file = 'Z:\...\k.key'`。
   这是配置写法问题，不是程序缺陷，但只有真在 Windows 上跑才会遇到。
 - **Windows 作业脚本里 `envFrom` 式的环境变量注入**：见仓库的 Kubernetes 清单检查。
+
+## 3.21 三层隧道在真实 Windows 与 macOS 运行器上打开设备（CI 实测）
+
+1.0 的最后一块：`[vpn]` 不再只在 Linux 打开设备。Windows 加载官方 `wintun.dll`（本程序不装
+驱动；DLL 缺失时拒绝并指路 wintun.net），macOS 打开 utun 控制套接字；转发代码与 Linux 完全
+共用，设备只是各自的接口缝（`pkg/vpn/device_wintun.go`、`device_utun.go`）。
+
+CI 在真实运行器上验证（CI run 36592357558，macOS 与 Windows 两个作业全绿）：
+
+- **macOS（macos-latest，脚本以 root 跑）**：两端各开一个 utun（utun8/utun9），服务端占用
+  `10.63.9.1`，客户端从地址池领到 `10.63.9.2` 并写进自己的接口，`/api/vpn` 上报
+  `addresses_used: 1` 与 `peers: 1`，`vpn.require` 拒绝了不带 `[vpn]` 的客户端。
+  新增 `scripts/vpn-macos-test.sh`（7 项）。
+- **Windows（windows-latest，脚本以管理员跑）**：两端各开一块 Wintun 适配器
+  （AetherTunnelServer/AetherTunnelClient），地址同样落卡（`Get-NetIPAddress` 可见），`/api/vpn`
+  同样上报，`vpn.require` 同样拒绝。新增 `scripts/vpn-windows-test.ps1`（7 项）。
+- **逐包路径的证明范围，文档如实分开**：同一台机器上两块网卡之间的 ICMP 会被本机路由表抄近
+  路（Windows 实测 `ping -S 10.63.7.2 10.63.7.1` 超时，正是这个原因），所以"包真的穿过驱动
+  与隧道"由 Linux 的命名空间测试（3.13，23 项）证明，三平台转发代码共用。
+
+过程中抓到并修掉的对接问题，都记在对应文件里：wintun 0.14.1 的 DLL 没有 `WintunDeleteAdapter`
+导出（Close 释放本进程创建的适配器即可，重开用 `WintunOpenAdapter`）；netsh 的子接口用位置
+参数、`set address` 用 `name=`；Go 进程的日志在 stderr，测试脚本两路都要看。
