@@ -17,7 +17,6 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -1090,7 +1089,7 @@ func (r *socksUDPRelay) run() {
 type socksUDPTarget struct {
 	conn     net.Conn
 	target   string
-	lastUsed atomic.Int64 // UnixNano of the most recent datagram sent to this target
+	lastUsed uint64 // monotonic use counter of the most recent use; guarded by r.mu
 }
 
 // maxSocksUDPTargets bounds how many distinct targets one socks5 UDP association
@@ -1112,6 +1111,10 @@ type socksUDPRelay struct {
 	// maxSocksUDPTargets. It is a field so a test can drive a small cap.
 	maxSockets int
 
+	// useSeq numbers every use of a target socket. lastUsed compares these, so
+	// eviction is a total order even where the platform's clock would tie.
+	useSeq uint64
+
 	mu      sync.Mutex
 	sockets map[string]*socksUDPTarget
 }
@@ -1120,11 +1123,12 @@ type socksUDPRelay struct {
 // time. The target is the header's address exactly as the visitor named it, so
 // two datagrams to the same target share a socket and its reply reader.
 func (r *socksUDPRelay) socketFor(target string) (net.Conn, error) {
-	now := time.Now().UnixNano()
 	r.mu.Lock()
+	r.useSeq++
+	seq := r.useSeq
 	entry, ok := r.sockets[target]
 	if ok {
-		entry.lastUsed.Store(now)
+		entry.lastUsed = seq
 		r.mu.Unlock()
 		return entry.conn, nil
 	}
@@ -1134,7 +1138,7 @@ func (r *socksUDPRelay) socketFor(target string) (net.Conn, error) {
 		return nil, err
 	}
 	entry = &socksUDPTarget{conn: conn, target: target}
-	entry.lastUsed.Store(now)
+	entry.lastUsed = seq
 	r.sockets[target] = entry
 	r.evictLocked()
 	r.mu.Unlock()
@@ -1156,7 +1160,7 @@ func (r *socksUDPRelay) evictLocked() {
 	}
 	var oldest *socksUDPTarget
 	for _, entry := range r.sockets {
-		if oldest == nil || entry.lastUsed.Load() < oldest.lastUsed.Load() {
+		if oldest == nil || entry.lastUsed < oldest.lastUsed {
 			oldest = entry
 		}
 	}

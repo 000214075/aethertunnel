@@ -89,6 +89,14 @@
 
 ### 修复
 
+- **socks5 UDP 中继的"最久未用"驱逐在 Windows 上会选错对象**。`lastUsed` 原来用 `time.Now()`
+  打点，而 Windows 的时钟粒度粗：同一毫秒内的"新建"与"再使用"拿到同一时间戳，驱逐的比较并列，
+  实际驱逐谁退化为 map 的随机顺序。现在改为互斥锁下的单调使用计数器——驱逐是全序，与平台时钟
+  无关（windows-latest 的真实 CI 先红后绿）。
+- **Kubernetes 清单契约测试在 Windows 上恒失败**。容器内的路径用 `filepath.Join` 拼接，Windows
+  上得到 `\etc\aethertunnel\server.toml`，与镜像真实的 `/etc/...` 永远不等；容器路径是 POSIX
+  形状、与跑测试的平台无关，改用 `path.Join`。
+
 - **Windows 上，控制端口绑定失败时报的是一个要自己去查的错误码**。同一个失败在两个平台上的读法
   完全不同：Linux 写 `bind: address already in use`（诊断就是结论），Windows 写
   `bind: winapi error #10048`——Go 的 net 包把 socket 错误原样带出来，而 Windows 的这些代码没有

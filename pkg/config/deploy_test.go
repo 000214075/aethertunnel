@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -180,7 +181,10 @@ func TestTheImageExpectsTheConfigTheDeploymentMounts(t *testing.T) {
 	if block == nil {
 		t.Fatal("the ConfigMap has no block scalar to name")
 	}
-	want := filepath.Join(mount[1], block[1])
+	// Container paths are POSIX on every platform, including the one running the
+	// test: filepath.Join would write \etc\... on Windows and compare unequal to
+	// what the image really starts with.
+	want := path.Join(mount[1], block[1])
 	if configPath != want {
 		t.Errorf("the image starts with --config %s, but the Deployment provides %s", configPath, want)
 	}
