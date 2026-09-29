@@ -80,7 +80,7 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `remote_port` | int | 0 | 服务器上对外开放的端口。`tcp`/`udp` 用它；`http`/`https` 与私有类型必须为 0。同一客户端里两个**同协议**的代理不能请求同一个端口（先注册的绑住它，第二个会被拒绝），`tcp` 与 `udp` 用同一个端口号是允许的：它们绑的是不同协议的两个套接字 |
 | `domains` | []string | 空 | `http`/`https` 的访问域名：精确域名、`*.通配`，或留空后由服务端 `subdomain_host` 拼出 `<代理名>.<该值>`。留空时客户端只给出警告，因为该设置属于服务端 |
 | `secret_key` | string | 空 | 私有类型必填，也是访客侧的凭据 |
-| `auth_method` | string | `secret` | `secret` 直接比对；`nizk` 用 Schnorr 证明，secret 不出现在线上 |
+| `auth_method` | string | `secret` | `secret` 直接比对；`nizk` 用 Schnorr 证明，secret 不出现在线上；`snark` 用 Groth16 的 zk-SNARK 证明（电路与可信设置说明见 `pkg/snarkauth`），secret 不出现在线上且证明绑定本次挑战 |
 | `group` | string | 空 | 填入同一名字的多个客户端组成代理池 |
 | `multipath` | int | 0 | 数据报代理最多使用的数据连接数（0–8）。字节流代理上会给出警告 |
 | `allow_targets` | []string | 空 | 仅 `socks5`：本客户端允许拨号的地址范围（CIDR）。**必填**，缺失即拒绝注册 |

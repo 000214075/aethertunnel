@@ -2,8 +2,8 @@
 #
 # The builder stage is pinned to the same Go release the module needs: the
 # post-quantum key agreement uses crypto/mlkem from the standard library, which
-# first shipped in Go 1.24.
-FROM golang:1.24 AS builder
+# first shipped in Go 1.24; the visitor-auth zk-SNARK needs Go 1.25 (gnark).
+FROM golang:1.25 AS builder
 
 WORKDIR /src
 

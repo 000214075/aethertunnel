@@ -25,18 +25,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # 1.24 is the minimum: the post-quantum key agreement uses crypto/mlkem
-          # from the standard library, which first shipped in that release. The
-          # macOS job also needs 1.23 or later, because 1.22's linker omitted
-          # LC_UUID and the dyld on macos-latest refuses to run such binaries.
+          # 1.25 is the minimum: the post-quantum key agreement uses crypto/mlkem
+          # from the standard library (first shipped in 1.24) and the visitor-auth
+          # zk-SNARK proof needs gnark, which requires 1.25. The macOS job also
+          # needs a recent linker: 1.22's omitted LC_UUID and the dyld on
+          # macos-latest refuses to run such binaries.
           - os: ubuntu-latest
-            go: '1.24'
+            go: '1.25'
             exe: ''
           - os: windows-latest
-            go: '1.24'
+            go: '1.25'
             exe: '.exe'
           - os: macos-latest
-            go: '1.24'
+            go: '1.25'
             exe: ''
     steps:
       - uses: actions/checkout@v4
@@ -184,7 +185,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
           cache: true
 
       - name: uname
