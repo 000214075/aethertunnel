@@ -140,6 +140,18 @@ type ProxyConfig struct {
 const (
 	AuthMethodSecret = "secret"
 	AuthMethodNIZK   = "nizk"
+	// AuthMethodSNARK proves knowledge of the secret with a Groth16 proof instead
+	// of a signature: the proof says nothing about the secret and is bound to the
+	// challenge. See pkg/snarkauth for the circuit and its trusted-setup note.
+	AuthMethodSNARK = "snark"
+)
+
+// Visitor transports accepted in [[visitors]].transport.
+const (
+	// TransportDefault relays the visitor's data over the control connection.
+	TransportDefault = ""
+	// TransportWebRTC moves the visitor's data path onto a WebRTC DataChannel.
+	TransportWebRTC = "webrtc"
 )
 
 // Proxy types accepted in [[proxies]].
@@ -214,8 +226,11 @@ type VisitorConfig struct {
 	// AuthMethod must match the proxy's auth_method for the key to stay local:
 	// "secret" sends it, "nizk" proves knowledge of it.
 	AuthMethod string `toml:"auth_method"`
-	BindAddr   string `toml:"bind_addr"`
-	BindPort   int    `toml:"bind_port"`
+	// Transport selects the data path for this visitor: the default relays over
+	// the control connection, "webrtc" moves it onto a WebRTC DataChannel.
+	Transport string `toml:"transport"`
+	BindAddr  string `toml:"bind_addr"`
+	BindPort  int    `toml:"bind_port"`
 }
 
 // ListenAddr is the local address a visitor listens on.
@@ -1420,7 +1435,7 @@ func (c *Config) Validate(role string) error {
 					"proxy %q: %s is a private tunnel and needs a secret_key", p.Name, p.Type))
 			}
 			switch p.AuthMethod {
-			case AuthMethodSecret, AuthMethodNIZK:
+			case AuthMethodSecret, AuthMethodNIZK, AuthMethodSNARK:
 			default:
 				problems = append(problems, fmt.Sprintf(
 					"proxy %q: auth_method %q is not supported (use %q or %q)",
@@ -1471,11 +1486,18 @@ func (c *Config) Validate(role string) error {
 			problems = append(problems, fmt.Sprintf("visitor %q: secret_key is required", v.Name))
 		}
 		switch v.AuthMethod {
-		case AuthMethodSecret, AuthMethodNIZK:
+		case AuthMethodSecret, AuthMethodNIZK, AuthMethodSNARK:
 		default:
 			problems = append(problems, fmt.Sprintf(
 				"visitor %q: auth_method %q is not supported (use %q or %q); it must match the proxy's auth_method",
 				v.Name, v.AuthMethod, AuthMethodSecret, AuthMethodNIZK))
+		}
+		switch v.Transport {
+		case "", TransportWebRTC:
+		default:
+			problems = append(problems, fmt.Sprintf(
+				"visitor %q: transport %q is not supported (use the default or webrtc)",
+				v.Name, v.Transport))
 		}
 		if v.BindPort < 1 || v.BindPort > 65535 {
 			problems = append(problems, fmt.Sprintf("visitor %q: bind_port must be 1-65535, got %d", v.Name, v.BindPort))

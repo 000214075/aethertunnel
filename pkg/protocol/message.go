@@ -68,6 +68,13 @@ const (
 	TypeP2PPeer MessageType = 14
 	// TypeP2PFallback asks the server for the relayed path after a failed punch.
 	TypeP2PFallback MessageType = 15
+	// TypeVisitorWebRTCOffer carries a visitor's WebRTC offer: a private proxy's
+	// data path moves onto a DataChannel when the visitor asks for it, and the
+	// signaling travels on the already-authenticated control connection.
+	TypeVisitorWebRTCOffer MessageType = 22
+	// TypeVisitorWebRTCAnswer carries the server's answer to that offer.
+	TypeVisitorWebRTCAnswer MessageType = 23
+
 	// TypeVisitorChallenge carries the nonce a visitor must prove knowledge of
 	// the proxy secret against, for auth_method = "nizk".
 	TypeVisitorChallenge MessageType = 16
@@ -474,6 +481,10 @@ type VisitorConnect struct {
 	Secret string `json:"secret,omitempty"`
 	// Type is the transport the visitor wants: "tcp", "udp" or "xtcp".
 	Type string `json:"type,omitempty"`
+	// Transport selects how the visitor's data path reaches the server: the
+	// default relays over this control connection, "webrtc" moves it onto a
+	// WebRTC DataChannel whose signaling is this same connection.
+	Transport string `json:"transport,omitempty"`
 	// AuthToken is the server's auth token, so a visitor connection is
 	// authenticated exactly like a control connection.
 	AuthToken string `json:"auth_token,omitempty"`
@@ -500,6 +511,19 @@ type VisitorChallenge struct {
 // VisitorProve is the visitor's answer to a challenge.
 type VisitorProve struct {
 	Proof []byte `json:"proof"`
+}
+
+// VisitorWebRTCOffer is the visitor's WebRTC offer for a webrtc-transport
+// data path. It carries the whole SDP with ICE candidates gathered: the
+// control connection is the only signaling there is.
+type VisitorWebRTCOffer struct {
+	Proxy string `json:"proxy"`
+	SDP   string `json:"sdp"`
+}
+
+// VisitorWebRTCAnswer is the server's answer to that offer.
+type VisitorWebRTCAnswer struct {
+	SDP string `json:"sdp"`
 }
 
 // VisitorProofContext builds the context a visitor's Schnorr proof is bound to.

@@ -1,10 +1,11 @@
 # 设计边界 · Scope and Non-Goals
 
-本文件记录本版本**有意不做**的三项能力：每一项写明设计上的考虑、同样目的下**本程序真正可用**
+本文件记录本版本**有意不做**的两项能力：每一项写明设计上的考虑、同样目的下**本程序真正可用**
 的做法，以及若要实现大致需要什么。它们是设计取舍，不是待办清单——表格里的每一项 ✅ 能力
-都是已完成并通过检查的。（曾经的「TLS 会话模拟」在本版本里以 `disguise = "tls-session"`
-实现，曾经的「Windows 与 macOS 的 tun 设备」以 Wintun 与 utun 实现，曾经的「zk-SNARK」以
-`auth_method = "snark"` 的 Groth16 电路实现：三者都移进了 README 的能力表。）
+都是已完成并通过检查的。（曾经的「TLS 会话模拟」在本版本里以 `disguise = "tls-session"` 实现，曾经的「Windows 与
+macOS 的 tun 设备」以 Wintun 与 utun 实现，曾经的「zk-SNARK」以 `auth_method = "snark"` 的
+Groth16 电路实现，曾经的「WebRTC」以 `transport = "webrtc"` 的访客数据通道实现：四者都移进了
+README 的能力表。）
 
 命名规则：文档里能力的名称按实际能力书写，做到什么写什么。历史背景（v3.1.0 之前宣称过
 未实现的功能）记录在 [`CHANGELOG.md`](../CHANGELOG.md) 的开篇说明里。
@@ -30,25 +31,17 @@ SOCKS5 客户端指向 `<服务器>:<remote_port>` 即可使用；`http`/`https`
 
 它提供的是**可审计性**（`--verify-ledger` 与 `--ledger-proof`），不是去中心化。
 
-## WebRTC
-
-XTCP 用的是自己的 UDP 打洞实现（HMAC-SHA256 同时打开 + 可靠有序字节流），不依赖 WebRTC 协议栈，
-也不需要 ICE/DTLS/SCTP 中任何一项。
-
-打洞成功走直连、失败自动经服务端中继，访客会回报实际走的是哪条路径，指标与审计记录的是实测结果
-而不是猜测。
-
 ---
 
 ## English
 
-This file records three capabilities that are **deliberately out of scope** for this release. Each
+This file records two capabilities that are **deliberately out of scope** for this release. Each
 entry gives the design reasoning, what this program offers instead for the same purpose, and what
 an implementation would take. They are design decisions, not a to-do list — every ✅ capability in
 the README is complete and covered by checks. Three earlier entries left this list in this release:
 TLS session emulation became `disguise = "tls-session"`, the tun devices on Windows and macOS
-became real Wintun and utun devices, and the zk-SNARK became `auth_method = "snark"`, a Groth16
-circuit over the proxy's secret — all moved to the README's capability table.
+became real Wintun and utun devices, the zk-SNARK became `auth_method = "snark"`, and WebRTC
+became the `transport = "webrtc"` visitor data path — all moved to the README's capability table.
 
 Naming follows what the code actually does. The historical background (features claimed before
 v3.1.0 that were never implemented) is recorded at the top of [`CHANGELOG.md`](../CHANGELOG.md).
@@ -57,4 +50,3 @@ v3.1.0 that were never implemented) is recorded at the top of [`CHANGELOG.md`](.
 | --- | --- | --- |
 | Mobile app | the release ships two executables, a server and a client; no iOS/Android project or mobile build artifacts | publish a `socks5` exit (`remote_port` + `allow_targets`) and point any phone SOCKS5 client at it; `http`/`https` proxies work with the system proxy settings |
 | blockchain, tokens, incentives | the ledger is a signed hash chain by design: no consensus, no currency, no miners | `--verify-ledger` and `--ledger-proof` give auditability without a distributed ledger |
-| WebRTC | XTCP is its own UDP hole punching (HMAC-SHA256 simultaneous open over a reliable byte stream); no ICE, DTLS or SCTP | a failed punch falls back to the server's relay automatically, and the visitor reports which path it actually took |

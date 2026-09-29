@@ -9,6 +9,7 @@ import (
 	"github.com/aethertunnel/aethertunnel/pkg/config"
 	"github.com/aethertunnel/aethertunnel/pkg/crypto"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
+	"github.com/aethertunnel/aethertunnel/pkg/webrtcvisitor"
 )
 
 // punchWait is how long the server keeps a visitor connection open while the
@@ -235,8 +236,54 @@ func (s *Server) handleVisitor(conn net.Conn, framer *protocol.Framer, msg *prot
 	case protocol.ProxyTypeSUDP:
 		s.relayDatagramVisitor(session, group)
 	default:
+		if req.Transport == config.TransportWebRTC {
+			s.serveWebRTCVisitor(session, group, req)
+			return
+		}
 		s.relayStreamVisitor(session, group)
 	}
+}
+
+// serveWebRTCVisitor moves a stream visitor's data path onto a WebRTC
+// DataChannel. The signaling is this control connection: the answer frame
+// goes out after the acceptance, and everything the visitor sends from then
+// on arrives through DTLS over ICE instead of through the relay.
+func (s *Server) serveWebRTCVisitor(session *visitorSession, group *ProxyGroup, req protocol.VisitorConnect) {
+	ack := protocol.DataOpenAck{OK: true, KEX: session.takeKEX()}
+	if err := session.framer.WriteJSON(protocol.TypeDataOpenAck, ack); err != nil {
+		return
+	}
+	session.switchFramer(s.framerOptions())
+
+	var offer protocol.VisitorWebRTCOffer
+	if err := session.framer.ReadJSON(protocol.TypeVisitorWebRTCOffer, &offer); err != nil {
+		s.logger.Printf("webrtc visitor for proxy %q: %v", req.Proxy, err)
+		return
+	}
+	answerSDP, wait, cleanup, err := webrtcvisitor.ServerAccept(offer.SDP)
+	if err != nil {
+		s.logger.Printf("webrtc visitor for proxy %q: %v", req.Proxy, err)
+		return
+	}
+	defer cleanup()
+	if err := session.framer.WriteJSON(protocol.TypeVisitorWebRTCAnswer, protocol.VisitorWebRTCAnswer{SDP: answerSDP}); err != nil {
+		s.logger.Printf("webrtc visitor for proxy %q: %v", req.Proxy, err)
+		return
+	}
+	dataPath, err := wait()
+	if err != nil {
+		s.logger.Printf("webrtc visitor for proxy %q: %v", req.Proxy, err)
+		return
+	}
+	defer dataPath.Close()
+
+	member, stream, err := group.openForVisitor()
+	if err != nil {
+		s.logger.Printf("webrtc visitor from %s: %v", session.remote, err)
+		return
+	}
+	defer stream.release()
+	_ = member.pipeStream(dataPath, stream.dc, "webrtc visitor "+session.remote)
 }
 
 // challengeVisitor asks a visitor to prove it knows the proxy's secret key. The

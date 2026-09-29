@@ -13,6 +13,7 @@ import (
 	"github.com/aethertunnel/aethertunnel/pkg/crypto"
 	flynet "github.com/aethertunnel/aethertunnel/pkg/net"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
+	"github.com/aethertunnel/aethertunnel/pkg/webrtcvisitor"
 )
 
 // visitorPath is one way into a private proxy: either a relayed stream through
@@ -165,6 +166,36 @@ func (c *client) openVisitorPath(ctx context.Context, cfg config.VisitorConfig) 
 			return nil, err
 		}
 		framer, cipher = ready.framer, ready.cipher
+	}
+
+	if cfg.Transport == config.TransportWebRTC {
+		// The control connection carried the authentication and will carry the
+		// signaling; the data itself moves onto a WebRTC DataChannel.
+		offerSDP, accept, cleanup, err := webrtcvisitor.VisitorOffer()
+		if err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		defer cleanup()
+		if err := framer.WriteJSON(protocol.TypeVisitorWebRTCOffer, protocol.VisitorWebRTCOffer{
+			Proxy: cfg.ServerName, SDP: offerSDP,
+		}); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("send the WebRTC offer: %w", err)
+		}
+		var answer protocol.VisitorWebRTCAnswer
+		if err := framer.ReadJSON(protocol.TypeVisitorWebRTCAnswer, &answer); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("read the WebRTC answer: %w", err)
+		}
+		dataPath, err := accept(answer.SDP)
+		if err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		// The control connection carried only signaling from here on.
+		_ = conn.Close()
+		return &visitorPath{conn: dataPath, stream: dataPath, direct: true}, nil
 	}
 
 	return &visitorPath{

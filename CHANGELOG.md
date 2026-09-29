@@ -14,6 +14,10 @@
 
 ### 新增
 
+- **`transport = "webrtc"`：私有代理的访客数据路径可以走 WebRTC DataChannel**。信令就是
+  已经完成认证的控制连接（一次 offer 帧、一次 answer 帧，ICE 候选非渐进收集），数据本身是
+  DTLS 加密、ICE 选路的 UDP 字节流——直连被墙的网络环境下数据路径的另一种形态。访客配置
+  `transport = "webrtc"` 即启用；端到端测试用 pion 在进程内跑完整握手并验证字节穿过隧道。
 - **`auth_method = "snark"`：私有代理的访客认证有了真正的 zk-SNARK**。这是设计边界里
   "zk-SNARK"那一项的实现：访客不再用 Schnorr 签名，而是用 Groth16 证明自己知道代理的
   secret——992 个约束的电路（MiMC 承诺 + 挑战绑定），证明只要几十毫秒，不含 secret 的任何
