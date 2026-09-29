@@ -387,7 +387,7 @@ func (c *client) dialServer() (net.Conn, error) {
 	// The disguise is the outermost layer, so an observer sees it rather than this
 	// program's frame header. Wrapping inside TLS would hide them instead.
 	if disguise := c.cfg.ObfuscationDisguise(); disguise != obfs.DisguiseNone {
-		disguised, err := obfs.Wrap(conn, disguise)
+		disguised, err := obfs.Wrap(conn, disguise, obfs.Dialer)
 		if err != nil {
 			_ = conn.Close()
 			return nil, err

@@ -1,8 +1,9 @@
 # 设计边界 · Scope and Non-Goals
 
-本文件记录本版本**有意不做**的六项能力：每一项写明设计上的考虑、同样目的下**本程序真正可用**
+本文件记录本版本**有意不做**的五项能力：每一项写明设计上的考虑、同样目的下**本程序真正可用**
 的做法，以及若要实现大致需要什么。它们是设计取舍，不是待办清单——表格里的每一项 ✅ 能力
-都是已完成并通过检查的。
+都是已完成并通过检查的。（曾经的第六项「TLS 会话模拟」在本版本里以 `disguise = "tls-session"`
+实现，移进了 README 的能力表。）
 
 命名规则：文档里能力的名称按实际能力书写，做到什么写什么。历史背景（v3.1.0 之前宣称过
 未实现的功能）记录在 [`CHANGELOG.md`](../CHANGELOG.md) 的开篇说明里。
@@ -59,23 +60,16 @@ nonce，访客用 nonce 与代理名组成上下文做证明）。它按设计**
 需要密钥不出现在线上时用 `auth_method = "nizk"`，并同时开启 `[encryption]` 或 `[transport]`，
 其余环节就不再有明文密钥。
 
-## TLS 会话模拟
-
-`disguise = "tls-record"` 只是把每次写入包进 TLS 记录头，**没有握手**：它能骗过只看首字节或
-只看记录分片的识别器，骗不过会建模 TLS 会话（握手序列、证书、扩展、时序）的识别器——这是
-明确写进文档的能力边界。
-
-**可用的替代**：需要一个**真实的 TLS 会话**时用 `[transport] enable_tls`——那是真正的
-TLS 握手与加密，客户端可用 `ca_file` 校验证书；`disguise` 是给"不能用 TLS"的场合准备的外观。
-
 ---
 
 ## English
 
-This file records six capabilities that are **deliberately out of scope** for this release. Each
+This file records five capabilities that are **deliberately out of scope** for this release. Each
 entry gives the design reasoning, what this program offers instead for the same purpose, and what
 an implementation would take. They are design decisions, not a to-do list — every ✅ capability in
-the README is complete and covered by checks.
+the README is complete and covered by checks. A sixth entry, TLS session emulation, left this list
+in this release: `disguise = "tls-session"` implements it as a real TLS handshake and moved to the
+README's capability table.
 
 Naming follows what the code actually does. The historical background (features claimed before
 v3.1.0 that were never implemented) is recorded at the top of [`CHANGELOG.md`](../CHANGELOG.md).
@@ -87,4 +81,3 @@ v3.1.0 that were never implemented) is recorded at the top of [`CHANGELOG.md`](.
 | blockchain, tokens, incentives | the ledger is a signed hash chain by design: no consensus, no currency, no miners | `--verify-ledger` and `--ledger-proof` give auditability without a distributed ledger |
 | WebRTC | XTCP is its own UDP hole punching (HMAC-SHA256 simultaneous open over a reliable byte stream); no ICE, DTLS or SCTP | a failed punch falls back to the server's relay automatically, and the visitor reports which path it actually took |
 | zk-SNARK | `nizk` is a Schnorr proof over P-256 — knowledge of a secret, deliberately without succinctness or a trusted setup | use `auth_method = "nizk"` when the key must not appear on the wire, with `[encryption]` or `[transport]` on |
-| TLS session emulation | `disguise = "tls-record"` wraps writes in TLS record headers with **no handshake** — an appearance, stated as such | use `[transport] enable_tls` when a real TLS session is what you need; the disguise is for the cases where TLS is not available |

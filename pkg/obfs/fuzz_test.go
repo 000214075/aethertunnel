@@ -46,7 +46,7 @@ func FuzzRecordRead(f *testing.F) {
 	f.Add([]byte("GET / HTTP/1.1\r\n\r\n"))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		conn, err := Wrap(&fuzzConn{r: bytes.NewReader(data)}, DisguiseTLSRecord)
+		conn, err := Wrap(&fuzzConn{r: bytes.NewReader(data)}, DisguiseTLSRecord, Dialer)
 		if err != nil {
 			t.Fatalf("Wrap: %v", err)
 		}

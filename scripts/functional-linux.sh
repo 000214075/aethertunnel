@@ -2351,6 +2351,147 @@ for layer in "post-quantum:post-quantum" "tls:wrapped in TLS" "identity:require_
 done
 
 echo
+echo "== a session disguise that is a real TLS handshake"
+
+# tls-session wraps every connection in a genuine TLS handshake with a freshly
+# minted self-signed certificate, which is what the record disguise deliberately
+# lacks. The transfer proves the tunnel runs inside it, a TLS-speaking probe must
+# see a session that is one, and a peer that sends record bytes without a
+# handshake must be refused.
+SES_CONTROL="$(free_port)"
+SES_DASHBOARD="$(free_port)"
+SES_PROXY="$(free_port)"
+
+cat > session-server.toml <<EOF
+[server]
+bind_addr = "127.0.0.1"
+bind_port = $SES_CONTROL
+auth_token = "$TOKEN"
+
+[obfuscation]
+enabled = true
+disguise = "tls-session"
+
+[dashboard]
+enabled = true
+bind_addr = "127.0.0.1"
+port = $SES_DASHBOARD
+EOF
+
+cat > session-owner.toml <<EOF
+[client]
+server_addr = "127.0.0.1:$SES_CONTROL"
+auth_token = "$TOKEN"
+
+[obfuscation]
+enabled = true
+disguise = "tls-session"
+
+[[proxies]]
+name = "session-tcp"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = $TCP_ECHO_PORT
+remote_port = $SES_PROXY
+EOF
+
+"$SERVER" --config session-server.toml > session-server.log 2>&1 &
+PIDS+=($!)
+"$CLIENT" --config session-owner.toml > session-owner.log 2>&1 &
+PIDS+=($!)
+
+session_ready="no"
+for _ in $(seq 1 80); do
+    if wait_for_tcp "$SES_PROXY" 1 2>/dev/null; then
+        session_ready="yes"
+        break
+    fi
+    sleep 0.5
+done
+
+if [ "$session_ready" = "yes" ]; then
+    session_result="$(python3 - "$SES_PROXY" <<'PY'
+import socket, sys
+payload = b"through-a-real-tls-session"
+try:
+    s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=20)
+except OSError as exc:
+    print("no connection: %s" % exc)
+else:
+    s.settimeout(20)
+    s.sendall(payload)
+    got = b""
+    while len(got) < len(payload):
+        chunk = s.recv(4096)
+        if not chunk:
+            break
+        got += chunk
+    s.close()
+    print("ok" if got == payload else "got %r" % got)
+PY
+)"
+    check "$session_result" "ok" "a transfer survives the session disguise"
+else
+    bad "the session-disguised pair came up" "$(tail -2 session-server.log) | $(tail -2 session-owner.log)"
+    echo "--- session-server.log ---"; tail -8 session-server.log
+    echo "--- session-owner.log ---"; tail -8 session-owner.log
+fi
+
+# A detector that models TLS sessions must see a session that is one: a completed
+# handshake, a modern protocol version, and the fresh anonymous certificate.
+probe_result="$(python3 - "$SES_CONTROL" <<'PY'
+import socket, ssl, sys
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE
+try:
+    raw = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=10)
+except OSError as exc:
+    print("probe failed: %s" % exc)
+else:
+    try:
+        with ctx.wrap_socket(raw, server_hostname="aethertunnel") as s:
+            cert = s.getpeercert(binary_form=True)
+            good = bool(cert) and s.version() in ("TLSv1.2", "TLSv1.3")
+            print("ok" if good else "version %s, certificate %s" % (s.version(), bool(cert)))
+    except Exception as exc:
+        print("probe failed: %s" % exc)
+PY
+)"
+check "$probe_result" "ok" "a TLS-speaking probe sees a real session on the control port"
+
+# Record-shaped bytes without a handshake are not TLS: the connection closes
+# (possibly with a TLS alert) instead of the tunnel starting.
+garbage_result="$(python3 - "$SES_CONTROL" <<'PY'
+import socket, sys
+try:
+    s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=10)
+except OSError as exc:
+    print("refused")
+else:
+    try:
+        s.settimeout(10)
+        s.sendall(b"\x17\x03\x03\x00\x01x")
+        data = s.recv(64)
+        if not data or data[0] == 0x15:
+            print("refused")
+        else:
+            print("answered %r" % data[:16])
+    except OSError:
+        print("refused")
+    finally:
+        s.close()
+PY
+)"
+check "$garbage_result" "refused" "a peer that never speaks TLS is refused"
+
+if grep -qF "connection disguise: tls-session" session-server.log; then
+    ok "the session disguise announced itself in the log"
+else
+    bad "the session disguise announced itself in the log" "no line containing 'connection disguise: tls-session'"
+fi
+
+echo
 echo "== the bandwidth ledger"
 
 # The ledger is the record of usage that leaves this server, and it was the one

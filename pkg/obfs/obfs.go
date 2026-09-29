@@ -1,18 +1,28 @@
 // Package obfs wraps a connection so that what a passive observer sees on the wire
 // is not the tunnel's own frame header.
 //
-// The wrapper is a byte-stream transform, not a protocol: it adds no handshake and
-// no key material, so it hides the shape of the traffic rather than its contents.
-// Encryption is the job of [encryption] and [transport], and this package is
-// useful only alongside them.
+// Two kinds of wrapper live here. The record disguise is a byte-stream transform:
+// it adds no handshake and no key material, so it hides the shape of the traffic
+// rather than its contents, and it is useful only alongside [encryption] and
+// [transport]. The session disguise puts the connection inside a real TLS session:
+// a genuine handshake, real encryption, an anonymous certificate.
 package obfs
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
+	"strings"
 	"sync"
+	"time"
 )
 
 // Disguises a connection can be wrapped in.
@@ -27,10 +37,20 @@ const (
 	// detector that models a TLS handshake, because no handshake happens: there is
 	// no ClientHello, no certificate and no key exchange.
 	DisguiseTLSRecord = "tls-record"
+	// DisguiseTLSSession puts the connection inside a real TLS session.
+	//
+	// Every connection performs a genuine TLS 1.2-or-newer handshake — ClientHello,
+	// key exchange, alerts where they belong — and everything afterwards is real
+	// TLS-encrypted. The certificate the listener answers with is freshly minted
+	// and self-signed per connection, so the server stays anonymous and two
+	// connections share nothing an observer could correlate; proving which server
+	// this is remains the identity layer's job. A detector that models TLS sessions
+	// sees a session that is one.
+	DisguiseTLSSession = "tls-session"
 )
 
 // Disguises lists the values [obfuscation].disguise accepts.
-var Disguises = []string{DisguiseNone, DisguiseTLSRecord}
+var Disguises = []string{DisguiseNone, DisguiseTLSRecord, DisguiseTLSSession}
 
 // recordHeaderLen is the length of a TLS record header: content type, protocol
 // version and payload length.
@@ -47,6 +67,19 @@ const tlsRecordContentTypeApplicationData = 0x17
 // wrapper writes, which is what a peer that is not wrapped looks like.
 var ErrNotRecord = errors.New("obfs: the stream is not carrying record-framed data")
 
+// Endpoint tells Wrap which end of the connection it is wrapping. The record
+// disguise is symmetric, but the session disguise performs a TLS handshake, and
+// a handshake has two different roles.
+type Endpoint int
+
+const (
+	// Dialer is the end that dials: it drives the TLS handshake as the client.
+	Dialer Endpoint = iota
+	// Listener is the end that accepted the connection: it answers the handshake
+	// as the server, with a fresh self-signed certificate.
+	Listener
+)
+
 // IsDisguise reports whether name is a disguise this package implements.
 func IsDisguise(name string) bool {
 	for _, candidate := range Disguises {
@@ -62,16 +95,89 @@ func IsDisguise(name string) bool {
 // The returned connection keeps the underlying connection's deadlines and addresses,
 // so it can be used everywhere the original could. The underlying connection is
 // closed by closing the returned one.
-func Wrap(conn net.Conn, disguise string) (net.Conn, error) {
+func Wrap(conn net.Conn, disguise string, endpoint Endpoint) (net.Conn, error) {
 	switch disguise {
 	case "", DisguiseNone:
 		return conn, nil
 	case DisguiseTLSRecord:
 		return &recordConn{Conn: conn}, nil
+	case DisguiseTLSSession:
+		return wrapSession(conn, endpoint)
 	default:
-		return nil, fmt.Errorf("obfs: %q is not a disguise this build implements (use %s or %s)",
-			disguise, DisguiseNone, DisguiseTLSRecord)
+		return nil, fmt.Errorf("obfs: %q is not a disguise this build implements (use %s)",
+			disguise, strings.Join(Disguises, ", "))
 	}
+}
+
+// sessionALPN is the application-layer protocol the session disguise negotiates,
+// so a probe that completes the handshake sees a name that says what carries the
+// traffic inside.
+const sessionALPN = "aethertunnel/4"
+
+// wrapSession puts the connection inside a real TLS session. The listener mints a
+// fresh self-signed certificate for every connection; the dialer drives the
+// handshake without verifying it, because the certificate is anonymous by design
+// and proving which server this is belongs to the identity layer.
+func wrapSession(conn net.Conn, endpoint Endpoint) (net.Conn, error) {
+	config := &tls.Config{
+		NextProtos: []string{sessionALPN},
+		MinVersion: tls.VersionTLS12,
+	}
+	if endpoint == Listener {
+		certificate, err := selfSignedCertificate()
+		if err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("obfs: mint the session disguise's certificate: %w", err)
+		}
+		config.Certificates = []tls.Certificate{certificate}
+		return &sessionConn{Conn: tls.Server(conn, config)}, nil
+	}
+	// The certificate is anonymous by design; authentication is the protocol's
+	// identity layer, checked after the handshake.
+	config.InsecureSkipVerify = true
+	return &sessionConn{Conn: tls.Client(conn, config)}, nil
+}
+
+// sessionConn carries a TLS session over the underlying connection. TLS has no
+// half-close — close_notify ends both directions — so a half-close on a disguised
+// connection closes it, the same fallback the record wrapper uses for a
+// connection without a half-close of its own.
+type sessionConn struct {
+	*tls.Conn
+}
+
+// CloseWrite closes the connection; see the type comment.
+func (c *sessionConn) CloseWrite() error {
+	return c.Conn.Close()
+}
+
+// selfSignedCertificate mints the certificate one session-disguised connection
+// answers the handshake with. A fresh key pair per connection means two
+// connections share nothing an observer could correlate.
+func selfSignedCertificate() (tls.Certificate, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 127))
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	template := x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "aethertunnel"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * 365 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, nil
 }
 
 // recordConn writes and reads a stream of TLS application-data records.

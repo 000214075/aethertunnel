@@ -57,7 +57,7 @@ func TestDisguiseWrapsTheWireAndBothEndsAgree(t *testing.T) {
 	defer raw.Close()
 
 	tee := &teeConn{Conn: raw}
-	wrapped, err := obfs.Wrap(tee, obfs.DisguiseTLSRecord)
+	wrapped, err := obfs.Wrap(tee, obfs.DisguiseTLSRecord, obfs.Dialer)
 	if err != nil {
 		t.Fatalf("Wrap: %v", err)
 	}

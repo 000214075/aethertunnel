@@ -2,7 +2,10 @@ package obfs
 
 import (
 	"bytes"
+	"context"
+	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -50,11 +53,11 @@ func tcpPair(t *testing.T) (net.Conn, net.Conn) {
 func recordPair(t *testing.T) (net.Conn, net.Conn) {
 	t.Helper()
 	left, right := tcpPair(t)
-	wrappedLeft, err := Wrap(left, DisguiseTLSRecord)
+	wrappedLeft, err := Wrap(left, DisguiseTLSRecord, Dialer)
 	if err != nil {
 		t.Fatalf("Wrap: %v", err)
 	}
-	wrappedRight, err := Wrap(right, DisguiseTLSRecord)
+	wrappedRight, err := Wrap(right, DisguiseTLSRecord, Listener)
 	if err != nil {
 		t.Fatalf("Wrap: %v", err)
 	}
@@ -104,7 +107,7 @@ func TestRecordConnHalfClosesTheConnectionUnderneath(t *testing.T) {
 func TestWrapLeavesTheConnectionAloneWhenTheDisguiseIsNone(t *testing.T) {
 	left, right := tcpPair(t)
 	for _, disguise := range []string{"", DisguiseNone} {
-		wrapped, err := Wrap(left, disguise)
+		wrapped, err := Wrap(left, disguise, Dialer)
 		if err != nil {
 			t.Fatalf("Wrap(%q): %v", disguise, err)
 		}
@@ -119,7 +122,7 @@ func TestWrapRejectsAnUnknownDisguise(t *testing.T) {
 	left, right := tcpPair(t)
 	defer right.Close()
 
-	_, err := Wrap(left, "make-it-look-like-http2")
+	_, err := Wrap(left, "make-it-look-like-http2", Dialer)
 	if err == nil {
 		t.Fatal("an unknown disguise was accepted")
 	}
@@ -170,7 +173,7 @@ func TestRecordConnCarriesDataBothWays(t *testing.T) {
 
 func TestRecordConnPutsARecordHeaderOnTheWire(t *testing.T) {
 	left, right := tcpPair(t)
-	wrapped, err := Wrap(left, DisguiseTLSRecord)
+	wrapped, err := Wrap(left, DisguiseTLSRecord, Dialer)
 	if err != nil {
 		t.Fatalf("Wrap: %v", err)
 	}
@@ -291,7 +294,7 @@ func TestRecordConnSerialisesConcurrentWriters(t *testing.T) {
 
 func TestRecordConnRejectsAPeerThatIsNotWrapped(t *testing.T) {
 	left, right := tcpPair(t)
-	wrapped, err := Wrap(left, DisguiseTLSRecord)
+	wrapped, err := Wrap(left, DisguiseTLSRecord, Dialer)
 	if err != nil {
 		t.Fatalf("Wrap: %v", err)
 	}
@@ -310,7 +313,7 @@ func TestRecordConnRejectsAPeerThatIsNotWrapped(t *testing.T) {
 
 func TestRecordConnReportsATruncatedRecord(t *testing.T) {
 	left, right := tcpPair(t)
-	wrapped, err := Wrap(left, DisguiseTLSRecord)
+	wrapped, err := Wrap(left, DisguiseTLSRecord, Dialer)
 	if err != nil {
 		t.Fatalf("Wrap: %v", err)
 	}
@@ -330,7 +333,7 @@ func TestRecordConnReportsATruncatedRecord(t *testing.T) {
 
 func TestRecordConnSkipsEmptyRecords(t *testing.T) {
 	left, right := tcpPair(t)
-	wrapped, err := Wrap(left, DisguiseTLSRecord)
+	wrapped, err := Wrap(left, DisguiseTLSRecord, Dialer)
 	if err != nil {
 		t.Fatalf("Wrap: %v", err)
 	}
@@ -406,5 +409,160 @@ func TestParseHeaderValidation(t *testing.T) {
 				t.Fatalf("parseHeader returned %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+// --- the session disguise -----------------------------------------------------
+
+// The session disguise is a real TLS session, so the checks are the ones a real
+// session has to pass: bytes survive it, the handshake really happened, and the
+// certificate is fresh per connection.
+
+func sessionPair(t *testing.T) (net.Conn, net.Conn) {
+	t.Helper()
+	left, right := tcpPair(t)
+	wrappedLeft, err := Wrap(left, DisguiseTLSSession, Dialer)
+	if err != nil {
+		t.Fatalf("Wrap: %v", err)
+	}
+	wrappedRight, err := Wrap(right, DisguiseTLSSession, Listener)
+	if err != nil {
+		t.Fatalf("Wrap: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = wrappedLeft.Close()
+		_ = wrappedRight.Close()
+	})
+	return wrappedLeft, wrappedRight
+}
+
+func TestTheSessionDisguiseCarriesBytesThroughARealTLSHandshake(t *testing.T) {
+	left, right := sessionPair(t)
+
+	server := make(chan error, 1)
+	go func() {
+		got := make([]byte, 4)
+		if _, err := io.ReadFull(right, got); err != nil {
+			server <- err
+			return
+		}
+		if string(got) != "ping" {
+			server <- fmt.Errorf("the server read %q, want ping", got)
+			return
+		}
+		_, err := right.Write([]byte("pong"))
+		server <- err
+	}()
+
+	if _, err := left.Write([]byte("ping")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	reply := make([]byte, 4)
+	_ = left.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.ReadFull(left, reply); err != nil {
+		t.Fatalf("read the reply: %v", err)
+	}
+	if string(reply) != "pong" {
+		t.Fatalf("the reply came back as %q", reply)
+	}
+	if err := <-server; err != nil {
+		t.Fatalf("the server side: %v", err)
+	}
+
+	// The handshake really happened: the session reports it, the negotiated
+	// protocol is this tunnel's, and the certificate is the fresh self-signed one.
+	state := left.(*sessionConn).ConnectionState()
+	if !state.HandshakeComplete {
+		t.Fatal("the connection reports no completed handshake")
+	}
+	if state.NegotiatedProtocol != sessionALPN {
+		t.Fatalf("the negotiated protocol is %q, want %q", state.NegotiatedProtocol, sessionALPN)
+	}
+	if got := len(state.PeerCertificates); got != 1 {
+		t.Fatalf("the session presents %d certificates, want 1", got)
+	}
+	if cn := state.PeerCertificates[0].Subject.CommonName; cn != "aethertunnel" {
+		t.Fatalf("the certificate's common name is %q, want aethertunnel", cn)
+	}
+}
+
+func TestTheSessionDisguiseMintsAFreshCertificatePerConnection(t *testing.T) {
+	certOf := func(t *testing.T) []byte {
+		t.Helper()
+		left, right := sessionPair(t)
+		go func() {
+			_, _ = right.Write([]byte("go"))
+		}()
+		_ = left.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if _, err := left.Read(make([]byte, 2)); err != nil {
+			t.Fatalf("read through the session: %v", err)
+		}
+		state := left.(*sessionConn).ConnectionState()
+		if !state.HandshakeComplete {
+			t.Fatal("the handshake did not complete")
+		}
+		return state.PeerCertificates[0].Raw
+	}
+
+	first := certOf(t)
+	second := certOf(t)
+	if bytes.Equal(first, second) {
+		t.Fatal("two connections were answered with the same certificate")
+	}
+}
+
+func TestTheSessionDisguiseSurvivesAProbeThatModelsTLS(t *testing.T) {
+	// The record disguise fails here by construction: it has no handshake. The
+	// session disguise must give a TLS-speaking detector a session that is one.
+	left, right := tcpPair(t)
+	wrapped, err := Wrap(right, DisguiseTLSSession, Listener)
+	if err != nil {
+		t.Fatalf("Wrap: %v", err)
+	}
+	defer wrapped.Close()
+	defer left.Close()
+
+	// The listener's handshake is lazy, so something has to touch the disguised
+	// side for it to answer the probe's ClientHello.
+	go func() {
+		_ = wrapped.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_, _ = wrapped.Read(make([]byte, 1))
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	probe := tls.Client(left, &tls.Config{InsecureSkipVerify: true, ServerName: "aethertunnel"})
+	defer probe.Close()
+	if err := probe.HandshakeContext(ctx); err != nil {
+		t.Fatalf("a TLS probe could not complete the handshake: %v", err)
+	}
+	state := probe.ConnectionState()
+	if state.Version < tls.VersionTLS12 {
+		t.Fatalf("the session negotiated %#04x, want TLS 1.2 or newer", state.Version)
+	}
+	if !wrapped.(*sessionConn).ConnectionState().HandshakeComplete {
+		t.Fatal("the disguised side does not report a completed handshake")
+	}
+}
+
+func TestTheSessionDisguiseRejectsAPeerThatIsNotTLS(t *testing.T) {
+	left, right := tcpPair(t)
+	wrapped, err := Wrap(right, DisguiseTLSSession, Listener)
+	if err != nil {
+		t.Fatalf("Wrap: %v", err)
+	}
+	defer wrapped.Close()
+	defer left.Close()
+
+	// A peer that sends what the record disguise would have written is still not
+	// TLS: the handshake must refuse it rather than let the tunnel start. The
+	// garbage goes over the raw connection, the way an actual non-TLS peer's
+	// bytes would arrive.
+	if _, err := left.Write([]byte{0x17, 0x03, 0x03, 0x00, 0x01, 'x'}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_ = wrapped.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := wrapped.Read(make([]byte, 16)); err == nil {
+		t.Fatal("the session disguise accepted a peer that never spoke TLS")
 	}
 }

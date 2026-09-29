@@ -224,7 +224,7 @@ func (l *disguisedListener) Accept() (net.Conn, error) {
 		wrapped = tls.Server(wrapped, l.tlsConfig)
 	}
 	if l.disguise != "" && l.disguise != obfs.DisguiseNone {
-		disguised, err := obfs.Wrap(wrapped, l.disguise)
+		disguised, err := obfs.Wrap(wrapped, l.disguise, obfs.Listener)
 		if err != nil {
 			_ = conn.Close()
 			return nil, err
@@ -258,8 +258,13 @@ func (s *Server) Run(ctx context.Context) error {
 		s.logger.Printf("the control port is wrapped in TLS")
 	}
 	if s.cfg.ObfuscationDisguise() != obfs.DisguiseNone {
-		s.logger.Printf("connection disguise: %s (nothing is encrypted by it; see [encryption] and [transport])",
-			s.cfg.ObfuscationDisguise())
+		if s.cfg.ObfuscationDisguise() == obfs.DisguiseTLSSession {
+			s.logger.Printf("connection disguise: %s (a real TLS handshake with a fresh self-signed certificate per connection: real encryption, an anonymous server; identity is the identity layer's job)",
+				s.cfg.ObfuscationDisguise())
+		} else {
+			s.logger.Printf("connection disguise: %s (nothing is encrypted by it; see [encryption] and [transport])",
+				s.cfg.ObfuscationDisguise())
+		}
 	}
 	if s.cfg.Identity.Enabled {
 		s.logger.Printf("client identities: %d allowed key(s), require_identity=%v",
