@@ -179,7 +179,7 @@ func openPlatformDevice(name string, mtu int) (Device, error) {
 // administrator rights.
 func (d *tunDevice) setMTU(mtu int) error {
 	out, err := exec.Command("netsh", "interface", "ipv4", "set", "subinterface",
-		"interface="+d.name, "mtu="+fmt.Sprint(mtu), "store=active").CombinedOutput()
+		d.name, "mtu="+fmt.Sprint(mtu), "store=active").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("vpn: setting the MTU of %s to %d: %w: %s", d.name, mtu, err, out)
 	}
@@ -247,7 +247,7 @@ func (d *tunDevice) SetAddress(address string) error {
 		return fmt.Errorf("vpn: %q is not an IPv4 address", address)
 	}
 	out, err := exec.Command("netsh", "interface", "ip", "set", "address",
-		"interface="+d.name, "source=static", "addr="+address, "mask=255.255.255.0").CombinedOutput()
+		"name="+d.name, "source=static", "addr="+address, "mask=255.255.255.0").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("vpn: assigning %s to %s: %w: %s (giving an adapter an address needs administrator rights)",
 			address, d.name, err, out)

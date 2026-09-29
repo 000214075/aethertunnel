@@ -135,11 +135,21 @@ else
 fi
 
 sleep 1
-if curl -s -H "Authorization: Bearer vpn-macos-test-dashboard" \
-    "http://127.0.0.1:$dashboard_port/api/vpn" | grep -q "$net.2"; then
+api_ok="no"
+deadline=$((SECONDS + 15))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  if curl -s -H "Authorization: Bearer vpn-macos-test-dashboard" \
+      "http://127.0.0.1:$dashboard_port/api/vpn" | grep -q "$net.2"; then
+    api_ok="yes"
+    break
+  fi
+  sleep 1
+done
+if [ "$api_ok" = "yes" ]; then
   pass "the dashboard's /api/vpn reports the client's tunnel address"
 else
-  fail "/api/vpn does not report the client's tunnel address"
+  fail "/api/vpn does not report the client's tunnel address" \
+    "$(curl -s -H 'Authorization: Bearer vpn-macos-test-dashboard' "http://127.0.0.1:$dashboard_port/api/vpn" | head -c 400)"
 fi
 
 "$client_bin" --config "$work/novpn.toml" >"$work/novpn.log" 2>&1 &

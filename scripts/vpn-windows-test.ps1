@@ -87,11 +87,11 @@ do {
     Start-Sleep -Milliseconds 500
     $listening = Test-NetConnection -ComputerName 127.0.0.1 -Port $control -InformationLevel Quiet -WarningAction SilentlyContinue
 } while (((Get-Date) -lt $deadline) -and (-not $listening))
-if ($listening) { Pass "the server is listening on its control port" } else { Fail "the server never listened" (Get-Content "$work\server.log" -Tail 3 | Out-String) }
+if ($listening) { Pass "the server is listening on its control port" } else { Fail "the server never listened" ((Get-Content "$work\server.log" -Tail 3 -ErrorAction SilentlyContinue) + (Get-Content "$work\server.err" -Tail 3 -ErrorAction SilentlyContinue) -join " | ") }
 
 if (Select-String -Path "$work\server.log" -Pattern "vpn: interface $serverDevice" -Quiet) {
     Pass "the server opened a real Wintun adapter"
-} else { Fail "the server did not open the adapter" (Get-Content "$work\server.log" -Tail 3 | Out-String) }
+} else { Fail "the server did not open the adapter" ((Get-Content "$work\server.log" -Tail 3 -ErrorAction SilentlyContinue) + (Get-Content "$work\server.err" -Tail 3 -ErrorAction SilentlyContinue) -join " | ") }
 
 $clientProc = Start-Process -FilePath $Client -ArgumentList "--config", "$work\client.toml" -RedirectStandardOutput "$work\client.log" -RedirectStandardError "$work\client.err" -PassThru -WindowStyle Hidden
 
@@ -100,7 +100,7 @@ do {
     Start-Sleep -Milliseconds 500
     $clientUp = Select-String -Path "$work\client.log" -Pattern "tunnel interface $clientDevice" -Quiet
 } while (((Get-Date) -lt $deadline) -and (-not $clientUp))
-if ($clientUp) { Pass "the client opened its adapter and took the address the server handed out" } else { Fail "the client never configured a tunnel interface" (Get-Content "$work\client.log" -Tail 3 | Out-String) }
+if ($clientUp) { Pass "the client opened its adapter and took the address the server handed out" } else { Fail "the client never configured a tunnel interface" ((Get-Content "$work\client.log" -Tail 3 -ErrorAction SilentlyContinue) + (Get-Content "$work\client.err" -Tail 3 -ErrorAction SilentlyContinue) -join " | ") }
 
 # Both addresses are on the adapters the kernel owns, visible to the system.
 $serverIP = (Get-NetIPAddress -InterfaceAlias $serverDevice -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress

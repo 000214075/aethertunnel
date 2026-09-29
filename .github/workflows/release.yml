@@ -93,9 +93,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          # The release notes are this version's own changelog section, not the
+          # whole file: GitHub caps a release body at 125000 characters and the
+          # changelog has outgrown that.
+          awk -v header="## [$version]" '
+            index($0, header) == 1 { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+          if [ ! -s "$RUNNER_TEMP/release-notes.md" ]; then
+            echo "the changelog has no section for $version" >&2
+            exit 1
+          fi
           gh release create "$tag" \
             --title "AetherTunnel $tag" \
-            --notes-file CHANGELOG.md \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
             dist/aethertunnel-* dist/SHA256SUMS \
             server.toml.example client.toml.example
           echo "released $tag"
