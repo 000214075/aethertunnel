@@ -43,11 +43,14 @@ type tunDevice struct {
 }
 
 // wintunAPI holds the entry points this device uses, resolved once per process.
+// Wintun 0.14's DLL exports no delete call: an adapter this process created with
+// WintunCreateAdapter is removed when WintunCloseAdapter releases it, and one
+// opened with WintunOpenAdapter stays, like a real NIC.
 type wintunAPI struct {
 	dll                  *windows.LazyDLL
 	createAdapter        *windows.LazyProc
+	openAdapter          *windows.LazyProc
 	closeAdapter         *windows.LazyProc
-	deleteAdapter        *windows.LazyProc
 	startSession         *windows.LazyProc
 	endSession           *windows.LazyProc
 	getReadWaitEvent     *windows.LazyProc
@@ -86,8 +89,8 @@ func wintun() (*wintunAPI, error) {
 		api := &wintunAPI{
 			dll:                  dll,
 			createAdapter:        dll.NewProc("WintunCreateAdapter"),
+			openAdapter:          dll.NewProc("WintunOpenAdapter"),
 			closeAdapter:         dll.NewProc("WintunCloseAdapter"),
-			deleteAdapter:        dll.NewProc("WintunDeleteAdapter"),
 			startSession:         dll.NewProc("WintunStartSession"),
 			endSession:           dll.NewProc("WintunEndSession"),
 			getReadWaitEvent:     dll.NewProc("WintunGetReadWaitEvent"),
@@ -101,7 +104,7 @@ func wintun() (*wintunAPI, error) {
 			return
 		}
 		for _, proc := range []*windows.LazyProc{
-			api.createAdapter, api.closeAdapter, api.deleteAdapter, api.startSession,
+			api.createAdapter, api.openAdapter, api.closeAdapter, api.startSession,
 			api.endSession, api.getReadWaitEvent, api.receivePacket,
 			api.releaseReceivePacket, api.allocateSendPacket, api.sendPacket,
 		} {
@@ -146,6 +149,11 @@ func openPlatformDevice(name string, mtu int) (Device, error) {
 
 	adapter, _, callErr := api.createAdapter.Call(
 		uintptr(unsafe.Pointer(namePtr)), uintptr(unsafe.Pointer(typePtr)), 0)
+	if adapter == 0 {
+		// The name may already be taken by an adapter an earlier run left open;
+		// reopen it instead of failing.
+		adapter, _, callErr = api.openAdapter.Call(uintptr(unsafe.Pointer(namePtr)))
+	}
 	if adapter == 0 {
 		return nil, fmt.Errorf("vpn: create the Wintun adapter %q: %v (creating one needs administrator rights)",
 			name, callErr)
@@ -228,12 +236,11 @@ func (d *tunDevice) Write(packet []byte) (int, error) {
 	return len(packet), nil
 }
 
-// Close ends the session and removes the adapter, the way closing the Linux
-// device file destroys the interface it created.
+// Close ends the session and releases the adapter. An adapter this process
+// created is removed by releasing it; one that was reopened stays, the way a
+// real interface stays.
 func (d *tunDevice) Close() error {
 	_, _, _ = d.api.endSession.Call(uintptr(d.session))
-	force := 1
-	_, _, _ = d.api.deleteAdapter.Call(uintptr(d.adapter), uintptr(force), 0)
 	_, _, _ = d.api.closeAdapter.Call(uintptr(d.adapter))
 	return nil
 }

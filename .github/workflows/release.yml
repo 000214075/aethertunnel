@@ -106,6 +106,9 @@ jobs:
             echo "the changelog has no section for $version" >&2
             exit 1
           fi
+          # Idempotent: a re-run after a partial failure finds the release already
+          # there, and the assets must be the ones this run built.
+          gh release delete "$tag" --yes 2>/dev/null || true
           gh release create "$tag" \
             --title "AetherTunnel $tag" \
             --notes-file "$RUNNER_TEMP/release-notes.md" \
