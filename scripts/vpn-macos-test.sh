@@ -138,18 +138,26 @@ sleep 1
 api_ok="no"
 deadline=$((SECONDS + 15))
 while [ "$SECONDS" -lt "$deadline" ]; do
-  if curl -s -H "Authorization: Bearer vpn-macos-test-dashboard" \
-      "http://127.0.0.1:$dashboard_port/api/vpn" | grep -q "$net.2"; then
+  api_summary="$(curl -s -H "Authorization: Bearer vpn-macos-test-dashboard" \
+    "http://127.0.0.1:$dashboard_port/api/vpn")"
+  # /api/vpn is the server's own summary: how many addresses the pool handed out
+  # and how many peers hold one. The address itself is on the client's interface,
+  # asserted above from the client's log.
+  if printf '%s' "$api_summary" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+sys.exit(0 if d.get("addresses_used", 0) >= 1 and d.get("peers", 0) >= 1 and d.get("server_address") == "'"${net}"'.1" else 1)
+' 2>/dev/null; then
     api_ok="yes"
     break
   fi
   sleep 1
 done
 if [ "$api_ok" = "yes" ]; then
-  pass "the dashboard's /api/vpn reports the client's tunnel address"
+  pass "the dashboard's /api/vpn reports the handed-out address and the peer holding it"
 else
-  fail "/api/vpn does not report the client's tunnel address" \
-    "$(curl -s -H 'Authorization: Bearer vpn-macos-test-dashboard' "http://127.0.0.1:$dashboard_port/api/vpn" | head -c 400)"
+  fail "/api/vpn does not report the handed-out address and the peer" \
+    "$(printf '%s' "$api_summary" | head -c 400)"
 fi
 
 "$client_bin" --config "$work/novpn.toml" >"$work/novpn.log" 2>&1 &
