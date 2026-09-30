@@ -240,9 +240,10 @@ tun 设备 ──► vpn.Tunnel ──► 控制连接 ──► Router ──�
 
 ```
 main.go                 服务端入口（flag、配置、面板、信号处理、--dht-lookup、--verify-ledger）
-client/main.go          客户端入口（会话循环、重连、按流转发、DHT 解析、隧道设备）
-client/punch.go         xtcp 打洞与中继回退
-client/visitor.go       访客监听器（stcp/sudp/xtcp）
+client/main.go          客户端命令（旗标解析、配置装载、信号处理）
+pkg/clientlib           客户端实现的库形态：Run 入口、会话循环、重连、按流转发、
+                        DHT 解析、xtcp 打洞（punch）、访客监听器（visitor）、隧道设备
+pkg/mobile              移动绑定：Run(configTOML)/Stop() 交给 gomobile
 pkg/config              配置加载、默认值、校验（未知键会被报告）、环境变量凭据
 pkg/protocol            帧格式、消息类型、JSON 负载结构、会合协议
 pkg/crypto              HKDF 派生、AEAD 封装、记录层、Ed25519 身份、Schnorr 证明、混合密钥协商

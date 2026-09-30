@@ -11,6 +11,10 @@ LDFLAGS  := -s -w \
             -X main.version=$(VERSION) \
             -X main.buildTime=$(DATE) \
             -X main.gitCommit=$(COMMIT)
+CLIENT_LDFLAGS := -s -w \
+            -X github.com/aethertunnel/aethertunnel/pkg/clientlib.Version=$(VERSION) \
+            -X github.com/aethertunnel/aethertunnel/pkg/clientlib.BuildTime=$(DATE) \
+            -X github.com/aethertunnel/aethertunnel/pkg/clientlib.GitCommit=$(COMMIT)
 
 GO       ?= go
 GOFMT    ?= $(shell $(GO) env GOROOT)/bin/gofmt
@@ -23,7 +27,7 @@ all: fmt vet test build
 ## build: native binaries into bin/
 build:
 	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/aethertunnel-server .
-	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/aethertunnel-client ./client
+	$(GO) build $(GOFLAGS) -ldflags "$(CLIENT_LDFLAGS)" -o $(BINDIR)/aethertunnel-client ./client
 
 ## test: unit and integration tests (the tunnel test binds loopback ports)
 test:
