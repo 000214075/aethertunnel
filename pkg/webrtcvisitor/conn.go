@@ -32,17 +32,12 @@ func newConn(pc *webrtc.PeerConnection, channel *webrtc.DataChannel) *Conn {
 	channel.OnMessage(func(message webrtc.DataChannelMessage) {
 		c.mu.Lock()
 		c.buf = append(c.buf, message.Data...)
+		ch := c.wait
+		c.wait = make(chan struct{})
 		c.mu.Unlock()
-		close(c.signal())
+		close(ch)
 	})
 	return c
-}
-
-// signal hands waiters a fresh closed channel; the next wait allocates another.
-func (c *Conn) signal() chan struct{} {
-	ch := c.wait
-	c.wait = make(chan struct{})
-	return ch
 }
 
 // waitChan is the channel a blocked reader sleeps on.
@@ -87,10 +82,11 @@ func (c *Conn) Close() error {
 	c.mu.Lock()
 	already := c.closed
 	c.closed = true
-	c.mu.Unlock()
 	if !already {
-		close(c.signal())
+		close(c.wait)
+		c.wait = make(chan struct{})
 	}
+	c.mu.Unlock()
 	if err := c.channel.Close(); err != nil {
 		_ = c.pc.Close()
 		return err
