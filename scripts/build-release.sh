@@ -41,16 +41,20 @@ for platform in "${PLATFORMS[@]}"; do
   fi
 
   for target in server client; do
+    # The client's version lives in pkg/clientlib since the command became a thin
+    # wrapper around the library; -X on a missing symbol is silently ignored.
     if [ "$target" = "server" ]; then
       pkg="."
+      stamp="-X main.version=$VERSION -X main.buildTime=$DATE -X main.gitCommit=$COMMIT"
     else
       pkg="./client"
+      stamp="-X github.com/aethertunnel/aethertunnel/pkg/clientlib.Version=$VERSION -X github.com/aethertunnel/aethertunnel/pkg/clientlib.BuildTime=$DATE -X github.com/aethertunnel/aethertunnel/pkg/clientlib.GitCommit=$COMMIT"
     fi
 
     name="aethertunnel-${target}-${GOOS}-${GOARCH}${suffix}"
     printf '  %-44s' "$name"
     CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
-      go build -trimpath -ldflags "-s -w -X main.version=$VERSION -X main.buildTime=$DATE -X main.gitCommit=$COMMIT" \
+      go build -trimpath -ldflags "-s -w $stamp" \
       -o "$OUT/$name" "$pkg"
     echo "ok"
   done

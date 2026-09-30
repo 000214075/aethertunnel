@@ -1658,3 +1658,38 @@ server_addr = "example.com:7001"
 		t.Fatalf("client.auth_token is %q, want the value from the environment", cfg.Client.AuthToken)
 	}
 }
+
+func TestLoadStringBehavesLikeLoad(t *testing.T) {
+	body := `
+[client]
+server_addr = "127.0.0.1:7001"
+auth_token = "loadstring-test-token-0123"
+not_a_known_key = true
+`
+	path := writeConfig(t, body)
+
+	fromFile, errFile := Load(path, ValidateOptions{Role: RoleClient})
+	fromString, errString := LoadString(body, path, ValidateOptions{Role: RoleClient})
+	if (errFile == nil) != (errString == nil) {
+		t.Fatalf("Load and LoadString disagree: %v vs %v", errFile, errString)
+	}
+	if errFile != nil {
+		t.Fatalf("Load rejected a valid configuration: %v", errFile)
+	}
+	if len(fromString.Warnings) == 0 {
+		t.Fatal("LoadString dropped the unknown-key warning")
+	}
+	if got, want := fromString.Warnings[0], fromFile.Warnings[0]; got != want {
+		t.Fatalf("warning is %q, want %q", got, want)
+	}
+	if fromString.Client.AuthToken != fromFile.Client.AuthToken {
+		t.Fatalf("auth_token is %q, want %q", fromString.Client.AuthToken, fromFile.Client.AuthToken)
+	}
+}
+
+func TestLoadStringNamesTheSourceInItsErrors(t *testing.T) {
+	_, err := LoadString("this is not toml ]", "embedded", ValidateOptions{Role: RoleClient})
+	if err == nil || !strings.Contains(err.Error(), "parse config embedded") {
+		t.Fatalf("error is %v, want a parse failure naming the embedded source", err)
+	}
+}

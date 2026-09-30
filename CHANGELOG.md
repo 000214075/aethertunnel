@@ -14,6 +14,16 @@
 
 ### 新增
 
+- **客户端成为库，移动端绑定随之落地**。客户端实现整体移入 `pkg/clientlib`：`Run(ctx, cfg,
+  logger)` 一个入口承担加密协商、身份装载、DHT 解析等待与重连循环；`client/` 只剩旗标解析、
+  配置装载与信号处理，行为与原先一致。`pkg/mobile` 用 `Run(configTOML)` / `Stop()` 两个函数
+  把同一个客户端交给 gomobile 这样的绑定工具，配置可以直接以 TOML 字符串内嵌
+  （`config.LoadString` 与 `Load` 共享同一条解析与校验路径）。CI 新增 mobile 作业：
+  android/arm64 编出**完整客户端可执行文件**（pion 依赖的接口枚举助手用 go:linkname，按其
+  官方解法加 `-checklinkname=0`），iOS/arm64 编到**库级**（iOS 的可执行文件按平台规则必须用
+  Apple 的 cgo 工具链，属于 app 工程的步骤）。客户端的版本打桩随实现移到 `clientlib.Version`，
+  `scripts/build-release.sh` 同步，`--version` 输出不变。设计边界里“移动端 App”一项据此
+  收窄为“商店应用与设备级 VPN”。
 - **`transport = "webrtc"`：私有代理的访客数据路径可以走 WebRTC DataChannel**。信令就是
   已经完成认证的控制连接（一次 offer 帧、一次 answer 帧，ICE 候选非渐进收集），数据本身是
   DTLS 加密、ICE 选路的 UDP 字节流——直连被墙的网络环境下数据路径的另一种形态。访客配置

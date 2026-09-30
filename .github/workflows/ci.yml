@@ -221,6 +221,39 @@ jobs:
           uname -m
           bash scripts/functional-linux.sh bin/aethertunnel-server bin/aethertunnel-client
 
+  mobile:
+    name: mobile (android and ios)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      # The client is a library (pkg/clientlib) behind the command and behind the
+      # mobile bindings (pkg/mobile), so the surface an embedding app consumes has
+      # to compile on the platforms such an app ships for.
+      - name: the client library and mobile bindings compile for android and ios
+        run: |
+          CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build ./pkg/...
+          CGO_ENABLED=0 GOOS=ios GOARCH=arm64 go build ./pkg/...
+
+      # An android executable needs -checklinkname=0 because the interface
+      # enumeration helper pion/webrtc pulls in uses go:linkname; see pkg/mobile.
+      - name: the client executable builds for android
+        run: |
+          CGO_ENABLED=0 GOOS=android GOARCH=arm64 \
+            go build -ldflags "-checklinkname=0" -o /tmp/aethertunnel-client-android ./client
+          file /tmp/aethertunnel-client-android | grep -q 'ARM aarch64'
+
+      # An ios executable needs Apple's own cgo toolchain, which the ios linker
+      # requires for any Go program and a Linux runner does not have; a real iOS
+      # app consumes the library through gomobile or Xcode instead.
+      - name: the ios library level builds
+        run: |
+          CGO_ENABLED=0 GOOS=ios GOARCH=arm64 go build ./pkg/clientlib ./pkg/mobile
+
   delivery:
     name: delivery (image and manifests)
     runs-on: ubuntu-latest

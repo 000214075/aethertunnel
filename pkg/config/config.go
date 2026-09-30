@@ -1672,11 +1672,17 @@ func Load(filename string, opts ValidateOptions) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", filename, err)
 	}
+	return LoadString(string(data), filename, opts)
+}
 
+// LoadString parses and validates a configuration held in a string. It behaves
+// like Load on the contents of a configuration file; name stands in for the file
+// name in the messages it returns and attaches as warnings.
+func LoadString(data, name string, opts ValidateOptions) (*Config, error) {
 	var cfg Config
-	md, err := toml.Decode(string(data), &cfg)
+	md, err := toml.Decode(data, &cfg)
 	if err != nil {
-		return nil, fmt.Errorf("parse config %s: %w", filename, err)
+		return nil, fmt.Errorf("parse config %s: %w", name, err)
 	}
 
 	if undecoded := md.Undecoded(); len(undecoded) > 0 {
@@ -1685,7 +1691,7 @@ func Load(filename string, opts ValidateOptions) (*Config, error) {
 			keys = append(keys, key.String())
 		}
 		message := fmt.Sprintf("config %s contains %d key(s) this version does not understand: %s",
-			filename, len(keys), strings.Join(keys, ", "))
+			name, len(keys), strings.Join(keys, ", "))
 		if opts.RejectUnknownKeys {
 			return nil, fmt.Errorf("%s", message)
 		}
