@@ -177,6 +177,9 @@ jobs:
 
       - name: boot it headless
         run: |
+          # /dev/kvm exists but the runner user is not in the kvm group; the
+          # group membership would need a fresh login, the mode bit works now.
+          sudo chmod 666 /dev/kvm
           "$ANDROID_HOME/emulator/emulator" -avd ci -no-window -gpu swiftshader_indirect \
             -no-snapshot -no-audio -no-boot-anim -accel on &
           timeout 600 bash -c 'while [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" != "1" ]; do sleep 5; done'
