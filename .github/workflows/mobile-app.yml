@@ -18,6 +18,8 @@ jobs:
   android:
     name: android (aar and apk)
     runs-on: ubuntu-latest
+    env:
+      XMV: v0.0.0-20260821151724-5c0595f4cdbb   # the newest x/mobile whose go directive the toolchain here satisfies
     steps:
       - uses: actions/checkout@v4
 
@@ -39,21 +41,53 @@ jobs:
 
       - name: install gomobile
         run: |
-          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install "golang.org/x/mobile/cmd/gomobile@${XMV}"
+          go install "golang.org/x/mobile/cmd/gobind@${XMV}"
           "$(go env GOPATH)/bin/gomobile" init
           "$(go env GOPATH)/bin/gomobile" version
 
+      # gomobile bind needs golang.org/x/mobile in the module graph of the package it
+      # binds, and the newest x/mobile forces a go-directive bump on whatever module
+      # carries it. The main go.mod stays untouched: the binding runs from a throwaway
+      # wrapper module that replaces the repository and pins a compatible x/mobile.
       - name: bind the client into an AAR
+        env:
+          REPO: ${{ github.workspace }}
         run: |
-          mkdir -p mobile/android/app/libs
+          mkdir -p /tmp/binder mobile/android/app/libs
+          cd /tmp/binder
+          cat > go.mod <<EOF
+          module aethertunnel/binder
+
+          go 1.25.0
+
+          require (
+          	github.com/aethertunnel/aethertunnel v0.0.0
+          	golang.org/x/mobile ${XMV}
+          )
+
+          replace github.com/aethertunnel/aethertunnel => ${REPO}
+          EOF
+          cat > binder.go <<EOF
+          // Package binder holds only the module graph gomobile bind needs: the
+          // repository under a replace, and x/mobile pinned to a version this
+          // toolchain satisfies.
+          package binder
+
+          import (
+          	_ "github.com/aethertunnel/aethertunnel/pkg/mobile"
+          	_ "golang.org/x/mobile/bind"
+          )
+          EOF
+          go mod tidy
           "$(go env GOPATH)/bin/gomobile" bind \
             -target=android/arm64 \
             -javapkg=io.github.aethertunnel \
             -ldflags='-checklinkname=0' \
-            -o mobile/android/app/libs/aethertunnel.aar \
-            ./pkg/mobile
-          unzip -l mobile/android/app/libs/aethertunnel.aar | grep -E 'classes\.jar|arm64-v8a/libgojni\.so'
-          cp mobile/android/app/libs/aethertunnel.aar aethertunnel-mobile-android-arm64.aar
+            -o "${REPO}/mobile/android/app/libs/aethertunnel.aar" \
+            github.com/aethertunnel/aethertunnel/pkg/mobile
+          unzip -l "${REPO}/mobile/android/app/libs/aethertunnel.aar" | grep -E 'classes\.jar|arm64-v8a/libgojni\.so'
+          cp "${REPO}/mobile/android/app/libs/aethertunnel.aar" "${REPO}/aethertunnel-mobile-android-arm64.aar"
 
       - name: build the app APK
         run: |
