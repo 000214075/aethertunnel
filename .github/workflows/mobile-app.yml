@@ -182,27 +182,28 @@ jobs:
           sudo chmod 666 /dev/kvm
           # The emulator registers itself with the adb daemon at startup; if the
           # daemon is not running yet, the device shows up offline forever.
-          adb start-server
+          "$ANDROID_HOME/platform-tools/adb" start-server
           "$ANDROID_HOME/emulator/emulator" -avd ci -no-window -gpu swiftshader_indirect \
             -no-snapshot -no-audio -no-boot-anim -accel on &
-          timeout 300 adb wait-for-device
-          timeout 600 bash -c 'while [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" != "1" ]; do sleep 5; done'
-          adb shell getprop ro.build.version.release
+          timeout 300 "$ANDROID_HOME/platform-tools/adb" wait-for-device
+          timeout 600 bash -c 'while [ "$("$ANDROID_HOME/platform-tools/adb" shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" != "1" ]; do sleep 5; done'
+          "$ANDROID_HOME/platform-tools/adb" shell getprop ro.build.version.release
 
       - name: install, launch, and hold the process to account
         run: |
-          adb install -r app-debug.apk
-          out=$(adb shell am start -W -n io.github.aethertunnel.app/.MainActivity)
+          adb="$ANDROID_HOME/platform-tools/adb"
+          "$adb" install -r app-debug.apk
+          out=$("$adb" shell am start -W -n io.github.aethertunnel.app/.MainActivity)
           echo "$out"
           echo "$out" | grep -q 'Status: ok'
           sleep 5
-          pid=$(adb shell pidof io.github.aethertunnel.app | tr -d '\r')
+          pid=$("$adb" shell pidof io.github.aethertunnel.app | tr -d '\r')
           [ -n "$pid" ] || { echo "the app process is gone"; exit 1; }
           echo "pid: $pid"
           # The warm-up in onCreate loads libgojni; a broken binding would have
           # crashed the process into a FATAL EXCEPTION by now.
-          if adb logcat -d | grep -qE 'FATAL EXCEPTION|UnsatisfiedLinkError'; then
-            adb logcat -d | grep -E 'FATAL EXCEPTION|UnsatisfiedLinkError' | head -20
+          if "$adb" logcat -d | grep -qE 'FATAL EXCEPTION|UnsatisfiedLinkError'; then
+            "$adb" logcat -d | grep -E 'FATAL EXCEPTION|UnsatisfiedLinkError' | head -20
             exit 1
           fi
           echo "the activity is up and the Go runtime is loaded"
