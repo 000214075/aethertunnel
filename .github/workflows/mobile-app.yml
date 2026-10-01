@@ -146,6 +146,10 @@ jobs:
     name: android e2e (emulator)
     needs: android
     runs-on: ubuntu-latest
+    env:
+      # avdmanager and the emulator must agree on where AVDs live, or the emulator
+      # looks in $HOME/.android/avd and reports an unknown AVD name.
+      ANDROID_AVD_HOME: /home/runner/.android/avd
     steps:
       - name: take the APK the android job built
         uses: actions/download-artifact@v4
@@ -157,10 +161,19 @@ jobs:
       # x86_64 libgojni for exactly this.
       - name: fetch a system image and create the emulator
         run: |
+          mkdir -p "$ANDROID_AVD_HOME"
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
             "system-images;android-34;google_apis;x86_64" >/dev/null
           echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
             -n ci -k "system-images;android-34;google_apis;x86_64"
+          found=$(find /home /root /tmp -maxdepth 6 -name ci.ini 2>/dev/null | head -1)
+          echo "avd ini: $found"
+          [ -n "$found" ]
+          dir=$(dirname "$found")
+          if [ "$dir" != "$ANDROID_AVD_HOME" ]; then
+            cp -r "$dir/." "$ANDROID_AVD_HOME/"
+          fi
+          ls "$ANDROID_AVD_HOME"
 
       - name: boot it headless
         run: |
