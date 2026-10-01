@@ -1,0 +1,89 @@
+name: mobile app
+
+# Builds the Android artifacts from pkg/mobile: the gomobile binding (AAR) and the
+# app skeleton under mobile/android (debug APK). Runs on every push to main so a
+# broken binding or app build is caught without a tag, and on version tags, where
+# both files are uploaded to the release the Release workflow creates.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    name: android (aar and apk)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # The runner image ships the Android SDK and an NDK; only the path changes.
+      - name: locate the NDK the runner already has
+        run: |
+          ls "$ANDROID_HOME/ndk"
+          echo "ANDROID_NDK_HOME=$(ls -d "$ANDROID_HOME"/ndk/* | head -1)" >> "$GITHUB_ENV"
+
+      - name: install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          "$(go env GOPATH)/bin/gomobile" init
+          "$(go env GOPATH)/bin/gomobile" version
+
+      - name: bind the client into an AAR
+        run: |
+          mkdir -p mobile/android/app/libs
+          "$(go env GOPATH)/bin/gomobile" bind \
+            -target=android/arm64 \
+            -javapkg=io.github.aethertunnel \
+            -ldflags='-checklinkname=0' \
+            -o mobile/android/app/libs/aethertunnel.aar \
+            ./pkg/mobile
+          unzip -l mobile/android/app/libs/aethertunnel.aar | grep -E 'classes\.jar|arm64-v8a/libgojni\.so'
+          cp mobile/android/app/libs/aethertunnel.aar aethertunnel-mobile-android-arm64.aar
+
+      - name: build the app APK
+        run: |
+          curl -fsSL --retry 5 -o /tmp/gradle.zip \
+            https://services.gradle.org/distributions/gradle-8.9-bin.zip
+          unzip -q /tmp/gradle.zip -d /tmp
+          /tmp/gradle-8.9/bin/gradle -p mobile/android --no-daemon assembleDebug
+
+      - name: the APK carries the bound library
+        run: |
+          apk=mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          test -s "$apk"
+          unzip -l "$apk" | grep -q 'lib/arm64-v8a/libgojni\.so'
+          unzip -l "$apk" | grep -q 'classes\.dex'
+          cp "$apk" aethertunnel-app-android-arm64-debug.apk
+          ls -l aethertunnel-mobile-android-arm64.aar aethertunnel-app-android-arm64-debug.apk
+
+      - name: upload to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          # The release is created by the Release workflow after its build job; wait
+          # for it to exist rather than racing it.
+          for _ in $(seq 1 60); do
+            gh release view "$tag" >/dev/null 2>&1 && break
+            sleep 10
+          done
+          gh release upload "$tag" --clobber \
+            aethertunnel-mobile-android-arm64.aar \
+            aethertunnel-app-android-arm64-debug.apk
+          gh release view "$tag" --json assets -q '.assets[].name'
