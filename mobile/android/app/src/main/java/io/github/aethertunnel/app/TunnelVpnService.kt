@@ -21,11 +21,21 @@ class TunnelVpnService : VpnService(), PlatformVPN {
     private var fullTunnel = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val config = intent?.getStringExtra(EXTRA_CONFIG)
+        var config = intent?.getStringExtra(EXTRA_CONFIG)
+        if (config.isNullOrEmpty()) {
+            // CI drives the service directly: it drops the configuration into the
+            // app's own files directory with run-as and starts the service with
+            // no extras. Nothing else reads this path.
+            config = try {
+                getFileStreamPath(CONFIG_FILE).takeIf { it.exists() }?.readText()
+            } catch (_: Exception) {
+                null
+            }
+        }
         if (config.isNullOrEmpty() || worker != null) {
             return START_NOT_STICKY
         }
-        fullTunnel = intent.getBooleanExtra(EXTRA_FULL_TUNNEL, false)
+        fullTunnel = intent?.getBooleanExtra(EXTRA_FULL_TUNNEL, false) ?: false
         worker = Thread {
             try {
                 // Blocks until Mobile.stop() is called or the client gives up on a
@@ -93,5 +103,6 @@ class TunnelVpnService : VpnService(), PlatformVPN {
         private const val DNS_SERVER = "1.1.1.1"
         const val EXTRA_CONFIG = "config"
         const val EXTRA_FULL_TUNNEL = "full_tunnel"
+        private const val CONFIG_FILE = "client.toml"
     }
 }

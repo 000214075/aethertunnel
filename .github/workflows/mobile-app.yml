@@ -213,3 +213,53 @@ jobs:
             exit 1
           fi
           echo "the activity is up and the Go runtime is loaded"
+
+      # The deepest check available without a phone: a real server runs on the
+      # runner, the emulator is granted VPN consent through appops, the service
+      # starts from a config dropped in via run-as, and an ICMP echo from the
+      # device enters the VpnService fd, crosses the tunnel, is answered by the
+      # server's kernel and comes back.
+      - name: run the server on the runner
+        run: |
+          go build -o /tmp/aethertunnel-server .
+          cat > /tmp/server.toml <<'EOF'
+          [server]
+          bind_addr = "127.0.0.1:7099"
+          auth_token = "emulator-data-path-check-01"
+
+          [vpn]
+          enabled = true
+          address = "10.7.0.1/24"
+          EOF
+          sudo /tmp/aethertunnel-server /tmp/server.toml > /tmp/server.log 2>&1 &
+          sleep 3
+          tail -5 /tmp/server.log
+          grep -q 'tunnel' /tmp/server.log || grep -q 'listening' /tmp/server.log
+
+      - name: start the tunnel service on the emulator
+        run: |
+          adb="$ANDROID_HOME/platform-tools/adb"
+          cat > /tmp/client.toml <<'EOF'
+          [client]
+          server_addr = "10.0.2.2:7099"
+          auth_token = "emulator-data-path-check-01"
+
+          [vpn]
+          enabled = true
+          EOF
+          adb push /tmp/client.toml /data/local/tmp/client.toml
+          adb shell run-as io.github.aethertunnel.app sh -c 'cp /data/local/tmp/client.toml files/client.toml'
+          adb shell appops set io.github.aethertunnel.app ACTIVATE_VPN allow
+          adb shell am startservice -n io.github.aethertunnel.app/.TunnelVpnService
+          ok=0
+          for i in $(seq 1 60); do
+            if adb logcat -d | grep -q 'tunnel interface'; then ok=1; break; fi
+            sleep 5
+          done
+          [ "$ok" = 1 ] || { echo "the tunnel session never came up"; adb logcat -d | tail -80; tail -40 /tmp/server.log; exit 1; }
+          adb logcat -d | grep -o 'tunnel interface[^,]*' | tail -1
+
+      - name: the packet path crosses the tunnel and comes back
+        run: |
+          adb="$ANDROID_HOME/platform-tools/adb"
+          adb shell ping -c 3 -W 10 10.7.0.1 | tee /dev/stderr | grep -q '0% packet loss'
