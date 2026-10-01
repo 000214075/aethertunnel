@@ -11,7 +11,8 @@
 // android executable needs -ldflags=-checklinkname=0, because the interface
 // enumeration helper pion/webrtc pulls in uses go:linkname; an ios executable
 // additionally requires Apple's cgo toolchain (gomobile or Xcode), which is the
-// iOS linker's requirement for any Go program.
+// iOS linker's requirement for any Go program. CI builds the AAR and the debug
+// APK of the minimal app in mobile/android, and attaches both to each release.
 package mobile
 
 import (

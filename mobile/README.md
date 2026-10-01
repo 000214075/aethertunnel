@@ -19,14 +19,45 @@ App 本身刻意保持最小：它只做 UI 与线程，隧道的一切都在 `p
 CI（`.github/workflows/mobile-app.yml`）在 ubuntu-latest 上完成全部两步，产物挂在 Release 页：
 
 ```bash
-# 1) 绑定 AAR（需要 ANDROID_NDK_HOME；-checklinkname=0 是 pion 的接口枚举助手
-#    用 go:linkname 带来的官方解法，见 pkg/mobile 的文档注释）
-gomobile bind -target=android/arm64 -javapkg=io.github.aethertunnel \
-  -ldflags='-checklinkname=0' \
-  -o mobile/android/app/libs/aethertunnel.aar ./pkg/mobile
+# 0) 安装与钉住的 x/mobile 同版本的 gomobile/gobind
+#    （gomobile bind 要求被绑定包的模块图里有 golang.org/x/mobile，而其最新版会强制
+#    宿主模块的 go 指令升到 1.26；因此绑定从一个一次性包装模块运行，主模块 go.mod 不动）
+go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260821151724-5c0595f4cdbb
 
-# 2) App 的 debug APK
-gradle -p mobile/android assembleDebug
+# 1) 包装模块：replace 指向本仓库，一个只有空导入的桩文件固定模块图
+mkdir -p /tmp/binder && cd /tmp/binder
+cat > go.mod <<'EOF'
+module aethertunnel/binder
+
+go 1.25.0
+
+require (
+	github.com/aethertunnel/aethertunnel v0.0.0
+	golang.org/x/mobile v0.0.0-20260821151724-5c0595f4cdbb
+)
+
+replace github.com/aethertunnel/aethertunnel => /path/to/aethertunnel
+EOF
+cat > binder.go <<'EOF'
+package binder
+
+import (
+	_ "github.com/aethertunnel/aethertunnel/pkg/mobile"
+	_ "golang.org/x/mobile/bind"
+)
+EOF
+go mod tidy
+
+# 2) 绑定 AAR（需要 ANDROID_NDK_HOME；-checklinkname=0 是 pion 的接口枚举助手
+#    用 go:linkname 带来的官方解法，见 pkg/mobile 的文档注释；NDK 27 的最低
+#    API 由 -androidapi 21 满足）
+gomobile bind -target=android/arm64 -androidapi 21 -javapkg=io.github.aethertunnel \
+  -ldflags='-checklinkname=0' \
+  -o /path/to/aethertunnel/mobile/android/app/libs/aethertunnel.aar \
+  github.com/aethertunnel/aethertunnel/pkg/mobile
+
+# 3) App 的 debug APK
+gradle -p /path/to/aethertunnel/mobile/android assembleDebug
 ```
 
 产物：

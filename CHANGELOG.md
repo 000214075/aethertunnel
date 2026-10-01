@@ -24,6 +24,15 @@
   Apple 的 cgo 工具链，属于 app 工程的步骤）。客户端的版本打桩随实现移到 `clientlib.Version`，
   `scripts/build-release.sh` 同步，`--version` 输出不变。设计边界里“移动端 App”一项据此
   收窄为“商店应用与设备级 VPN”。
+- **Android 产物落地：绑定 AAR 与最小 App 的 debug APK**。CI 的 mobile 作业在运行器上用
+  gomobile 把 `pkg/mobile` 绑成 `aethertunnel-mobile-android-arm64.aar`——在自己的 Android
+  工程里调用 `Mobile.run(configTOML)` / `Mobile.stop()` 就是驱动完整客户端；随后构建
+  `mobile/android` 里的最小 App（Kotlin、无 androidx：TOML 配置框、Start/Stop、日志区）出
+  debug APK。绑定从一次性包装模块运行：`gomobile bind` 要求被绑定包的模块图里有
+  golang.org/x/mobile，而其最新版会把宿主模块的 go 指令顶到 1.26——包装模块以 replace 指向
+  本仓库、钉住与此工具链兼容的 x/mobile 版本，主模块 go.mod 一行未动；NDK 27 的最低 API 由
+  `-androidapi 21` 满足。两个产物在打版本标签时挂上 Release 页，`mobile/README.md` 写明
+  本地复现步骤与 iOS 的对应命令。
 - **`transport = "webrtc"`：私有代理的访客数据路径可以走 WebRTC DataChannel**。信令就是
   已经完成认证的控制连接（一次 offer 帧、一次 answer 帧，ICE 候选非渐进收集），数据本身是
   DTLS 加密、ICE 选路的 UDP 字节流——直连被墙的网络环境下数据路径的另一种形态。访客配置
