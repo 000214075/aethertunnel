@@ -854,3 +854,33 @@ CI 在真实运行器上验证（CI run 36592357558，macOS 与 Windows 两个�
 过程中抓到并修掉的对接问题，都记在对应文件里：wintun 0.14.1 的 DLL 没有 `WintunDeleteAdapter`
 导出（Close 释放本进程创建的适配器即可，重开用 `WintunOpenAdapter`）；netsh 的子接口用位置
 参数、`set address` 用 `name=`；Go 进程的日志在 stderr，测试脚本两路都要看。
+
+## 3.22 移动端：android/arm64 与 ios/arm64（CI 实测，逐次验证）
+
+**android/arm64（ubuntu-latest，`.github/workflows/mobile-app.yml`）**：
+
+- `gomobile bind -target=android/arm64 -androidapi 21 -ldflags=-checklinkname=0`：绑出
+  `aethertunnel-mobile-android-arm64.aar`（classes.jar + `jni/arm64-v8a/libgojni.so`），
+  调用面是 `Mobile.run` / `Mobile.runVPN` / `Mobile.stop` 与 `PlatformVPN` 接口。
+  `-checklinkname=0` 是 pion 的接口枚举助手用 go:linkname 带来的官方解法；NDK 27 的最低
+  API 由 `-androidapi 21` 满足。绑定从一次性包装模块运行：`gomobile bind` 要求被绑定包的
+  模块图里有 golang.org/x/mobile，而其最新版会强制宿主模块的 go 指令升到 1.26——包装模块
+  以 replace 指向本仓库、钉住与 CI 工具链兼容的版本，主模块 go.mod 一行未动。
+- Gradle 8.9 + AGP 8.5.2 + Kotlin 2.0.20（JDK 17）：`mobile/android` 构建出 debug APK，
+  步骤内验证 APK 含 `lib/arm64-v8a/libgojni.so` 与 `classes.dex`。CI 同时上传两个产物到
+  Release 页。
+
+**ios/arm64（ubuntu-latest，`ci.yml` 的 mobile 作业）**：`CGO_ENABLED=0 GOOS=ios
+GOARCH=arm64 go build ./pkg/...`——库级编译逐次通过。iOS 的可执行文件按平台规则必须用
+Apple 的 cgo 工具链链接（任何 Go 程序在 iOS 上都如此），Linux 运行器做不了，这是平台要求
+而非实现缺口。
+
+**shell 设备对接的 Go 侧（单测，任何平台可复跑）**：`RunWithShell` 的时序契约——会话建立、
+服务器分配地址之后才向壳要接口（`openDevice` 收到 MTU/地址/前缀/子网）；fd 设备
+（`vpn.NewFromFD`）的读写与约束；protect 钩子在到服务器的套接字上触发
+（`net.Dialer.Control`）；会话结束时隧道关闭壳交来的描述符（重连不泄漏 fd）。
+
+**没有证明的，如实写**：真机上的端到端行为——装上 APK、授权 VpnService、逐包进 tun、
+应用流量穿过隧道——本仓库没有设备或模拟器来验证，一处也没有。能在没有设备的情况下
+证明的（编译、绑定产物、Go 侧对接单测）都已在 CI 逐次证明；剩下的那一步需要一台
+arm64 的 Android 手机，谁来跑都行。

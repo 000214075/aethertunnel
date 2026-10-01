@@ -2,9 +2,12 @@ package clientlib
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"log"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +16,7 @@ import (
 	"github.com/aethertunnel/aethertunnel/pkg/crypto"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
 	"github.com/aethertunnel/aethertunnel/pkg/socks"
+	"github.com/aethertunnel/aethertunnel/pkg/vpn"
 )
 
 // testClient builds the smallest client the heartbeat decision needs: a config and a
@@ -436,4 +440,54 @@ func TestTheDialerWithoutAShellProtectsNothing(t *testing.T) {
 	}
 	conn.Close()
 	// No hook installed, no panic, no error: the plain path is unchanged.
+}
+
+func TestTheShellDeviceIsClosedWhenTheSessionEnds(t *testing.T) {
+	// Ownership contract of RunWithShell: the descriptor the shell hands over
+	// becomes the Go side's to close, and the tunnel closes it when the session
+	// ends — on a phone that is what keeps reconnects from leaking interfaces.
+	clientSide, serverSide := net.Pipe()
+	defer serverSide.Close()
+	framer := protocol.NewFramer(clientSide, nil, 0)
+
+	cfg := &config.Config{}
+	cfg.VPN.Enabled = true
+	c := &client{cfg: cfg, logger: log.New(io.Discard, "", 0)}
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	device, err := vpn.NewFromFD(writer.Fd(), "pipe", 1400)
+	if err != nil {
+		t.Fatalf("NewFromFD: %v", err)
+	}
+
+	calls := 0
+	c.vpnShellOpen = func(mtu int, address string, prefix int, subnet string) (vpn.Device, error) {
+		calls++
+		if mtu != 1400 || address != "10.7.0.2" || prefix != 24 || subnet != "10.7.0.0" {
+			t.Errorf("the shell was asked for mtu=%d address=%s prefix=%d subnet=%s", mtu, address, prefix, subnet)
+		}
+		return device, nil
+	}
+
+	stop, err := c.startVPN(context.Background(), framer, protocol.AuthResponse{
+		VPNAddress: "10.7.0.2",
+		VPNMask:    "255.255.255.0",
+		VPNMTU:     1400,
+	})
+	if err != nil {
+		t.Fatalf("startVPN: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("the shell was asked %d times, want once", calls)
+	}
+
+	stop()
+
+	if _, err := device.Write([]byte{0x45, 0x00}); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("Write after stop: %v, want a closed-file error", err)
+	}
 }
