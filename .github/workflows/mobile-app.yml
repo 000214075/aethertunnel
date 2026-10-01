@@ -180,8 +180,12 @@ jobs:
           # /dev/kvm exists but the runner user is not in the kvm group; the
           # group membership would need a fresh login, the mode bit works now.
           sudo chmod 666 /dev/kvm
+          # The emulator registers itself with the adb daemon at startup; if the
+          # daemon is not running yet, the device shows up offline forever.
+          adb start-server
           "$ANDROID_HOME/emulator/emulator" -avd ci -no-window -gpu swiftshader_indirect \
             -no-snapshot -no-audio -no-boot-anim -accel on &
+          timeout 300 adb wait-for-device
           timeout 600 bash -c 'while [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" != "1" ]; do sleep 5; done'
           adb shell getprop ro.build.version.release
 
