@@ -224,7 +224,8 @@ jobs:
           go build -o /tmp/aethertunnel-server .
           cat > /tmp/server.toml <<'EOF'
           [server]
-          bind_addr = "127.0.0.1:7099"
+          bind_addr = "127.0.0.1"
+          bind_port = 7099
           auth_token = "emulator-data-path-check-01"
 
           [vpn]
