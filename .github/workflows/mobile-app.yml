@@ -82,6 +82,7 @@ jobs:
           go mod tidy
           "$(go env GOPATH)/bin/gomobile" bind \
             -target=android/arm64 \
+            -androidapi 21 \
             -javapkg=io.github.aethertunnel \
             -ldflags='-checklinkname=0' \
             -o "${REPO}/mobile/android/app/libs/aethertunnel.aar" \
