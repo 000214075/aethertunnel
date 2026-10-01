@@ -18,6 +18,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/aethertunnel/aethertunnel/pkg/config"
@@ -63,6 +64,12 @@ type client struct {
 	// gave this client a tunnel address.
 	vpnMu        sync.Mutex
 	vpnTransport *vpn.ChannelTransport
+	// vpnShellOpen and vpnShellProtect are set by RunWithShell for a platform that
+	// supplies the layer-3 device itself. vpnShellOpen is called at the moment the
+	// session is up and the server's address assignment is known; vpnProtect runs
+	// at socket-creation time for the connections to the server.
+	vpnShellOpen    func(mtu int, address string, prefix int, subnet string) (vpn.Device, error)
+	vpnShellProtect func(fd int)
 
 	mu              sync.Mutex
 	session         string
@@ -164,7 +171,30 @@ func (c *client) refreshTarget() {
 //
 // Run returns the error behind a failed dial-back loop only when the client
 // gives up on its own; otherwise it returns nil after a clean stop.
+// RunWithShell is Run for an embedding platform that supplies the layer-3 device
+// itself — Android's VpnService, iOS's packet flow. openDevice is called at the
+// moment the session is up and the server's address assignment is known, which is
+// when a platform interface can finally be configured; the device it returns must
+// already carry that address and whatever routes the shell chose. protect keeps
+// the tunnel's own sockets out of those routes; a shell that routes only the
+// tunnel's own subnet has no loop to fear and can leave it nil.
+func RunWithShell(ctx context.Context, cfg *config.Config, logger *log.Logger,
+	openDevice func(mtu int, address string, prefix int, subnet string) (vpn.Device, error),
+	protect func(fd int),
+) error {
+	return runWithShell(ctx, cfg, logger, openDevice, protect)
+}
+
+// Run starts the tunnel client with the given configuration and logger and
+// blocks until ctx is cancelled or a fatal configuration error shows up.
 func Run(ctx context.Context, cfg *config.Config, logger *log.Logger) error {
+	return runWithShell(ctx, cfg, logger, nil, nil)
+}
+
+func runWithShell(ctx context.Context, cfg *config.Config, logger *log.Logger,
+	openDevice func(mtu int, address string, prefix int, subnet string) (vpn.Device, error),
+	protect func(fd int),
+) error {
 	cipher, err := cfg.Cipher(config.RoleClient)
 	if err != nil {
 		return fmt.Errorf("encryption configuration: %w", err)
@@ -173,7 +203,8 @@ func Run(ctx context.Context, cfg *config.Config, logger *log.Logger) error {
 	if err != nil {
 		return fmt.Errorf("transport configuration: %w", err)
 	}
-	c := &client{cfg: cfg, cipher: cipher, tlsConfig: tlsConfig, logger: logger, target: cfg.Client.ServerAddr}
+	c := &client{cfg: cfg, cipher: cipher, tlsConfig: tlsConfig, logger: logger, target: cfg.Client.ServerAddr,
+		vpnShellOpen: openDevice, vpnShellProtect: protect}
 
 	if cfg.Identity.Enabled {
 		identity, err := crypto.LoadIdentity(cfg.Identity.KeyFile)
@@ -288,8 +319,7 @@ func jitter(d time.Duration) time.Duration {
 // dialServer opens a TCP connection to the server, wrapped in TLS when
 // [transport].enable_tls is set.
 func (c *client) dialServer() (net.Conn, error) {
-	dialTimeout := time.Duration(c.cfg.Client.DialTimeoutSecs) * time.Second
-	dialer := &net.Dialer{Timeout: dialTimeout}
+	dialer := c.dialer()
 
 	target := c.serverAddr()
 	var conn net.Conn
@@ -340,6 +370,23 @@ func (c *client) sessionKeyCopy() []byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]byte(nil), c.sessionKey...)
+}
+
+// dialer builds the dialer for the connections to the server. When a platform
+// shell protects sockets from the routes the VPN carries, the hook runs at
+// socket-creation time: a tunnel socket captured by the very interface the
+// tunnel feeds would be a routing loop.
+func (c *client) dialer() *net.Dialer {
+	d := &net.Dialer{Timeout: time.Duration(c.cfg.Client.DialTimeoutSecs) * time.Second}
+	if c.vpnShellProtect != nil {
+		d.Control = func(network, address string, rawConn syscall.RawConn) error {
+			_ = rawConn.Control(func(fd uintptr) {
+				c.vpnShellProtect(int(fd))
+			})
+			return nil
+		}
+	}
+	return d
 }
 
 // session runs one control connection until it fails or ctx is cancelled.
@@ -527,13 +574,34 @@ func (c *client) startVPN(ctx context.Context, framer *protocol.Framer, response
 		mtu = c.cfg.VPN.MTU
 	}
 
-	device, err := vpn.Open(c.cfg.VPN.Device, mtu)
-	if err != nil {
-		return nil, fmt.Errorf("open the tunnel interface: %w", err)
+	mask := response.VPNMask
+	if mask == "" {
+		mask = "255.255.255.0"
 	}
-	if err := vpn.AssignAddress(device, response.VPNAddress); err != nil {
-		_ = device.Close()
-		return nil, fmt.Errorf("configure %s with %s: %w", device.Name(), response.VPNAddress, err)
+	ip := net.ParseIP(response.VPNAddress).To4()
+	m := net.IPMask(net.ParseIP(mask).To4())
+	prefix, ones := m.Size()
+	if ip == nil || m == nil || ones == 0 {
+		return nil, fmt.Errorf("the server's tunnel address %s/%s is not an IPv4 pair", response.VPNAddress, mask)
+	}
+	subnet := ip.Mask(m).String()
+
+	var device vpn.Device
+	var err error
+	if c.vpnShellOpen != nil {
+		device, err = c.vpnShellOpen(mtu, response.VPNAddress, prefix, subnet)
+		if err != nil {
+			return nil, fmt.Errorf("open the tunnel interface: %w", err)
+		}
+	} else {
+		device, err = vpn.Open(c.cfg.VPN.Device, mtu)
+		if err != nil {
+			return nil, fmt.Errorf("open the tunnel interface: %w", err)
+		}
+		if err := vpn.AssignAddress(device, response.VPNAddress); err != nil {
+			_ = device.Close()
+			return nil, fmt.Errorf("configure %s with %s: %w", device.Name(), response.VPNAddress, err)
+		}
 	}
 
 	transport := vpn.NewChannelTransport(func(packet []byte) error {
@@ -559,10 +627,6 @@ func (c *client) startVPN(ctx context.Context, framer *protocol.Framer, response
 		}
 	}()
 
-	mask := response.VPNMask
-	if mask == "" {
-		mask = "255.255.255.0"
-	}
 	c.logger.Printf("tunnel interface %s is %s/%s, MTU %d", device.Name(), response.VPNAddress, mask, tunnel.MTU())
 
 	return func() {

@@ -1,15 +1,19 @@
 # AetherTunnel
 
-**把内网服务发布到公网的隧道工具 · A tunnel that publishes a service behind NAT.**
-服务端 + 客户端 + 内置 Web 面板，纯 Go，无 CGO，六个平台开箱可用。
-Server, client and a built-in web panel. Pure Go, no CGO, cross-compiled for six platforms.
+**把内网服务发布到公网的隧道工具，也是一套可以嵌进自己程序的客户端库 · A tunnel that publishes a service behind NAT — and a client library you can embed.**
+服务端 + 客户端 + 内置 Web 面板，纯 Go，无 CGO；命令行、嵌入库（`pkg/clientlib`）与
+Android App（gomobile 绑定 + VpnService）共用同一份实现，六个平台开箱可用。
+Server, client and a built-in web panel. Pure Go, no CGO; the command line, the
+embeddable library (`pkg/clientlib`) and the Android app (gomobile binding +
+VpnService) share one implementation, cross-compiled for six platforms.
 
 八种代理类型（`tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`）、代理池与负载均衡、
 可选的后量子加密、Prometheus 指标与 JSONL 审计日志；三层隧道在 Linux、Windows（Wintun）与
-macOS（utun）上打开真实设备，设备缺失时明确报错退出。
+macOS（utun）上打开真实设备，Android 上由 App 的 VpnService 提供接口（`mobile/`），
+设备缺失时明确报错退出。
 Eight proxy types (`tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5`), pooling with load
 balancing, optional post-quantum encryption, Prometheus metrics and a JSONL audit log; the
-layer-3 tunnel opens real devices on Linux, Windows (Wintun) and macOS (utun), and refuses to start with it enabled where no device can be opened.
+layer-3 tunnel opens real devices on Linux, Windows (Wintun) and macOS (utun), takes the interface from the app's VpnService on Android (`mobile/`), and refuses to start with it enabled where no device can be opened.
 
 [![CI](https://github.com/000214075/aethertunnel/actions/workflows/ci.yml/badge.svg)](https://github.com/000214075/aethertunnel/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/tag/000214075/aethertunnel?label=release)](https://github.com/000214075/aethertunnel/releases)
@@ -27,6 +31,21 @@ AetherTunnel 让一台没有公网 IP 的机器（家里的 NAS、公司的开�
 ```
 访问者 ──► 服务器公网端口 ──► [隧道] ──► 客户端 ──► 本地服务 127.0.0.1:22
 ```
+
+### 仓库结构
+
+每个目录有自己的 README，介绍词写的是它实际做的事。
+
+| 目录 | 内容 |
+| --- | --- |
+| [`client/`](client/) | `aethertunnel-client` 命令入口（旗标、配置、信号） |
+| [`pkg/`](pkg/) | 全部实现包：clientlib、server、vpn、obfs、snarkauth、webrtcvisitor……每个子包各有 README |
+| [`mobile/`](mobile/) | gomobile 绑定与 Android 最小 App（含 VpnService 壳） |
+| [`web/`](web/) | 内嵌面板 |
+| [`deploy/`](deploy/) | Kubernetes 部署清单 |
+| [`scripts/`](scripts/) | 构建、285 项功能套件与各平台实测脚本 |
+| [`tools/`](tools/) | SNARK 电路与密钥生成 |
+| [`docs/`](docs/) | 架构、配置参考、平台记录、安全模型、设计边界 |
 
 ### 30 秒上手
 
@@ -317,6 +336,22 @@ tunnel to the service running on your own machine.
 ```
 visitor ──► server public port ──► [tunnel] ──► client ──► local service 127.0.0.1:22
 ```
+
+### Repository layout
+
+Every directory carries its own README, and each one says what the code in it
+actually does.
+
+| Directory | Contents |
+| --- | --- |
+| [`client/`](client/) | the `aethertunnel-client` command (flags, configuration, signals) |
+| [`pkg/`](pkg/) | every implementation package: clientlib, server, vpn, obfs, snarkauth, webrtcvisitor — each with its own README |
+| [`mobile/`](mobile/) | the gomobile binding and the minimal Android app, VpnService shell included |
+| [`web/`](web/) | the embedded dashboard |
+| [`deploy/`](deploy/) | Kubernetes manifests |
+| [`scripts/`](scripts/) | the builders, the 285-check functional suite and the per-platform test scripts |
+| [`tools/`](tools/) | SNARK circuit and key generation |
+| [`docs/`](docs/) | architecture, configuration reference, platform records, security model, scope decisions |
 
 ### Quick start
 

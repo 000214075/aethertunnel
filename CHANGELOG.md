@@ -33,6 +33,15 @@
   本仓库、钉住与此工具链兼容的 x/mobile 版本，主模块 go.mod 一行未动；NDK 27 的最低 API 由
   `-androidapi 21` 满足。两个产物在打版本标签时挂上 Release 页，`mobile/README.md` 写明
   本地复现步骤与 iOS 的对应命令。
+- **设备级 VPN 的代码落地**。`pkg/vpn` 新增 `NewFromFD`：包装平台壳建好的 tun 描述符；
+  `pkg/clientlib` 新增 `RunWithShell`：在会话已建立、服务器已分配地址的那一刻向壳要接口
+  （`openDevice` 回调收到 MTU/地址/前缀/子网——这是 Android 的 VpnService 唯一能正确配置
+  接口的时刻），并为所有到服务器的套接字挂 protect 钩子（`net.Dialer.Control`），保证隧道
+  自己的流量不被自己喂的接口捕获；`pkg/mobile` 新增 `RunVPN(configTOML, shell)` 与
+  `PlatformVPN` 绑定接口；`mobile/android` 的 `TunnelVpnService` 实现壳这一半
+  （`VpnService.Builder` 建接口、路由隧道子网、protect），App 的界面加 VPN 按钮与系统的
+  授权流程。Go 侧单测覆盖 fd 设备、protect 钩子与 `RunVPN` 的约束；Kotlin 侧由 CI 的 APK
+  构建验证编译；真机端到端行为未验证，设计边界文档如实记录。
 - **`transport = "webrtc"`：私有代理的访客数据路径可以走 WebRTC DataChannel**。信令就是
   已经完成认证的控制连接（一次 offer 帧、一次 answer 帧，ICE 候选非渐进收集），数据本身是
   DTLS 加密、ICE 选路的 UDP 字节流——直连被墙的网络环境下数据路径的另一种形态。访客配置

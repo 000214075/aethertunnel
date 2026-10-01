@@ -1,18 +1,18 @@
-# 移动端 · Mobile
+# mobile/
 
-本目录是移动端的接缝：Go 侧的绑定在 `pkg/mobile`，Android 工程在这里。
+移动端的接缝：Go 侧的绑定在 [`pkg/mobile`](../pkg/mobile)，Android 工程在这里。
 
 ## 结构
 
 | 路径 | 内容 |
 | --- | --- |
 | `../pkg/clientlib` | 客户端实现的库形态：`Run(ctx, cfg, logger)` 一个入口 |
-| `../pkg/mobile` | gomobile 绑定：`Run(configTOML string) error` / `Stop()`，配置直接以 TOML 字符串内嵌 |
-| `android/` | 最小 Android 工程（Kotlin，无 androidx 依赖）：一个配置输入框、Start/Stop 两个按钮、一块日志区 |
+| `../pkg/mobile` | gomobile 绑定：`Run(configTOML)` / `Stop()`，配置直接以 TOML 字符串内嵌；`RunVPN` + `PlatformVPN` 交给平台壳 tun 设备 |
+| `android/` | 最小 Android 工程（Kotlin，无 androidx 依赖）：配置输入框、Start/Stop/VPN 三个按钮、一块日志区，以及 `TunnelVpnService`——VpnService 壳 |
 
-App 本身刻意保持最小：它只做 UI 与线程，隧道的一切都在 `pkg/clientlib` 里——同一个客户端
-命令行在跑的东西，App 里跑的就是它。Go 的日志输出被 gomobile 路由到 logcat，屏幕上的日志区
-显示启动、停止与错误。
+App 本身刻意保持最小：它只做 UI 与线程，隧道的一切都在 `pkg/clientlib` 里——同一个
+客户端命令行在跑的东西，App 里跑的就是它。Go 的日志输出被 gomobile 路由到 logcat，
+屏幕上的日志区显示启动、停止与错误；VPN 服务的日志在 "AetherTunnel" 标签下。
 
 ## 构建
 
@@ -63,9 +63,24 @@ gradle -p /path/to/aethertunnel/mobile/android assembleDebug
 产物：
 
 - `aethertunnel-mobile-android-arm64.aar` — 把客户端嵌进你自己的 Android 工程用的绑定包；
-  调用 `Mobile.run(configTOML)`（在工作者线程上）与 `Mobile.stop()`。
+  调用 `Mobile.run(configTOML)`（在工作者线程上）与 `Mobile.stop()`，或实现 `PlatformVPN`
+  后调用 `Mobile.runVPN(config, shell)` 走三层隧道。
 - `aethertunnel-app-android-arm64-debug.apk` — 本目录的 App 骨架装出来的 debug 包
   （arm64 设备；debug 签名，不可用于分发）。
+
+## 设备级 VPN
+
+`RunVPN(configTOML, shell)` 把第三层隧道也交给同一个客户端。平台接口的时序约束是关键：
+Android 的 VpnService 在 `establish()` 时就要地址，而隧道的地址由服务器在会话建立后才
+分配——所以 Go 侧在**会话已建立、地址已知的那一刻**才调用壳的 `OpenTun(mtu, address,
+prefix, subnet)`，壳用 `VpnService.Builder` 建接口（`addAddress(address, prefix)` +
+`addRoute(subnet, prefix)`）并把 `establish()` 的描述符交回；`ProtectSocket` 经
+`net.Dialer.Control` 在每个服务器套接字创建时触发，防止隧道自己的流量被自己喂的接口
+捕获。最小 App 路由隧道自己的子网，因此天然无回环；全设备路由表配合 protect 也已可用。
+
+Go 侧有单元测试（fd 设备、protect 钩子、`RunVPN` 的配置约束），Kotlin 侧由 CI 的 APK
+构建验证编译；**真机上的端到端行为未经核实**——本仓库没有设备或模拟器。iOS 的对应路径
+是 NetworkExtension 的 packet flow，接口形状一致，Swift 壳需要 Xcode 工程与真机。
 
 ## iOS
 
@@ -81,7 +96,6 @@ gomobile bind -target=ios/arm64 -o AetherTunnel.xcframework ./pkg/mobile
 
 - **上架商店的第一方应用**：签名、审核与开发者账号不是代码能替的。想要自己的入口，用
   AAR 包一个壳即可。
-- **设备级 VPN**：Android 的 VpnService 与 iOS 的 NetworkExtension 各要一套 JNI/Swift 壳与
-  真机验证；`[vpn]` 在 android/ios 上的运行时行为是 `device_other.go` 的明确报错
-  （“此构建没有 tun 实现”）。手机上不用装任何东西也能用本程序：服务端发布一个 `socks5`
+- **真机验证**：设备级 VPN 的代码已落地（见上节），但真机上的端到端行为未核实——
+  本仓库没有设备或模拟器。手机上不用装任何东西也能用本程序：服务端发布一个 `socks5`
   出口，任意 SOCKS5 客户端指向它即可。

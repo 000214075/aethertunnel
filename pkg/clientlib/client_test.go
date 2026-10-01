@@ -386,3 +386,54 @@ func TestSocksUDPRelayEvictsTheLeastRecentlyUsedTarget(t *testing.T) {
 		t.Error("the new target was not cached")
 	}
 }
+
+func TestTheShellProtectHookRunsForServerSockets(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	var protected []int
+	c := &client{
+		cfg:    &config.Config{},
+		logger: log.New(io.Discard, "", 0),
+		target: listener.Addr().String(),
+	}
+	c.vpnShellProtect = func(fd int) {
+		protected = append(protected, fd)
+	}
+
+	conn, err := c.dialServer()
+	if err != nil {
+		t.Fatalf("dialServer: %v", err)
+	}
+	conn.Close()
+
+	if len(protected) != 1 {
+		t.Fatalf("the hook ran %d times, want once", len(protected))
+	}
+	if protected[0] <= 0 {
+		t.Fatalf("the hook saw fd %d, want a real descriptor", protected[0])
+	}
+}
+
+func TestTheDialerWithoutAShellProtectsNothing(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	c := &client{
+		cfg:    &config.Config{},
+		logger: log.New(io.Discard, "", 0),
+		target: listener.Addr().String(),
+	}
+	conn, err := c.dialServer()
+	if err != nil {
+		t.Fatalf("dialServer: %v", err)
+	}
+	conn.Close()
+	// No hook installed, no panic, no error: the plain path is unchanged.
+}
