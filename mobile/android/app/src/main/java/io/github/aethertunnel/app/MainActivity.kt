@@ -25,6 +25,7 @@ class MainActivity : Activity() {
 
     private lateinit var logView: TextView
     private lateinit var configView: EditText
+    private lateinit var fullTunnelBox: CheckBox
 
     @Volatile
     private var running = false
@@ -100,7 +101,7 @@ class MainActivity : Activity() {
             addView(stop, weight(1f))
         }
 
-        val fullTunnel = CheckBox(this).apply {
+        fullTunnelBox = CheckBox(this).apply {
             text = "VPN: capture all device traffic"
             isChecked = false
         }
@@ -116,7 +117,7 @@ class MainActivity : Activity() {
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 )
             )
-            addView(fullTunnel)
+            addView(fullTunnelBox)
             addView(
                 log,
                 LinearLayout.LayoutParams(
@@ -140,7 +141,7 @@ class MainActivity : Activity() {
 
     private fun startVpn() {
         running = true
-        val full = fullTunnel.isChecked
+        val full = fullTunnelBox.isChecked
         logLine(if (full) "starting the VPN service (full tunnel)" else "starting the VPN service (subnet)")
         startService(
             Intent(this, TunnelVpnService::class.java)
