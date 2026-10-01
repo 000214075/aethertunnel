@@ -62,11 +62,13 @@ gradle -p /path/to/aethertunnel/mobile/android assembleDebug
 
 产物：
 
-- `aethertunnel-mobile-android-arm64.aar` — 把客户端嵌进你自己的 Android 工程用的绑定包；
+- `aethertunnel-mobile-android.aar` — 把客户端嵌进你自己的 Android 工程用的绑定包，
+  内含 arm64 与 x86_64 两份 libgojni（模拟器与 x86 的 Android 设备，如 Chromebook）；
   调用 `Mobile.run(configTOML)`（在工作者线程上）与 `Mobile.stop()`，或实现 `PlatformVPN`
   后调用 `Mobile.runVPN(config, shell)` 走三层隧道。
 - `aethertunnel-app-android-arm64-debug.apk` — 本目录的 App 骨架装出来的 debug 包
-  （arm64 设备；debug 签名，不可用于分发）。
+  （arm64 与 x86_64；debug 签名，不可用于分发）。CI 的 e2e 作业在 KVM 加速的模拟器上
+  装它、启动它、并核实 Go 运行时加载成功。
 
 ## 设备级 VPN
 
@@ -81,7 +83,9 @@ prefix, subnet)`，壳用 `VpnService.Builder` 建接口（`addAddress(address, 
 protect 钩子存在的意义。
 
 Go 侧有单元测试（fd 设备、protect 钩子、`RunVPN` 的配置约束），Kotlin 侧由 CI 的 APK
-构建验证编译；**真机上的端到端行为未经核实**——本仓库没有设备或模拟器。iOS 的对应路径
+构建验证编译；CI 还在 KVM 加速的无头模拟器上装 APK、启动界面、核实 Go 运行时加载
+（onCreate 的绑定预热会让损坏的绑定当场崩溃，logcat 干净即通过）。**真机上的逐包路径
+仍未核实**——授权 VpnService 与应用流量穿隧道需要一台 arm64 设备。iOS 的对应路径
 是 NetworkExtension 的 packet flow，接口形状一致，Swift 壳需要 Xcode 工程与真机。
 
 ## iOS

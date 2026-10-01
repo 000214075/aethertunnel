@@ -860,7 +860,8 @@ CI 在真实运行器上验证（CI run 36592357558，macOS 与 Windows 两个�
 **android/arm64（ubuntu-latest，`.github/workflows/mobile-app.yml`）**：
 
 - `gomobile bind -target=android/arm64 -androidapi 21 -ldflags=-checklinkname=0`：绑出
-  `aethertunnel-mobile-android-arm64.aar`（classes.jar + `jni/arm64-v8a/libgojni.so`），
+  `aethertunnel-mobile-android.aar`（classes.jar + `jni/arm64-v8a/libgojni.so` +
+  `jni/x86_64/libgojni.so`，模拟器与 x86 的 Android 设备也能装），
   调用面是 `Mobile.run` / `Mobile.runVPN` / `Mobile.stop` 与 `PlatformVPN` 接口。
   `-checklinkname=0` 是 pion 的接口枚举助手用 go:linkname 带来的官方解法；NDK 27 的最低
   API 由 `-androidapi 21` 满足。绑定从一次性包装模块运行：`gomobile bind` 要求被绑定包的
@@ -880,7 +881,15 @@ Apple 的 cgo 工具链链接（任何 Go 程序在 iOS 上都如此），Linux 
 （`vpn.NewFromFD`）的读写与约束；protect 钩子在到服务器的套接字上触发
 （`net.Dialer.Control`）；会话结束时隧道关闭壳交来的描述符（重连不泄漏 fd）。
 
-**没有证明的，如实写**：真机上的端到端行为——装上 APK、授权 VpnService、逐包进 tun、
-应用流量穿过隧道——本仓库没有设备或模拟器来验证，一处也没有。能在没有设备的情况下
-证明的（编译、绑定产物、Go 侧对接单测）都已在 CI 逐次证明；剩下的那一步需要一台
-arm64 的 Android 手机，谁来跑都行。
+**模拟器上的运行时验证（ubuntu-latest，`mobile-app.yml` 的 e2e 作业，逐次验证）**：
+拉取 `system-images;android-34;google_apis;x86_64` 建 AVD，KVM 加速无头启动（
+`-no-window -gpu swiftshader_indirect`），`adb install` 装 debug APK（正是为此而带
+x86_64 库），`am start -W` 启动并等 `Status: ok`，随后进程存活、`pidof` 可见、logcat
+无 `FATAL EXCEPTION` 与 `UnsatisfiedLinkError`。Activity 的 onCreate 先做一次绑定预热
+（无害的 `Mobile.stop()`，强制 libgojni 加载）——所以这一步实际证明的是：**Go 运行时
+在 Android 内核上完成 dlopen 与 JNI 挂接**，绑定类加载不炸。
+
+**没有证明的，如实写**：真机上的端到端行为——授权 VpnService、逐包进 tun、应用流量
+穿过隧道——模拟器装得了 APK、跑得起来 Go 运行时，但 VpnService 建立真实隧道的逐包
+路径仍未在任何 Android 运行时上验证过；那一步需要一台 arm64 的 Android 手机，谁来跑
+都行。模拟器能证明的（安装、启动、Go 运行时加载）已逐次证明。

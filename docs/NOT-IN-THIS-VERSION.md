@@ -21,7 +21,7 @@ VpnService 壳也已落地，剩下有意不做的收窄为「商店应用」与
 一个入口），`pkg/mobile` 以 `Run(configTOML)` / `Stop()` 两个函数把它交给 gomobile 这样的
 绑定工具；配置可以直接以 TOML 字符串内嵌（`config.LoadString`）。CI 的 mobile 作业逐次产出
 三样东西：android/arm64 的**完整客户端可执行文件**（pion 依赖的接口枚举助手用 go:linkname，
-按其官方解法加 `-checklinkname=0`）、**绑定包 `aethertunnel-mobile-android-arm64.aar`**
+按其官方解法加 `-checklinkname=0`）、**绑定包 `aethertunnel-mobile-android.aar`**
 （放进自己的 Android 工程就能驱动完整客户端）、以及 **`mobile/android` 里最小 App 构建出的
 debug APK**（Kotlin、无 androidx：一个 TOML 配置框、Start/Stop 按钮、一块日志区——隧道
 本身全是 `pkg/clientlib` 的 Go 代码）。iOS/arm64 编到**库级**——iOS 的可执行文件按平台规则
@@ -35,8 +35,11 @@ debug APK**（Kotlin、无 androidx：一个 TOML 配置框、Start/Stop 按钮�
 `TunnelVpnService` 实现了壳这一半（`VpnService.Builder` 建接口，子网或全设备路由、
 protect、全模式下的解析器）。
 Go 侧有单元测试（fd 设备的读写与约束、protect 钩子在服务器套接字上触发、`RunVPN` 的
-配置约束），Kotlin 侧由 CI 的 APK 构建证明可编译——**真机上的端到端行为未经核实**：
-本仓库没有设备或模拟器来验证 UI 与逐包路径，这是这个功能留下的唯一空白。
+配置约束），Kotlin 侧由 CI 的 APK 构建证明可编译；CI 还会起一台 KVM 加速的无头模拟器
+（x86_64，APK 因此带双 ABI 库），装上 APK、启动界面并核实 Go 运行时真的完成加载
+（logcat 无 `FATAL EXCEPTION` / `UnsatisfiedLinkError`）——**仍未核实的只剩真机上的
+逐包路径**：授权 VpnService、应用流量穿过隧道，这需要一台 arm64 的 Android 手机，
+是本功能留下的最后空白。
 
 在此之上，**有意不做**的只剩一件：
 

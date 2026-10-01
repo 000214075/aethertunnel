@@ -25,7 +25,7 @@
   `scripts/build-release.sh` 同步，`--version` 输出不变。设计边界里“移动端 App”一项据此
   收窄为“商店应用与设备级 VPN”。
 - **Android 产物落地：绑定 AAR 与最小 App 的 debug APK**。CI 的 mobile 作业在运行器上用
-  gomobile 把 `pkg/mobile` 绑成 `aethertunnel-mobile-android-arm64.aar`——在自己的 Android
+  gomobile 把 `pkg/mobile` 绑成 `aethertunnel-mobile-android.aar`——在自己的 Android
   工程里调用 `Mobile.run(configTOML)` / `Mobile.stop()` 就是驱动完整客户端；随后构建
   `mobile/android` 里的最小 App（Kotlin、无 androidx：TOML 配置框、Start/Stop、日志区）出
   debug APK。绑定从一次性包装模块运行：`gomobile bind` 要求被绑定包的模块图里有
@@ -40,8 +40,10 @@
   自己的流量不被自己喂的接口捕获；`pkg/mobile` 新增 `RunVPN(configTOML, shell)` 与
   `PlatformVPN` 绑定接口；`mobile/android` 的 `TunnelVpnService` 实现壳这一半
   （`VpnService.Builder` 建接口、子网或全设备路由、protect、全模式解析器），App 的界面加
-  VPN 按钮、全隧道开关与系统的授权流程。Go 侧单测覆盖 fd 设备、protect 钩子与 `RunVPN` 的约束；Kotlin 侧由 CI 的 APK
-  构建验证编译；真机端到端行为未验证，设计边界文档如实记录。
+  VPN 按钮、全隧道开关与系统的授权流程。绑定与 APK 改为 arm64 + x86_64 双 ABI（模拟器与 x86 的 Android 设备、Chromebook 可装），
+  App 启动时预热绑定、强制 libgojni 加载；CI 新增 e2e 作业：KVM 加速的无头模拟器装 APK、
+  启动界面、核实进程存活且 logcat 无崩溃。Go 侧单测覆盖 fd 设备、protect 钩子、`RunVPN`
+  约束与会话结束时关闭壳描述符的契约；真机逐包路径未验证，设计边界文档如实记录。
 - **`transport = "webrtc"`：私有代理的访客数据路径可以走 WebRTC DataChannel**。信令就是
   已经完成认证的控制连接（一次 offer 帧、一次 answer 帧，ICE 候选非渐进收集），数据本身是
   DTLS 加密、ICE 选路的 UDP 字节流——直连被墙的网络环境下数据路径的另一种形态。访客配置
