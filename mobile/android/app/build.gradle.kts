@@ -13,11 +13,6 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
-        // The binding in app/libs carries an arm64-v8a libgojni.so only; an x86_64
-        // emulator would have nothing to load.
-        ndk {
-            abiFilters += listOf("arm64-v8a")
-        }
     }
 
     compileOptions {

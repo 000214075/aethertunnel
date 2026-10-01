@@ -81,13 +81,13 @@ jobs:
           EOF
           go mod tidy
           "$(go env GOPATH)/bin/gomobile" bind \
-            -target=android/arm64 \
+            -target=android/arm64,android/amd64 \
             -androidapi 21 \
             -javapkg=io.github.aethertunnel \
             -ldflags='-checklinkname=0' \
             -o "${REPO}/mobile/android/app/libs/aethertunnel.aar" \
             github.com/aethertunnel/aethertunnel/pkg/mobile
-          unzip -l "${REPO}/mobile/android/app/libs/aethertunnel.aar" | grep -E 'classes\.jar|arm64-v8a/libgojni\.so'
+          unzip -l "${REPO}/mobile/android/app/libs/aethertunnel.aar" | grep -E 'classes\.jar|arm64-v8a/libgojni\.so|x86_64/libgojni\.so'
           cp "${REPO}/mobile/android/app/libs/aethertunnel.aar" "${REPO}/aethertunnel-mobile-android-arm64.aar"
 
       - name: build the app APK
@@ -102,9 +102,17 @@ jobs:
           apk=mobile/android/app/build/outputs/apk/debug/app-debug.apk
           test -s "$apk"
           unzip -l "$apk" | grep -q 'lib/arm64-v8a/libgojni\.so'
+          unzip -l "$apk" | grep -q 'lib/x86_64/libgojni\.so'
           unzip -l "$apk" | grep -q 'classes\.dex'
           cp "$apk" aethertunnel-app-android-arm64-debug.apk
           ls -l aethertunnel-mobile-android-arm64.aar aethertunnel-app-android-arm64-debug.apk
+
+      - name: hand the APK to the e2e job
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: aethertunnel-app-android-arm64-debug.apk
+          retention-days: 3
 
       - name: upload to the release
         if: startsWith(github.ref, 'refs/tags/')
@@ -133,3 +141,48 @@ jobs:
           echo "$names" | grep -F aethertunnel-mobile-android-arm64.aar
           echo "$names" | grep -F aethertunnel-app-android-arm64-debug.apk
           echo "$names"
+
+  android-e2e:
+    name: android e2e (emulator)
+    needs: android
+    runs-on: ubuntu-latest
+    steps:
+      - name: take the APK the android job built
+        uses: actions/download-artifact@v4
+        with:
+          name: app-debug-apk
+
+      # The runner ships the SDK with KVM acceleration; the system image is the
+      # one piece it does not carry, so fetch an x86_64 one — the APK carries an
+      # x86_64 libgojni for exactly this.
+      - name: fetch a system image and create the emulator
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "system-images;android-34;google_apis;x86_64" >/dev/null
+          echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
+            -n ci -k "system-images;android-34;google_apis;x86_64"
+
+      - name: boot it headless
+        run: |
+          "$ANDROID_HOME/emulator/emulator" -avd ci -no-window -gpu swiftshader_indirect \
+            -no-snapshot -no-audio -no-boot-anim -accel on &
+          timeout 600 bash -c 'while [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" != "1" ]; do sleep 5; done'
+          adb shell getprop ro.build.version.release
+
+      - name: install, launch, and hold the process to account
+        run: |
+          adb install -r app-debug.apk
+          out=$(adb shell am start -W -n io.github.aethertunnel.app/.MainActivity)
+          echo "$out"
+          echo "$out" | grep -q 'Status: ok'
+          sleep 5
+          pid=$(adb shell pidof io.github.aethertunnel.app | tr -d '\r')
+          [ -n "$pid" ] || { echo "the app process is gone"; exit 1; }
+          echo "pid: $pid"
+          # The warm-up in onCreate loads libgojni; a broken binding would have
+          # crashed the process into a FATAL EXCEPTION by now.
+          if adb logcat -d | grep -qE 'FATAL EXCEPTION|UnsatisfiedLinkError'; then
+            adb logcat -d | grep -E 'FATAL EXCEPTION|UnsatisfiedLinkError' | head -20
+            exit 1
+          fi
+          echo "the activity is up and the Go runtime is loaded"

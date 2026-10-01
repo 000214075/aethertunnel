@@ -33,6 +33,15 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Warming the binding: Stop is a harmless no-op when nothing runs, but it
+        // forces libgojni to load here — so an install with a broken or missing
+        // native library crashes on launch instead of failing later, invisibly.
+        try {
+            Mobile.stop()
+        } catch (e: Throwable) {
+            throw RuntimeException("the Go runtime failed to load", e)
+        }
+
         val pad = (16 * resources.displayMetrics.density).toInt()
 
         configView = EditText(this).apply {
