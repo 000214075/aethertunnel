@@ -76,7 +76,9 @@ Android 的 VpnService 在 `establish()` 时就要地址，而隧道的地址由
 prefix, subnet)`，壳用 `VpnService.Builder` 建接口（`addAddress(address, prefix)` +
 `addRoute(subnet, prefix)`）并把 `establish()` 的描述符交回；`ProtectSocket` 经
 `net.Dialer.Control` 在每个服务器套接字创建时触发，防止隧道自己的流量被自己喂的接口
-捕获。最小 App 路由隧道自己的子网，因此天然无回环；全设备路由表配合 protect 也已可用。
+捕获。App 的界面上有个开关：**子网模式**只路由隧道自己的子网（天然无回环），**全隧道
+模式**路由 `0.0.0.0/0` 与 `::/0`、并把解析器指向经隧道可达的地址——全模式的安全性正是
+protect 钩子存在的意义。
 
 Go 侧有单元测试（fd 设备、protect 钩子、`RunVPN` 的配置约束），Kotlin 侧由 CI 的 APK
 构建验证编译；**真机上的端到端行为未经核实**——本仓库没有设备或模拟器。iOS 的对应路径

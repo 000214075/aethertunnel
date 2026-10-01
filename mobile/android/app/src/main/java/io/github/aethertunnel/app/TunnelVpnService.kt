@@ -18,12 +18,14 @@ class TunnelVpnService : VpnService(), PlatformVPN {
 
     private var tun: ParcelFileDescriptor? = null
     private var worker: Thread? = null
+    private var fullTunnel = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val config = intent?.getStringExtra(EXTRA_CONFIG)
         if (config.isNullOrEmpty() || worker != null) {
             return START_NOT_STICKY
         }
+        fullTunnel = intent.getBooleanExtra(EXTRA_FULL_TUNNEL, false)
         worker = Thread {
             try {
                 // Blocks until Mobile.stop() is called or the client gives up on a
@@ -41,16 +43,28 @@ class TunnelVpnService : VpnService(), PlatformVPN {
     }
 
     override fun openTun(mtu: Int, address: String, prefix: Int, subnet: String): Int {
-        Log.i(TAG, "establishing the VPN interface $address/$prefix, route $subnet")
-        val vpn = Builder()
+        Log.i(
+            TAG,
+            if (fullTunnel) "establishing the VPN interface $address/$prefix, full device routing"
+            else "establishing the VPN interface $address/$prefix, route $subnet"
+        )
+        val builder = Builder()
             .setSession("AetherTunnel")
             .setMtu(mtu)
             .addAddress(address, prefix)
-            // Route the tunnel's own subnet: nothing else is captured, so the
-            // tunnel's sockets cannot loop into the interface they feed. A
-            // full-device route table would work too, carried by protectSocket.
-            .addRoute(subnet, prefix)
-            .establish() ?: throw IOException("the system refused to establish the VPN")
+        if (fullTunnel) {
+            // Capture everything and give the phone a resolver that is reachable
+            // through the tunnel; the client's own sockets stay outside the routes
+            // because every one of them runs through protectSocket below.
+            builder.addRoute("0.0.0.0", 0)
+            builder.addRoute("::", 0)
+            builder.addDnsServer(DNS_SERVER)
+        } else {
+            // Route only the tunnel's own subnet: nothing else is captured, so the
+            // tunnel's sockets cannot loop into the interface they feed.
+            builder.addRoute(subnet, prefix)
+        }
+        val vpn = builder.establish() ?: throw IOException("the system refused to establish the VPN")
         tun = vpn
         return vpn.detachFd()
     }
@@ -74,6 +88,10 @@ class TunnelVpnService : VpnService(), PlatformVPN {
 
     companion object {
         private const val TAG = "AetherTunnel"
+        // The resolver the phone uses in full-tunnel mode; its queries travel
+        // through the tunnel like any other packet.
+        private const val DNS_SERVER = "1.1.1.1"
         const val EXTRA_CONFIG = "config"
+        const val EXTRA_FULL_TUNNEL = "full_tunnel"
     }
 }

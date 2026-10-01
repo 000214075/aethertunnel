@@ -39,8 +39,8 @@
   接口的时刻），并为所有到服务器的套接字挂 protect 钩子（`net.Dialer.Control`），保证隧道
   自己的流量不被自己喂的接口捕获；`pkg/mobile` 新增 `RunVPN(configTOML, shell)` 与
   `PlatformVPN` 绑定接口；`mobile/android` 的 `TunnelVpnService` 实现壳这一半
-  （`VpnService.Builder` 建接口、路由隧道子网、protect），App 的界面加 VPN 按钮与系统的
-  授权流程。Go 侧单测覆盖 fd 设备、protect 钩子与 `RunVPN` 的约束；Kotlin 侧由 CI 的 APK
+  （`VpnService.Builder` 建接口、子网或全设备路由、protect、全模式解析器），App 的界面加
+  VPN 按钮、全隧道开关与系统的授权流程。Go 侧单测覆盖 fd 设备、protect 钩子与 `RunVPN` 的约束；Kotlin 侧由 CI 的 APK
   构建验证编译；真机端到端行为未验证，设计边界文档如实记录。
 - **`transport = "webrtc"`：私有代理的访客数据路径可以走 WebRTC DataChannel**。信令就是
   已经完成认证的控制连接（一次 offer 帧、一次 answer 帧，ICE 候选非渐进收集），数据本身是

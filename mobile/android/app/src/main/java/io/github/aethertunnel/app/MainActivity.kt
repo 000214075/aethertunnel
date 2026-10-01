@@ -7,6 +7,7 @@ import android.net.VpnService
 import android.os.Bundle
 import android.view.Gravity
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -99,6 +100,11 @@ class MainActivity : Activity() {
             addView(stop, weight(1f))
         }
 
+        val fullTunnel = CheckBox(this).apply {
+            text = "VPN: capture all device traffic"
+            isChecked = false
+        }
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(pad, pad, pad, pad)
@@ -110,6 +116,7 @@ class MainActivity : Activity() {
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 )
             )
+            addView(fullTunnel)
             addView(
                 log,
                 LinearLayout.LayoutParams(
@@ -133,10 +140,12 @@ class MainActivity : Activity() {
 
     private fun startVpn() {
         running = true
-        logLine("starting the VPN service")
+        val full = fullTunnel.isChecked
+        logLine(if (full) "starting the VPN service (full tunnel)" else "starting the VPN service (subnet)")
         startService(
             Intent(this, TunnelVpnService::class.java)
                 .putExtra(TunnelVpnService.EXTRA_CONFIG, configView.text.toString())
+                .putExtra(TunnelVpnService.EXTRA_FULL_TUNNEL, full)
         )
     }
 

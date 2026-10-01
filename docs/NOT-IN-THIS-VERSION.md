@@ -32,7 +32,8 @@ debug APK**（Kotlin、无 androidx：一个 TOML 配置框、Start/Stop 按钮�
 `RunWithShell` 在**会话已建立、地址已知的那一刻**才向壳要接口：`pkg/vpn` 的 `NewFromFD`
 包装壳交来的描述符，`openDevice` 回调收到 MTU/地址/前缀/子网，`protect` 钩子经
 `net.Dialer.Control` 保证隧道自己的套接字不被自己喂的接口捕获；`mobile/android` 的
-`TunnelVpnService` 实现了壳这一半（`VpnService.Builder` 建接口、路由隧道子网、protect）。
+`TunnelVpnService` 实现了壳这一半（`VpnService.Builder` 建接口，子网或全设备路由、
+protect、全模式下的解析器）。
 Go 侧有单元测试（fd 设备的读写与约束、protect 钩子在服务器套接字上触发、`RunVPN` 的
 配置约束），Kotlin 侧由 CI 的 APK 构建证明可编译——**真机上的端到端行为未经核实**：
 本仓库没有设备或模拟器来验证 UI 与逐包路径，这是这个功能留下的唯一空白。
