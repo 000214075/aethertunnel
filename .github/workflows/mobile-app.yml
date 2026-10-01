@@ -112,13 +112,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${GITHUB_REF_NAME}"
-          # The release is created by the Release workflow after its build job; wait
-          # for it to exist rather than racing it.
-          for _ in $(seq 1 60); do
-            gh release view "$tag" >/dev/null 2>&1 && break
+          # The Release workflow deletes and recreates the release; uploading before
+          # it finishes would lose these two files along with the old release. Wait
+          # for this tag's release run to complete, then append.
+          s=none
+          for _ in $(seq 1 120); do
+            s=$(gh run list --workflow=release.yml --branch "$tag" --limit 1 \
+              --json status,conclusion -q '.[0] | "\(.status)/\(.conclusion // "pending")"' 2>/dev/null || echo none)
+            case "$s" in
+              completed/success) break ;;
+              completed/*) echo "the release workflow did not go green: $s"; exit 1 ;;
+            esac
             sleep 10
           done
+          [ "$s" = "completed/success" ] || { echo "the release workflow never finished: $s"; exit 1; }
           gh release upload "$tag" --clobber \
             aethertunnel-mobile-android-arm64.aar \
             aethertunnel-app-android-arm64-debug.apk
-          gh release view "$tag" --json assets -q '.assets[].name'
+          names=$(gh release view "$tag" --json assets -q '.assets[].name')
+          echo "$names" | grep -F aethertunnel-mobile-android-arm64.aar
+          echo "$names" | grep -F aethertunnel-app-android-arm64-debug.apk
+          echo "$names"
