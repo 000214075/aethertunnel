@@ -151,10 +151,13 @@ jobs:
       # looks in $HOME/.android/avd and reports an unknown AVD name.
       ANDROID_AVD_HOME: /home/runner/.android/avd
     steps:
+      - uses: actions/checkout@v4
+
       - name: take the APK the android job built
         uses: actions/download-artifact@v4
         with:
           name: app-debug-apk
+          path: .
 
       # The runner ships the SDK with KVM acceleration; the system image is the
       # one piece it does not carry, so fetch an x86_64 one — the APK carries an
@@ -191,8 +194,11 @@ jobs:
 
       - name: install, launch, and hold the process to account
         run: |
+          ls -la
+          apk=$(find . -name '*.apk' | head -1)
+          [ -n "$apk" ] || { echo "no apk came out of the artifact"; exit 1; }
           adb="$ANDROID_HOME/platform-tools/adb"
-          "$adb" install -r app-debug.apk
+          "$adb" install -r "$apk"
           out=$("$adb" shell am start -W -n io.github.aethertunnel.app/.MainActivity)
           echo "$out"
           echo "$out" | grep -q 'Status: ok'
