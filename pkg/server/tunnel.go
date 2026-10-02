@@ -123,7 +123,11 @@ func (t *Tunnel) pipeStream(public net.Conn, dc *dataConn, label string) error {
 	// dc.cipher is the key derived for this stream: the configured cipher when
 	// the session agreed no post-quantum key, and a per-stream key when it did.
 	clientSide := &cryptoStreamConn{Stream: crypto.NewStream(dc.conn, dc.cipher), conn: dc.conn}
-	toClient, fromClient := flynet.Pipe(public, clientSide, t.idleTimeout)
+	var visitor net.Conn = public
+	if t.Spec.ProxyProtocol == "v1" {
+		visitor = &proxyHeaderConn{Conn: public, header: []byte(ProxyHeaderV1(public.RemoteAddr(), public.LocalAddr()))}
+	}
+	toClient, fromClient := flynet.Pipe(visitor, clientSide, t.idleTimeout)
 
 	t.BytesOut.Add(toClient)
 	t.BytesIn.Add(fromClient)

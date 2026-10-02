@@ -61,6 +61,11 @@ type ServerConfig struct {
 	BanMaxSeconds    int      `toml:"ban_max_seconds"`
 	BanIgnoreCIDRs   []string `toml:"ban_ignore_cidrs"`
 
+	// AllowPorts, when set, lists the remote_port ranges a client may register,
+	// e.g. ["6000-6999", "8000"]. A registration outside every range is refused
+	// at registration time.
+	AllowPorts []string `toml:"allow_ports"`
+
 	// LoadBalance selects how visitors are distributed when several clients
 	// publish the same proxy name: "round-robin", "random", "latency" or
 	// "failover" (first healthy client only).
@@ -134,6 +139,42 @@ type ProxyConfig struct {
 	// list is what keeps a socks5 tunnel from becoming an exit for everything the
 	// client can reach.
 	AllowTargets []string `toml:"allow_targets"`
+
+	// Bandwidth caps this proxy's data rate on the client, both directions
+	// combined, in decimal bytes per second: "1MB", "500KB". Empty means no
+	// limit.
+	Bandwidth string `toml:"bandwidth"`
+	// ProxyProtocol asks the server to prepend a PROXY protocol v1 header with
+	// the visitor's addresses to the stream the local service receives, so the
+	// service can log and filter on the real visitor. "v1" or empty.
+	ProxyProtocol string `toml:"proxy_protocol"`
+	// RemotePorts expands one entry into several proxies: "6000-6002" becomes
+	// remote_port 6000, 6001 and 6002 with names name-6000, name-6001 and
+	// name-6002. Everything else in the entry applies to every copy.
+	RemotePorts string `toml:"remote_ports"`
+	// Plugin replaces the local service with a component the client runs
+	// itself: "static_file" serves the directory at plugin_local_path over
+	// HTTP, "unix_domain_socket" dials the socket at plugin_local_path.
+	Plugin             string `toml:"plugin"`
+	PluginLocalPath    string `toml:"plugin_local_path"`
+	PluginHTTPUser     string `toml:"plugin_http_user"`
+	PluginHTTPPassword string `toml:"plugin_http_password"`
+	// HealthCheck probes the local service and refuses dials while it fails.
+	HealthCheck *HealthCheckConfig `toml:"health_check"`
+}
+
+// HealthCheckConfig probes the local service behind a proxy. Type "tcp" opens
+// a connection; "http" performs a GET on path and accepts any response. After
+// max_failed consecutive failures the proxy refuses dials until a probe
+// succeeds again. The public endpoint stays registered — the refusal is
+// client-side, because the protocol has no proxy-withdrawal message, and
+// keeping it out is what lets an old server accept a new client.
+type HealthCheckConfig struct {
+	Type      string `toml:"type"`
+	IntervalS int    `toml:"interval_s"`
+	TimeoutS  int    `toml:"timeout_s"`
+	MaxFailed int    `toml:"max_failed"`
+	Path      string `toml:"path"`
 }
 
 // Proxy auth methods accepted in [[proxies]].auth_method.
@@ -488,6 +529,11 @@ const (
 
 // defaults fills in the values that make a minimal config usable.
 func (c *Config) applyDefaults() {
+	for _, p := range c.Proxies {
+		if p.HealthCheck != nil {
+			p.HealthCheck.healthCheckDefaults()
+		}
+	}
 	if c.Server.MaxConnections == 0 {
 		c.Server.MaxConnections = 512
 	}
@@ -1359,11 +1405,12 @@ func (c *Config) Validate(role string) error {
 		}
 		// A socks5 tunnel has no local service to name: the visitor chooses the
 		// target, so local_ip and local_port are not part of its configuration.
-		if p.Type != ProxyTypeSOCKS {
+		// A plugin-backed proxy runs its own service and needs neither.
+		if p.Type != ProxyTypeSOCKS && p.Plugin == "" {
 			if p.LocalPort < 1 || p.LocalPort > 65535 {
 				problems = append(problems, fmt.Sprintf("proxy %q: local_port must be 1-65535, got %d", p.Name, p.LocalPort))
 			}
-		} else if p.LocalPort != 0 || p.LocalIP != "" {
+		} else if p.Type == ProxyTypeSOCKS && (p.LocalPort != 0 || p.LocalIP != "") {
 			c.Warnings = append(c.Warnings, fmt.Sprintf(
 				"proxy %q: local_ip and local_port have no effect on a socks5 tunnel, whose target comes from the request",
 				p.Name))
@@ -1371,6 +1418,8 @@ func (c *Config) Validate(role string) error {
 		if p.RemotePort < 0 || p.RemotePort > 65535 {
 			problems = append(problems, fmt.Sprintf("proxy %q: remote_port must be 0-65535, got %d", p.Name, p.RemotePort))
 		}
+		problems = append(problems, c.validateProxyExtras(p)...)
+
 		if p.RemotePort > 0 {
 			protocol := "tcp"
 			if IsDatagramProxyType(p.Type) {
@@ -1583,6 +1632,11 @@ func (c *Config) validateProxyPolicy(p ProxyConfig) []string {
 		{"auth_method", p.AuthMethod != ""},
 		{"allow_targets", len(p.AllowTargets) > 0},
 		{"domains", len(p.Domains) > 0},
+		{"bandwidth", p.Bandwidth != ""},
+		{"proxy_protocol", p.ProxyProtocol != ""},
+		{"remote_ports", p.RemotePorts != ""},
+		{"plugin", p.Plugin != ""},
+		{"health_check", p.HealthCheck != nil},
 	} {
 		if key.given {
 			c.Warnings = append(c.Warnings, fmt.Sprintf(
@@ -1697,6 +1751,12 @@ func LoadString(data, name string, opts ValidateOptions) (*Config, error) {
 		}
 		cfg.Warnings = append(cfg.Warnings, message)
 	}
+
+	expanded, err := ExpandRemotePorts(cfg.Proxies)
+	if err != nil {
+		return &cfg, err
+	}
+	cfg.Proxies = expanded
 
 	cfg.applyDefaults()
 

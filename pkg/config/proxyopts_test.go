@@ -1,0 +1,125 @@
+package config
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestParseBandwidth(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    int64
+		wantErr bool
+	}{
+		{"1MB", 1_000_000, false},
+		{"1MB/s", 1_000_000, false},
+		{"500KB", 500_000, false},
+		{"2GB", 2_000_000_000, false},
+		{"10B", 10, false},
+		{"100000", 100_000, false},
+		{" 1MB ", 1_000_000, false},
+		{"", 0, true},
+		{"-1MB", 0, true},
+		{"abc", 0, true},
+		{"MB", 0, true},
+	}
+	for _, c := range cases {
+		got, err := ParseBandwidth(c.in)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("ParseBandwidth(%q) = %d, want an error", c.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("ParseBandwidth(%q): %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("ParseBandwidth(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+func TestParsePortRanges(t *testing.T) {
+	ps, err := ParsePortRanges([]string{"6000-6999", "8000", ""})
+	if err != nil {
+		t.Fatalf("ParsePortRanges: %v", err)
+	}
+	for _, port := range []int{6000, 6500, 6999, 8000} {
+		if !ps.Contains(port) {
+			t.Errorf("Contains(%d) is false, want true", port)
+		}
+	}
+	for _, port := range []int{5999, 7000, 7999, 8001, 0} {
+		if ps.Contains(port) {
+			t.Errorf("Contains(%d) is true, want false", port)
+		}
+	}
+
+	if ps, err := ParsePortRanges(nil); err != nil || ps != nil {
+		t.Fatalf("ParsePortRanges(nil) = %v, %v; want nil, nil", ps, err)
+	}
+	if _, err := ParsePortRanges([]string{"7000-6000"}); err == nil {
+		t.Error("a reversed range was accepted")
+	}
+	if _, err := ParsePortRanges([]string{"0-100"}); err == nil {
+		t.Error("a range starting at 0 was accepted")
+	}
+}
+
+func TestExpandRemotePorts(t *testing.T) {
+	proxies := []ProxyConfig{
+		{Name: "web", Type: "tcp", LocalPort: 80, RemotePort: 8080},
+		{Name: "batch", Type: "tcp", LocalPort: 9000, RemotePorts: "6000-6002"},
+	}
+	out, err := ExpandRemotePorts(proxies)
+	if err != nil {
+		t.Fatalf("ExpandRemotePorts: %v", err)
+	}
+	if len(out) != 4 {
+		t.Fatalf("expanded to %d proxies, want 4", len(out))
+	}
+	wantNames := []string{"web", "batch-6000", "batch-6001", "batch-6002"}
+	wantPorts := []int{8080, 6000, 6001, 6002}
+	for i, p := range out {
+		if p.Name != wantNames[i] || p.RemotePort != wantPorts[i] {
+			t.Errorf("proxy %d is %s/%d, want %s/%d", i, p.Name, p.RemotePort, wantNames[i], wantPorts[i])
+		}
+		if p.RemotePorts != "" {
+			t.Errorf("proxy %s still carries remote_ports", p.Name)
+		}
+		if p.LocalPort != 80 && p.LocalPort != 9000 {
+			t.Errorf("proxy %s lost its local_port", p.Name)
+		}
+	}
+
+	if _, err := ExpandRemotePorts([]ProxyConfig{{Name: "x", RemotePorts: "7000-7000-7000"}}); err == nil {
+		t.Error("a malformed range was accepted")
+	}
+	if _, err := ExpandRemotePorts([]ProxyConfig{{Name: "x", RemotePorts: "1-999999"}}); err == nil {
+		t.Error("an oversized range was accepted")
+	}
+}
+
+func TestValidateProxyExtras(t *testing.T) {
+	c := &Config{}
+	problems := c.validateProxyExtras(ProxyConfig{
+		Name: "ok", Bandwidth: "1MB", ProxyProtocol: "v1", Plugin: PluginStaticFile,
+		PluginLocalPath: "/srv", HealthCheck: &HealthCheckConfig{Type: "http"},
+	})
+	if len(problems) != 0 {
+		t.Fatalf("a valid entry produced problems: %v", problems)
+	}
+
+	problems = c.validateProxyExtras(ProxyConfig{
+		Name: "bad", Bandwidth: "fast", ProxyProtocol: "v2", Plugin: "rsync",
+		HealthCheck: &HealthCheckConfig{Type: "icmp"},
+	})
+	if len(problems) != 4 {
+		t.Fatalf("got %d problems, want 4: %v", len(problems), problems)
+	}
+	if !strings.Contains(strings.Join(problems, "\n"), "bandwidth") {
+		t.Error("the bandwidth problem does not name bandwidth")
+	}
+}

@@ -469,6 +469,10 @@ type ProxySpec struct {
 	// on top of the server's own [server] allow_cidrs and deny_cidrs.
 	AllowCIDRs []string `json:"allow_cidrs,omitempty"`
 	DenyCIDRs  []string `json:"deny_cidrs,omitempty"`
+	// ProxyProtocol asks the server to prepend a PROXY protocol v1 header with
+	// the visitor's addresses to the stream the local service receives. "v1" or
+	// empty. Older servers ignore the field and simply send no header.
+	ProxyProtocol string `json:"proxy_protocol,omitempty"`
 }
 
 // VisitorConnect is the first frame of a visitor connection. A visitor is a

@@ -47,6 +47,17 @@
   fd→隧道→内核的逐包路径在 Android 运行时上得到验证（首次 establish 被系统拒绝后由
   重连循环自动恢复，也在真实序列之内）。Go 侧单测覆盖 fd 设备、protect 钩子、`RunVPN`
   约束与会话结束时关闭壳描述符的契约；真机逐包路径未验证，设计边界文档如实记录。
+- **对标 frp 的转发治理能力**。`[[proxies]]` 新增 `bandwidth`（客户端侧令牌桶限速，
+  十进制字节每秒，双向合计）、`proxy_protocol = "v1"`（服务器把带访客真实地址的
+  PROXY protocol 头插到本地服务收到的流最前面，ProxySpec 随注册携带，旧服务端安全
+  忽略）、`remote_ports`（端口段展开成多个代理，名后缀为端口号）、`plugin`（
+  `static_file` 把目录以 HTTP 发布、支持 basic auth；`unix_domain_socket` 拨本地
+  套接字）与 `health_check`（tcp/http 探活，连续失败后拒绝拨号、恢复后自动放行；
+  协议没有注销消息，端点保持注册，这是新旧混跑的取舍）；服务端新增
+  `[server].allow_ports`（注册阶段拒绝范围外的 remote_port 并记入审计）。协议 JSON
+  新增字段对旧端向后兼容。功能套件从 285 项扩到 **292 项**（无浏览器 149 项）：端口段
+  两端可通、插件目录穿过隧道取回文件、后端原样收到 PROXY 头、限速把 40 KB 压到五秒
+  以上、allow_ports 拒绝时两端日志与审计一致。新增 `docs/VS-FRP.md` 与 frp 的逐项对照。
 - **`transport = "webrtc"`：私有代理的访客数据路径可以走 WebRTC DataChannel**。信令就是
   已经完成认证的控制连接（一次 offer 帧、一次 answer 帧，ICE 候选非渐进收集），数据本身是
   DTLS 加密、ICE 选路的 UDP 字节流——直连被墙的网络环境下数据路径的另一种形态。访客配置

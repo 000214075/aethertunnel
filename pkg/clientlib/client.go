@@ -64,6 +64,13 @@ type client struct {
 	// gave this client a tunnel address.
 	vpnMu        sync.Mutex
 	vpnTransport *vpn.ChannelTransport
+	// healthMu guards the per-proxy health states the probers write and the
+	// data path reads; pluginsMu guards the in-process plugin servers.
+	healthMu      sync.Mutex
+	health        map[string]*healthState
+	staticFilesMu sync.Mutex
+	staticFiles   map[string]*staticFileServer
+
 	// vpnShellOpen and vpnShellProtect are set by RunWithShell for a platform that
 	// supplies the layer-3 device itself. vpnShellOpen is called at the moment the
 	// session is up and the server's address assignment is known; vpnProtect runs
@@ -205,6 +212,7 @@ func runWithShell(ctx context.Context, cfg *config.Config, logger *log.Logger,
 	}
 	c := &client{cfg: cfg, cipher: cipher, tlsConfig: tlsConfig, logger: logger, target: cfg.Client.ServerAddr,
 		vpnShellOpen: openDevice, vpnShellProtect: protect}
+	c.startHealthChecks(ctx)
 
 	if cfg.Identity.Enabled {
 		identity, err := crypto.LoadIdentity(cfg.Identity.KeyFile)
@@ -650,15 +658,16 @@ func (c *client) registerProxies(framer *protocol.Framer) error {
 	}
 	for _, proxy := range c.cfg.Proxies {
 		spec := protocol.ProxySpec{
-			Name:       proxy.Name,
-			Type:       proxy.Type,
-			LocalAddr:  proxy.LocalAddr(),
-			RemotePort: proxy.RemotePort,
-			Domains:    proxy.Domains,
-			SecretKey:  proxy.SecretKey,
-			AuthMethod: proxy.AuthMethod,
-			Group:      proxy.Group,
-			Multipath:  proxy.Multipath,
+			Name:          proxy.Name,
+			Type:          proxy.Type,
+			LocalAddr:     proxy.LocalAddr(),
+			RemotePort:    proxy.RemotePort,
+			Domains:       proxy.Domains,
+			ProxyProtocol: proxy.ProxyProtocol,
+			SecretKey:     proxy.SecretKey,
+			AuthMethod:    proxy.AuthMethod,
+			Group:         proxy.Group,
+			Multipath:     proxy.Multipath,
 			// The visitor filters and, for a socks5 tunnel, the ranges it may
 			// dial travel with the registration, because both are properties of
 			// this client rather than of the server's configuration.
@@ -808,12 +817,22 @@ func (c *client) serveStream(session string, request protocol.DataRequest) {
 	// relay dials each datagram's own target.
 	var local net.Conn
 	if !config.IsDatagramProxyType(proxy.Type) && !request.SocksUDP {
+		if !c.proxyHealthy(proxy) {
+			c.reportStreamFailure(session, request.Proxy, request.StreamID,
+				errLocalUnhealthy)
+			return
+		}
 		local, err = c.dialForProxy(proxy, request.Target)
 		if err != nil {
 			c.reportStreamFailure(session, request.Proxy, request.StreamID, err)
 			return
 		}
 		defer local.Close()
+		if proxy.Bandwidth != "" {
+			if bw, bwErr := config.ParseBandwidth(proxy.Bandwidth); bwErr == nil {
+				local = newLimitedConn(bw, local)
+			}
+		}
 	}
 
 	conn, err := c.dialServer()
@@ -888,6 +907,10 @@ func (c *client) serveStream(session string, request protocol.DataRequest) {
 // service.
 func (c *client) dialForProxy(proxy config.ProxyConfig, target string) (net.Conn, error) {
 	dialTimeout := time.Duration(c.cfg.Client.DialTimeoutSecs) * time.Second
+
+	if proxy.Plugin != "" {
+		return c.dialForPlugin(proxy)
+	}
 
 	if proxy.Type != config.ProxyTypeSOCKS {
 		conn, err := net.DialTimeout("tcp", proxy.LocalAddr(), dialTimeout)

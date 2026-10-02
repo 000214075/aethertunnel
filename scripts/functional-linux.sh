@@ -303,6 +303,14 @@ fi
 CONTROL_PORT="$(free_port)"
 DASHBOARD_PORT="$(free_port)"
 TCP_PROXY_PORT="$(free_port)"
+RANGE_BASE_PORT="$(free_port)"
+STATIC_FILE_PORT="$(free_port)"
+PROXY_PROTO_PORT="$(free_port)"
+PROXY_PROTO_BACKEND_PORT="$(free_port)"
+BW_PORT="$(free_port)"
+BW_BACKEND_PORT="$(free_port)"
+ALLOWPORTS_CONTROL_PORT="$(free_port)"
+ALLOWPORTS_PROXY_PORT="$(free_port)"
 UDP_PROXY_PORT="$(free_port)"
 HTTP_PORT="$(free_port)"
 HTTPS_PORT="$(free_port)"
@@ -474,6 +482,41 @@ group = "pool-a"
 local_ip = "127.0.0.1"
 local_port = $TCP_ECHO_PORT
 remote_port = $POOL_PROXY_PORT
+
+# A remote_ports range expands into one proxy per port, each named after its
+# port; every other setting of the entry applies to every copy.
+[[proxies]]
+name = "range"
+type = "tcp"
+local_port = $TCP_ECHO_PORT
+remote_ports = "$RANGE_BASE_PORT-$((RANGE_BASE_PORT + 2))"
+
+# The static_file plugin serves a directory from the client itself; there is no
+# local service to dial at all.
+[[proxies]]
+name = "site"
+type = "tcp"
+remote_port = $STATIC_FILE_PORT
+plugin = "static_file"
+plugin_local_path = "$WORK/staticsite"
+
+# The backend behind this proxy reads the first line it receives — the header
+# the server prepended — and answers with what it saw.
+[[proxies]]
+name = "proxied"
+type = "tcp"
+local_port = $PROXY_PROTO_BACKEND_PORT
+remote_port = $PROXY_PROTO_PORT
+proxy_protocol = "v1"
+
+# The bandwidth limiter runs on the client: 40 KB at 5 KB/s takes about seven
+# seconds, which no unthrottled path on loopback would.
+[[proxies]]
+name = "slow"
+type = "tcp"
+local_port = $BW_BACKEND_PORT
+remote_port = $BW_PORT
+bandwidth = "5KB"
 EOF
 
 cat > visitor.toml <<EOF
@@ -556,7 +599,137 @@ for _ in $(seq 1 120); do
     [ "$published" = "12" ] && break
     sleep 0.25
 done
-check "$published" "12" "the owner published all twelve proxies"
+check "$published" "18" "the owner published all eighteen proxies"
+
+# The backend behind the bandwidth-limited proxy reads exactly 40 KB and sends
+# it back; unlike the echo helper it has no short idle deadline, because the
+# whole point of this transfer is that it takes a while.
+python3 - > bw-backend.log 2>&1 <<BWY &
+import socket
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", $BW_BACKEND_PORT))
+s.listen(1)
+conn, _ = s.accept()
+data = b""
+while len(data) < 40_000:
+    chunk = conn.recv(65536)
+    if not chunk:
+        break
+    data += chunk
+conn.sendall(data)
+conn.close()
+BWY
+PIDS+=($!)
+
+# The static file site the plugin will serve.
+mkdir -p "$WORK/staticsite"
+printf 'static-file-content\n' > "$WORK/staticsite/hello.txt"
+
+# The backend behind the proxy-protocol proxy reads one line — the header the
+# server prepended — and answers with what it saw.
+python3 - > pproto-backend.log 2>&1 <<PPY &
+import socket
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", $PROXY_PROTO_BACKEND_PORT))
+s.listen(1)
+conn, _ = s.accept()
+line = conn.makefile().readline().strip()
+conn.sendall(("saw: " + line).encode())
+conn.close()
+PPY
+PIDS+=($!)
+
+tcp_via() {
+    python3 - "$1" <<'PY'
+import socket, sys
+payload = b"range-check"
+try:
+    s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=15)
+except OSError as exc:
+    print("no connection: %s" % exc)
+else:
+    s.settimeout(15)
+    s.sendall(payload)
+    got = b""
+    while len(got) < len(payload):
+        chunk = s.recv(4096)
+        if not chunk:
+            break
+        got += chunk
+    s.close()
+    print("ok" if got == payload else "got %r" % got)
+PY
+}
+
+check "$(tcp_via "$RANGE_BASE_PORT")" "ok" \
+    "the first proxy of a remote_ports range carries bytes"
+check "$(tcp_via "$((RANGE_BASE_PORT + 2))")" "ok" \
+    "the last proxy of a remote_ports range carries bytes"
+static_result="$(python3 - "$STATIC_FILE_PORT" <<'PY'
+import sys, urllib.request
+try:
+    print(urllib.request.urlopen("http://127.0.0.1:%s/hello.txt" % sys.argv[1], timeout=15).read().decode().strip())
+except Exception as exc:
+    print("failed: %s" % exc)
+PY
+)"
+check "$static_result" "static-file-content" \
+    "the static_file plugin serves the directory through the tunnel"
+
+pproto="$(python3 - "$PROXY_PROTO_PORT" <<'PY'
+import socket, sys
+try:
+    s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=15)
+except OSError as exc:
+    print("no connection: %s" % exc)
+else:
+    s.settimeout(15)
+    data = b""
+    try:
+        while b"\n" not in data:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+    finally:
+        s.close()
+    print(data.decode(errors="replace").strip())
+PY
+)"
+check "$(printf '%s' "$pproto" | grep -c 'saw: PROXY TCP4 127.0.0.1')" "1" \
+    "the backend received the visitor's PROXY protocol header: $pproto"
+
+bw_result="$(python3 - "$BW_PORT" <<'PY'
+import socket, sys, time
+payload = b"x" * 40_000
+start = time.time()
+try:
+    s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=120)
+except OSError as exc:
+    print("no connection: %s" % exc)
+else:
+    s.settimeout(120)
+    s.sendall(payload)
+    got = b""
+    while len(got) < len(payload):
+        chunk = s.recv(65536)
+        if not chunk:
+            break
+        got += chunk
+    elapsed = time.time() - start
+    s.close()
+    print("ok %.1f" % elapsed if got == payload else "got %d bytes" % len(got))
+PY
+)"
+check "${bw_result%% *}" "ok" "a bandwidth-limited proxy carries all 40 KB"
+bw_elapsed="${bw_result#ok }"
+if [ "${bw_result%% *}" = "ok" ] && awk "BEGIN{exit !($bw_elapsed >= 5.0)}"; then
+    ok "the bandwidth limiter held 40 KB to at least five seconds ($bw_elapsed s)"
+else
+    bad "the bandwidth limiter held 40 KB to at least five seconds" "$bw_result"
+fi
 
 echo
 echo "== the public endpoints"
@@ -2968,6 +3141,56 @@ EOF
 fi
 
 echo
+# ── allow_ports: the server refuses a remote port outside the ranges it allows.
+
+ALLOWPORTS_DIR="$WORK/allowports"
+mkdir -p "$ALLOWPORTS_DIR"
+cat > "$ALLOWPORTS_DIR/server.toml" <<EOF
+[server]
+bind_addr = "127.0.0.1"
+bind_port = $ALLOWPORTS_CONTROL_PORT
+auth_token = "$TOKEN"
+allow_ports = ["20000-20009"]
+EOF
+cat > "$ALLOWPORTS_DIR/client.toml" <<EOF
+[client]
+server_addr = "127.0.0.1:$ALLOWPORTS_CONTROL_PORT"
+auth_token = "$TOKEN"
+reconnect_seconds = 1
+max_reconnect_seconds = 1
+
+[[proxies]]
+name = "inside"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = $TCP_ECHO_PORT
+remote_port = 20001
+
+[[proxies]]
+name = "outside"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = $TCP_ECHO_PORT
+remote_port = 20011
+EOF
+"$SERVER" --config "$ALLOWPORTS_DIR/server.toml" > "$ALLOWPORTS_DIR/server.log" 2>&1 &
+PIDS+=($!)
+"$CLIENT" --config "$ALLOWPORTS_DIR/client.toml" > "$ALLOWPORTS_DIR/client.log" 2>&1 &
+PIDS+=($!)
+
+ok_awaited=0
+for _ in $(seq 1 120); do
+    if grep -q 'outside allow_ports' "$ALLOWPORTS_DIR/server.log" 2>/dev/null \
+        && grep -q 'outside allow_ports' "$ALLOWPORTS_DIR/client.log" 2>/dev/null \
+        && grep -q '"inside"' "$ALLOWPORTS_DIR/client.log" 2>/dev/null; then
+        ok_awaited=1
+        break
+    fi
+    sleep 0.5
+done
+check "$ok_awaited" "1" "the server refused a remote port outside allow_ports and told the client"
+
+
 echo "checks passed: $PASSES"
 echo "checks failed: $FAILURES"
 [ "$FAILURES" -eq 0 ] || exit 1

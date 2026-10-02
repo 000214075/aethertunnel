@@ -47,6 +47,9 @@ type Server struct {
 	cipher *crypto.Cipher
 	logger *log.Logger
 
+	// remotePorts is [server].allow_ports in parsed form; nil allows every port.
+	remotePorts *config.PortSet
+
 	version   string
 	buildTime string
 	gitCommit string
@@ -135,24 +138,30 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 		return nil, err
 	}
 
+	remotePorts, err := config.ParsePortRanges(cfg.Server.AllowPorts)
+	if err != nil {
+		return nil, err
+	}
+
 	s := &Server{
-		cfg:        cfg,
-		cipher:     cipher,
-		logger:     logger,
-		version:    opts.Version,
-		buildTime:  opts.BuildTime,
-		gitCommit:  opts.GitCommit,
-		startedAt:  time.Now(),
-		metrics:    newMetrics().withAudit(auditor),
-		acl:        acl,
-		bans:       bans,
-		auditor:    auditor,
-		ledger:     bandwidth,
-		tlsConfig:  tlsConfig,
-		identities: identities,
-		nonces:     crypto.NewNonceCache(0),
-		directory:  dir,
-		vpn:        vpnService,
+		cfg:         cfg,
+		cipher:      cipher,
+		logger:      logger,
+		version:     opts.Version,
+		buildTime:   opts.BuildTime,
+		gitCommit:   opts.GitCommit,
+		startedAt:   time.Now(),
+		metrics:     newMetrics().withAudit(auditor),
+		acl:         acl,
+		bans:        bans,
+		auditor:     auditor,
+		ledger:      bandwidth,
+		tlsConfig:   tlsConfig,
+		identities:  identities,
+		remotePorts: remotePorts,
+		nonces:      crypto.NewNonceCache(0),
+		directory:   dir,
+		vpn:         vpnService,
 	}
 	sessions := newSessionManager(cfg.Server.MaxConnections)
 	s.sessions = sessions
@@ -876,6 +885,15 @@ func (s *Server) sessionLoop(session *Session) {
 			var spec protocol.ProxySpec
 			if err := json.Unmarshal(msg.Payload, &spec); err != nil {
 				s.replyError(session, fmt.Sprintf("malformed register-proxy: %v", err))
+				continue
+			}
+			if spec.RemotePort != 0 && !s.remotePorts.Contains(spec.RemotePort) {
+				s.logger.Printf("client %s: proxy %q asks for remote port %d, which is outside allow_ports", session.ID, spec.Name, spec.RemotePort)
+				s.auditor.Record(AuditEvent{
+					Event: EventProxyRejected, ClientID: session.ID, Proxy: spec.Name,
+					Outcome: "denied", Detail: fmt.Sprintf("remote port %d is outside allow_ports", spec.RemotePort),
+				})
+				s.replyError(session, fmt.Sprintf("remote port %d is outside allow_ports", spec.RemotePort))
 				continue
 			}
 			tunnel, err := s.tunnels.Register(session, spec)

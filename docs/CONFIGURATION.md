@@ -49,6 +49,7 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `ban_seconds` | int | 300 | 首次封禁的时长；再次封禁时按倍数增长 |
 | `ban_max_seconds` | int | 3600 | 封禁时长的上限 |
 | `ban_ignore_cidrs` | []string | 空 | 永不封禁的来源，负载均衡后面或监控主机需要填 |
+| `allow_ports` | []string | 空 | 客户端可注册的远端端口范围，如 `["6000-6999", "8000"]`；注册到范围外的端口会被拒绝并记入审计。留空表示不限 |
 | `http_port` | int | 0 | `http` 代理的共享监听端口，0 表示不启用。与 `bind_port` 同端口时被拒绝：它绑的是 `server.bind_addr`，所以这个组合必然是同一个地址，而不是分到两张网卡上 |
 | `https_port` | int | 0 | `https` 代理的共享监听端口；非 0 时下面两项必须同时设置 |
 | `https_cert_file` | string | 空 | 共享 HTTPS 监听的证书 |
@@ -86,6 +87,13 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `allow_targets` | []string | 空 | 仅 `socks5`：本客户端允许拨号的地址范围（CIDR）。**必填**，缺失即拒绝注册 |
 | `allow_cidrs` | []string | 空 | 只有匹配的来源地址可以访问该代理；留空表示不限 |
 | `deny_cidrs` | []string | 空 | 拒绝的来源地址，优先级高于 `allow_cidrs` |
+| `bandwidth` | string | 空 | 本代理在客户端侧的限速，双向合计，十进制字节每秒：`1MB`、`500KB`；留空不限速 |
+| `proxy_protocol` | string | 空 | `v1`：服务器把带访客真实地址的 PROXY protocol v1 头插到本地服务收到的流最前面；留空不插。旧版服务端会忽略该设置（只是不发头） |
+| `remote_ports` | string | 空 | 端口段展开：`"6000-6002"` 生成 `remote_port` 6000/6001/6002 的三个代理，名字分别为 `名-6000`、`名-6001`、`名-6002`；条目的其余设置对每个副本生效。最多 256 个端口 |
+| `plugin` | string | 空 | 用客户端自带的组件代替本地服务：`static_file`（把 `plugin_local_path` 目录以 HTTP 发布）、`unix_domain_socket`（拨 `plugin_local_path` 的套接字） |
+| `plugin_local_path` | string | 空 | 插件用的本地路径，`plugin` 非空时必填 |
+| `plugin_http_user` / `plugin_http_password` | string | 空 | `static_file` 的 HTTP basic auth；两者任一非空即启用 |
+| `health_check` | 表 | 空 | 本地服务健康检查：`type = "tcp"` 或 `"http"`，`interval_s`（默认 10）、`timeout_s`（默认 3）、`max_failed`（默认 3）、`path`（仅 http，默认 `/`）。连续失败达到 `max_failed` 后，该代理拒绝拨号直到探活恢复；公开端点保持注册（协议没有注销消息，这是新旧版本混跑的取舍），见 `docs/VS-FRP.md` |
 
 `socks5` 没有本地服务，因此 `local_ip` 与 `local_port` 会被忽略并给出警告，必须设置
 `remote_port`。它支持 TCP `CONNECT` 与 UDP `ASSOCIATE`：前者按访客指定的目标拨号，后者在
@@ -115,7 +123,8 @@ SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` �
 指出是服务端策略拒绝的。
 
 描述客户端自身服务的键（`local_ip`、`local_port`、`group`、`multipath`、`secret_key`、
-`auth_method`、`allow_targets`、`domains`）在服务端配置里会加载成功但不生效，`--check` 会逐条
+`auth_method`、`allow_targets`、`domains`、`bandwidth`、`proxy_protocol`、`remote_ports`、
+`plugin`、`health_check`）在服务端配置里会加载成功但不生效，`--check` 会逐条
 输出警告。因此同一份 `[[proxies]]` 列表可以放在两种角色的配置里，只是含义不同。
 
 ## `[[visitors]]`（客户端，可重复）
