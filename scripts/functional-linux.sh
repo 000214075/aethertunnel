@@ -307,6 +307,8 @@ RANGE_BASE_PORT="$(free_port)"
 STATIC_FILE_PORT="$(free_port)"
 PROXY_PROTO_PORT="$(free_port)"
 PROXY_PROTO_BACKEND_PORT="$(free_port)"
+PROXY_PROTO2_PORT="$(free_port)"
+PROXY_PROTO2_BACKEND_PORT="$(free_port)"
 BW_PORT="$(free_port)"
 BW_BACKEND_PORT="$(free_port)"
 ALLOWPORTS_CONTROL_PORT="$(free_port)"
@@ -509,6 +511,13 @@ local_port = $PROXY_PROTO_BACKEND_PORT
 remote_port = $PROXY_PROTO_PORT
 proxy_protocol = "v1"
 
+[[proxies]]
+name = "proxied2"
+type = "tcp"
+local_port = $PROXY_PROTO2_BACKEND_PORT
+remote_port = $PROXY_PROTO2_PORT
+proxy_protocol = "v2"
+
 # The bandwidth limiter runs on the client: 40 KB at 5 KB/s takes about seven
 # seconds, which no unthrottled path on loopback would.
 [[proxies]]
@@ -599,7 +608,7 @@ for _ in $(seq 1 120); do
     [ "$published" = "12" ] && break
     sleep 0.25
 done
-check "$published" "18" "the owner published all eighteen proxies"
+check "$published" "19" "the owner published all nineteen proxies"
 
 # The backend behind the bandwidth-limited proxy reads exactly 40 KB and sends
 # it back; unlike the echo helper it has no short idle deadline, because the
@@ -700,6 +709,59 @@ PY
 )"
 check "$(printf '%s' "$pproto" | grep -c 'saw: PROXY TCP4 127.0.0.1')" "1" \
     "the backend received the visitor's PROXY protocol header: $pproto"
+
+# The v2 form is binary: the backend parses the signature, the command block
+# and the addresses, and answers with the visitor it saw.
+python3 - > pproto2-backend.log 2>&1 <<PPY &
+import socket, struct
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", $PROXY_PROTO2_BACKEND_PORT))
+s.listen(1)
+conn, _ = s.accept()
+head = b""
+while len(head) < 16:
+    chunk = conn.recv(16 - len(head))
+    if not chunk:
+        break
+    head += chunk
+ok = head[:12] == bytes([0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A])
+length = struct.unpack(">H", head[14:16])[0]
+rest = b""
+while len(rest) < length:
+    chunk = conn.recv(length - len(rest))
+    if not chunk:
+        break
+    rest += chunk
+src_ip = ".".join(str(b) for b in rest[:4])
+src_port = struct.unpack(">H", rest[8:10])[0]
+conn.sendall(("saw-v2: ok=%s tcp4 %s:%d" % (ok, src_ip, src_port)).encode())
+conn.close()
+PPY
+PIDS+=($!)
+
+pproto2="$(python3 - "$PROXY_PROTO2_PORT" <<'PY'
+import socket, sys
+try:
+    s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=15)
+except OSError as exc:
+    print("no connection: %s" % exc)
+else:
+    s.settimeout(15)
+    data = b""
+    try:
+        while b"\n" not in data:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+    finally:
+        s.close()
+    print(data.decode(errors="replace").strip())
+PY
+)"
+check "$(printf '%s' "$pproto2" | grep -c 'saw-v2: ok=True tcp4 127.0.0.1:')" "1" \
+    "a proxy_protocol v2 backend parsed the binary header: $pproto2"
 
 bw_result="$(python3 - "$BW_PORT" <<'PY'
 import socket, sys, time
@@ -3741,6 +3803,141 @@ except OSError:
     sleep 0.5
 done
 check "$base_gone" "1" "a tunnel the reload removed really closed its public port"
+
+
+echo
+# ── frp parity, round four: use_compression and the https2http plugin.
+
+F4_DIR="$WORK/features4"
+mkdir -p "$F4_DIR"
+F4_CONTROL_PORT="$(free_port)"
+F4_ECHO_PORT="$(free_port)"
+F4_PLAIN_PUBLIC_PORT="$(free_port)"
+F4_TLS_PUBLIC_PORT="$(free_port)"
+
+# A self-signed certificate the https2http plugin terminates the visitor's TLS
+# with; the python visitor below does not verify it, so any valid pair works.
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$F4_DIR/site.key" \
+    -out "$F4_DIR/site.crt" -days 2 -subj "/CN=127.0.0.1" > /dev/null 2>&1
+
+cat > "$F4_DIR/server.toml" <<EOF
+[server]
+bind_addr = "127.0.0.1"
+bind_port = $F4_CONTROL_PORT
+auth_token = "$TOKEN"
+EOF
+
+cat > "$F4_DIR/client.toml" <<EOF
+[client]
+server_addr = "127.0.0.1:$F4_CONTROL_PORT"
+auth_token = "$TOKEN"
+reconnect_seconds = 1
+max_reconnect_seconds = 1
+
+[[proxies]]
+name = "squeezed"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = $F4_ECHO_PORT
+remote_port = $F4_PLAIN_PUBLIC_PORT
+use_compression = true
+
+[[proxies]]
+name = "https-site"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = $HTTP_ECHO_PORT
+remote_port = $F4_TLS_PUBLIC_PORT
+plugin = "https2http"
+plugin_cert_file = "$F4_DIR/site.crt"
+plugin_key_file = "$F4_DIR/site.key"
+EOF
+
+# The compressed tunnel's local service: the same echo the earlier sections
+# use, written here so the round stands on its own.
+cat > "$F4_DIR/echo.py" <<'PY'
+import socket, sys, threading
+srv = socket.socket()
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", int(sys.argv[1])))
+srv.listen(16)
+def pipe(conn):
+    try:
+        while True:
+            data = conn.recv(65536)
+            if not data:
+                break
+            conn.sendall(data)
+    except OSError:
+        pass
+    finally:
+        conn.close()
+while True:
+    try:
+        conn, _ = srv.accept()
+    except OSError:
+        break
+    threading.Thread(target=pipe, args=(conn,), daemon=True).start()
+PY
+
+python3 "$F4_DIR/echo.py" "$F4_ECHO_PORT" > /dev/null 2>&1 &
+PIDS+=($!)
+"$SERVER" --config "$F4_DIR/server.toml" > "$F4_DIR/server.log" 2>&1 &
+PIDS+=($!)
+"$CLIENT" --config "$F4_DIR/client.toml" > "$F4_DIR/client.log" 2>&1 &
+PIDS+=($!)
+
+ok_awaited=0
+for _ in $(seq 1 120); do
+    if grep -q 'squeezed' "$F4_DIR/client.log" 2>/dev/null \
+        && grep -q 'https-site' "$F4_DIR/client.log" 2>/dev/null; then
+        ok_awaited=1
+        break
+    fi
+    sleep 0.5
+done
+check "$ok_awaited" "1" "the round-four client is up: the compressed tunnel and the https2http site"
+
+compressed_ok=0
+for _ in $(seq 1 30); do
+    if [ "$(tcp_via "$F4_PLAIN_PUBLIC_PORT")" = "ok" ]; then
+        compressed_ok=1
+        break
+    fi
+    sleep 0.5
+done
+check "$compressed_ok" "1" "a use_compression tunnel carries bytes end to end"
+
+https_ok=0
+for _ in $(seq 1 30); do
+    answer="$(python3 - "$F4_TLS_PUBLIC_PORT" <<'PY'
+import socket, ssl, sys
+try:
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    s = ctx.wrap_socket(socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=15))
+except Exception as exc:
+    print("no tls: %s" % exc)
+else:
+    s.settimeout(15)
+    s.sendall(b"GET / HTTP/1.1\r\nHost: site.example\r\nConnection: close\r\n\r\n")
+    body = b""
+    while True:
+        chunk = s.recv(65536)
+        if not chunk:
+            break
+        body += chunk
+    print("ok" if b"smoketest-http" in body else "got %r" % body[:200])
+PY
+)"
+    if [ "$answer" = "ok" ]; then
+        https_ok=1
+        break
+    fi
+    sleep 0.5
+done
+check "$https_ok" "1" "the https2http plugin terminates the visitor's TLS with the client's certificate"
 
 
 echo "checks passed: $PASSES"

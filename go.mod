@@ -12,6 +12,7 @@ require (
 require (
 	github.com/consensys/gnark v0.11.0
 	github.com/consensys/gnark-crypto v0.14.0
+	github.com/golang/snappy v1.0.0
 	github.com/pion/ice/v4 v4.4.4
 	github.com/pion/webrtc/v4 v4.2.22
 	golang.org/x/net v0.50.0

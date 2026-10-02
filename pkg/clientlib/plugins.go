@@ -2,13 +2,16 @@ package clientlib
 
 import (
 	"crypto/subtle"
+	"crypto/tls"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/aethertunnel/aethertunnel/pkg/config"
+	flynet "github.com/aethertunnel/aethertunnel/pkg/net"
 )
 
 // pluginListener is a net.Listener that hands out connections the proxy data
@@ -27,6 +30,57 @@ func (l *pluginListener) Accept() (net.Conn, error) {
 		return nil, errors.New("the plugin listener is closed")
 	}
 	return conn, nil
+}
+
+// serveHTTPS2HTTP terminates the visitor's TLS on the tunnel end with the
+// configured certificate and relays the plaintext to the plain HTTP service
+// named by local_port. The certificate loads once per proxy and is cached for
+// the client's lifetime, so a connection costs no file reads.
+func (c *client) serveHTTPS2HTTP(server net.Conn, proxy config.ProxyConfig) {
+	tlsConfig, err := c.https2HTTPConfig(proxy)
+	if err != nil {
+		c.logger.Printf("plugin https2http for %q: %v", proxy.Name, err)
+		_ = server.Close()
+		return
+	}
+	_ = server.SetDeadline(time.Now().Add(10 * time.Second))
+	tlsConn := tls.Server(server, tlsConfig)
+	if err := tlsConn.Handshake(); err != nil {
+		// A plain-HTTP visitor on a TLS endpoint ends here; that is the
+		// visitor's mistake to see, not a tunnel fault.
+		c.logger.Printf("plugin https2http for %q: the visitor's TLS handshake failed: %v", proxy.Name, err)
+		_ = server.Close()
+		return
+	}
+	_ = server.SetDeadline(time.Time{})
+	dialTimeout := time.Duration(c.cfg.Client.DialTimeoutSecs) * time.Second
+	local, err := net.DialTimeout("tcp", proxy.LocalAddr(), dialTimeout)
+	if err != nil {
+		c.logger.Printf("plugin https2http for %q: cannot reach the local service %s: %v",
+			proxy.Name, proxy.LocalAddr(), err)
+		_ = tlsConn.Close()
+		return
+	}
+	flynet.Pipe(local, tlsConn, time.Duration(c.cfg.Client.IdleTimeoutSecs)*time.Second)
+}
+
+// https2HTTPConfig loads and caches the certificate for one proxy.
+func (c *client) https2HTTPConfig(proxy config.ProxyConfig) (*tls.Config, error) {
+	c.pluginTLSMu.Lock()
+	defer c.pluginTLSMu.Unlock()
+	if c.pluginTLS == nil {
+		c.pluginTLS = map[string]*tls.Config{}
+	}
+	if cached, ok := c.pluginTLS[proxy.Name]; ok {
+		return cached, nil
+	}
+	cert, err := tls.LoadX509KeyPair(proxy.PluginCertFile, proxy.PluginKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load the certificate: %w", err)
+	}
+	config := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+	c.pluginTLS[proxy.Name] = config
+	return config, nil
 }
 
 func (l *pluginListener) Close() error {
@@ -109,6 +163,10 @@ func (c *client) dialForPlugin(proxy config.ProxyConfig) (net.Conn, error) {
 		}
 	case config.PluginUnixSocket:
 		return net.Dial("unix", proxy.PluginLocalPath)
+	case config.PluginHTTPS2HTTP:
+		client, server := net.Pipe()
+		go c.serveHTTPS2HTTP(server, proxy)
+		return client, nil
 	default:
 		return nil, errors.New("unsupported plugin")
 	}

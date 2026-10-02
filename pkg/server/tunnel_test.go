@@ -212,7 +212,10 @@ func (c *testClient) serveOneStream(serverAddr, localAddr string, timeout time.D
 		return err
 	}
 
-	serverSide := &cryptoStreamConn{Stream: crypto.NewStream(dataConn, c.cipher), conn: dataConn}
+	var serverSide net.Conn = &cryptoStreamConn{Stream: crypto.NewStream(dataConn, c.cipher), conn: dataConn}
+	if request.Compressed {
+		serverSide = flynet.CompressConn(serverSide)
+	}
 	flynet.Pipe(serverSide, local, 30*time.Second)
 	return nil
 }

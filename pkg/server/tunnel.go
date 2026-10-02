@@ -43,7 +43,7 @@ func (t *Tunnel) openStream(visitor bool) (*dataConn, func(), error) {
 // address the stream should reach. A target is only used by a socks5 proxy, whose
 // client dials what the visitor asked for instead of its own local_addr.
 func (t *Tunnel) openStreamFor(visitor bool, target string) (*dataConn, func(), error) {
-	return t.openStreamWith(protocol.DataRequest{Proxy: t.Name, Visitor: visitor, Target: target})
+	return t.openStreamWith(protocol.DataRequest{Proxy: t.Name, Visitor: visitor, Target: target, Compressed: t.Spec.UseCompression})
 }
 
 // openSocksUDPStream asks the client for a data connection that carries socks5
@@ -122,10 +122,17 @@ func (t *Tunnel) pipeStream(public net.Conn, dc *dataConn, label string) error {
 
 	// dc.cipher is the key derived for this stream: the configured cipher when
 	// the session agreed no post-quantum key, and a per-stream key when it did.
-	clientSide := &cryptoStreamConn{Stream: crypto.NewStream(dc.conn, dc.cipher), conn: dc.conn}
+	var clientSide net.Conn = &cryptoStreamConn{Stream: crypto.NewStream(dc.conn, dc.cipher), conn: dc.conn}
+	if t.Spec.UseCompression {
+		// The client wrapped its side because the DataRequest said so; this
+		// side wraps to match, outside the encryption layer.
+		clientSide = flynet.CompressConn(clientSide)
+	}
 	var visitor net.Conn = public
 	if t.Spec.ProxyProtocol == "v1" {
 		visitor = &proxyHeaderConn{Conn: public, header: []byte(ProxyHeaderV1(public.RemoteAddr(), public.LocalAddr()))}
+	} else if t.Spec.ProxyProtocol == "v2" {
+		visitor = &proxyHeaderConn{Conn: public, header: ProxyHeaderV2(public.RemoteAddr(), public.LocalAddr())}
 	}
 	toClient, fromClient := flynet.Pipe(visitor, clientSide, t.idleTimeout)
 

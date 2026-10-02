@@ -92,6 +92,27 @@
   无效键清单同步。单测覆盖 401/放行、CONNECT 路由与 404/405、无主机名注册的拒绝、
   重载的线上收敛（注销+注册帧）、进程内真实 SIGHUP 端到端；功能套件新增一节，总数到
   **309 项**（无浏览器 166 项）。
+- **对标 frp 第四轮：按代理压缩与 https2http 插件**。继续从 frp 源码取证：压缩用的是
+  `fatedier/golib` 的 **snappy 流式包装**（`WithCompressionFromPool`，两端按代理配置各包
+  一层）——本项目引入 `golang/snappy` 并落到同一位置：`[[proxies]]` 新增
+  `use_compression`，压缩加在加密层**外侧**（先压缩后加密才有收益）；协商走回声——
+  客户端在 ProxySpec 里声明、服务器在每条 DataRequest 里带 `compressed` 回给客户端，
+  两端各自按回声包/不包，旧服务端不回声就自动退化为不压缩，混合部署不会坏流。
+  `pkg/net` 新增 `CompressConn`（读端解压、写端按块出帧，交互式流量不因块未填满而停顿）。
+  插件家族新增 `https2http`：客户端用 `plugin_cert_file`/`plugin_key_file` 的证书终结
+  访客的 TLS，明文转发给 `local_port` 的 HTTP 服务，配一条 `tcp` 代理即可在专用端口发布
+  HTTPS（证书按代理名缓存，连接不再读文件）；与 frp 的差异如实记录——frp 的 https 代理
+  是 SNI 透传、证书挂在客户端，本项目的 https 共享监听在服务端统一终结。压缩对数据报
+  隧道无效给出警告。功能套件新增一节（一条压缩隧道搬字节、一条 https2http 端口用 TLS
+  访问拿到 HTTP 服务应答），总数到 **311 项**（无浏览器 168 项）。
+- **对齐审计补遗：proxy_protocol v2 与逐项对照清单**。应用户要求再克隆 frp 源码做一轮
+  系统性审计：把 frp 的代理类型、代理治理、客户端与服务端四张表的每一项映射到本项目的
+  落点文件（`docs/VS-FRP.md` 新增"功能对照清单"），诚实列出尚未复现的尾部（OIDC、
+  kcp/quic 传输、http2https 插件、includes、maxPortsPerClient 等）。审计暴露的第一个
+  缺口当场补上：`proxy_protocol` 新增 `v2`——按 PROXY protocol v2 的二进制格式渲染
+  （12 字节签名、v2/PROXY 命令块、TCP4 家族、地址与端口大端序），非 IPv4 访客回退
+  UNKNOWN 形式；单测逐字节核对头部，功能套件的 pproto 场景加了一个真正解析二进制的
+  后端，总数到 **312 项**（无浏览器 169 项）。
 - **`transport = "webrtc"`：私有代理的访客数据路径可以走 WebRTC DataChannel**。信令就是
   已经完成认证的控制连接（一次 offer 帧、一次 answer 帧，ICE 候选非渐进收集），数据本身是
   DTLS 加密、ICE 选路的 UDP 字节流——直连被墙的网络环境下数据路径的另一种形态。访客配置

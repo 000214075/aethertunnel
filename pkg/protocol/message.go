@@ -497,6 +497,11 @@ type ProxySpec struct {
 	// Multiplexer selects the shared entry a tcpmux proxy rides. "httpconnect"
 	// is the only one.
 	Multiplexer string `json:"multiplexer,omitempty"`
+	// UseCompression asks for the server-relayed byte streams of this proxy to
+	// carry snappy-compressed payloads. The server echoes the answer in every
+	// DataRequest, so an old server — which ignores the field and never echoes —
+	// leaves the stream uncompressed instead of breaking it.
+	UseCompression bool `json:"use_compression,omitempty"`
 	// ProxyProtocol asks the server to prepend a PROXY protocol v1 header with
 	// the visitor's addresses to the stream the local service receives. "v1" or
 	// empty. Older servers ignore the field and simply send no header.
@@ -627,6 +632,10 @@ type DataRequest struct {
 	// carries a whole SOCKS5 UDP datagram (RFC 1928 section 7 header plus data),
 	// and the client dials the target named in that header per datagram.
 	SocksUDP bool `json:"socks_udp,omitempty"`
+	// Compressed echoes the proxy's use_compression back to the client: the
+	// client wraps its side only when the server says so, which is what keeps a
+	// new client working against an old server that never echoes.
+	Compressed bool `json:"compressed,omitempty"`
 }
 
 // DataOpen asks the server to open a new data stream for a proxy. After the ack

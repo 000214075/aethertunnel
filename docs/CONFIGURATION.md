@@ -85,6 +85,7 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `subdomain` | string | 空 | 子域名托管：客户端只声明一个 DNS 标签（小写字母/数字/连字符，1–63 字符），服务端把它拼成 `<标签>.<subdomain_host>` 并按该域名路由。声明了 `subdomain` 的代理，代理名不再参与域名拼接。服务端没有 `subdomain_host` 时拒绝注册 |
 | `http_user` / `http_password` | string | 空 | 仅 `http`/`https`：服务器在转发之前检查访问者的 Authorization 头，不匹配回 401 并带 `WWW-Authenticate: Basic` 挑战；两者任一非空即启用。二者都填空才是不设防的主机名 |
 | `multiplexer` | string | 空 | 仅 `tcpmux`，目前唯一取值 `"httpconnect"`：访问者对该隧道发 `CONNECT`，以主机名选中 |
+| `use_compression` | bool | false | 字节流在客户端与服务器之间用 snappy 流式压缩（加在加密层外侧，先压缩后加密）。服务器在每条 DataRequest 里回声确认，旧服务端不回声就自动退化为不压缩，混合部署不会坏流。对数据报隧道无效果（给出警告），打洞成功的 xtcp 直连路径不经过它 |
 | `secret_key` | string | 空 | 私有类型必填，也是访客侧的凭据 |
 | `auth_method` | string | `secret` | `secret` 直接比对；`nizk` 用 Schnorr 证明，secret 不出现在线上；`snark` 用 Groth16 的 zk-SNARK 证明（电路与可信设置说明见 `pkg/snarkauth`），secret 不出现在线上且证明绑定本次挑战 |
 | `group` | string | 空 | 填入同一名字的多个客户端组成代理池 |
@@ -93,10 +94,11 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `allow_cidrs` | []string | 空 | 只有匹配的来源地址可以访问该代理；留空表示不限 |
 | `deny_cidrs` | []string | 空 | 拒绝的来源地址，优先级高于 `allow_cidrs` |
 | `bandwidth` | string | 空 | 本代理在客户端侧的限速，双向合计，十进制字节每秒：`1MB`、`500KB`；留空不限速 |
-| `proxy_protocol` | string | 空 | `v1`：服务器把带访客真实地址的 PROXY protocol v1 头插到本地服务收到的流最前面；留空不插。旧版服务端会忽略该设置（只是不发头） |
+| `proxy_protocol` | string | 空 | `v1` 或 `v2`：服务器把带访客真实地址的 PROXY protocol 头插到本地服务收到的流最前面——`v1` 是文本行，`v2` 是二进制头（含签名与命令块）；留空不插。旧版服务端会忽略该设置（只是不发头） |
 | `remote_ports` | string | 空 | 端口段展开：`"6000-6002"` 生成 `remote_port` 6000/6001/6002 的三个代理，名字分别为 `名-6000`、`名-6001`、`名-6002`；条目的其余设置对每个副本生效。最多 256 个端口 |
-| `plugin` | string | 空 | 用客户端自带的组件代替本地服务：`static_file`（把 `plugin_local_path` 目录以 HTTP 发布）、`unix_domain_socket`（拨 `plugin_local_path` 的套接字） |
-| `plugin_local_path` | string | 空 | 插件用的本地路径，`plugin` 非空时必填 |
+| `plugin` | string | 空 | 用客户端自带的组件代替本地服务：`static_file`（把 `plugin_local_path` 目录以 HTTP 发布）、`unix_domain_socket`（拨 `plugin_local_path` 的套接字）、`https2http`（用 `plugin_cert_file`/`plugin_key_file` 在客户端终结访客的 TLS，把明文转发给 `local_port` 的 HTTP 服务——配一条 `tcp` 代理即可在专用端口发布 HTTPS） |
+| `plugin_local_path` | string | 空 | `static_file` 与 `unix_domain_socket` 用的本地路径 |
+| `plugin_cert_file` / `plugin_key_file` | string | 空 | `https2http` 插件终结 TLS 用的证书与私钥；证书按代理名缓存，连接不再读文件 |
 | `plugin_http_user` / `plugin_http_password` | string | 空 | `static_file` 的 HTTP basic auth；两者任一非空即启用 |
 | `health_check` | 表 | 空 | 本地服务健康检查：`type = "tcp"` 或 `"http"`，`interval_s`（默认 10）、`timeout_s`（默认 3）、`max_failed`（默认 3）、`path`（仅 http，默认 `/`）。连续失败达到 `max_failed` 后，客户端向服务端注销该代理（协议消息 `ProxyWithdraw`），公开端点随之关闭；探活恢复后自动重新注册。旧版服务端不认识注销消息，客户端回退为拒绝拨号、代理保持注册，见 `docs/VS-FRP.md` |
 
@@ -128,7 +130,7 @@ SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` �
 指出是服务端策略拒绝的。
 
 描述客户端自身服务的键（`local_ip`、`local_port`、`group`、`multipath`、`secret_key`、
-`auth_method`、`allow_targets`、`domains`、`subdomain`、`http_user`、`http_password`、`multiplexer`、`bandwidth`、`proxy_protocol`、`remote_ports`、
+`auth_method`、`allow_targets`、`domains`、`subdomain`、`http_user`、`http_password`、`multiplexer`、`use_compression`、`bandwidth`、`proxy_protocol`、`remote_ports`、
 `plugin`、`health_check`）在服务端配置里会加载成功但不生效，`--check` 会逐条
 输出警告。因此同一份 `[[proxies]]` 列表可以放在两种角色的配置里，只是含义不同。
 

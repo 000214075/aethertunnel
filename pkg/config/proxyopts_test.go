@@ -115,7 +115,7 @@ func TestValidateProxyExtras(t *testing.T) {
 	}
 
 	problems = c.validateProxyExtras(ProxyConfig{
-		Name: "bad", Bandwidth: "fast", ProxyProtocol: "v2", Plugin: "rsync",
+		Name: "bad", Bandwidth: "fast", ProxyProtocol: "v3", Plugin: "rsync",
 		HealthCheck: &HealthCheckConfig{Type: "icmp"},
 	})
 	if len(problems) != 4 {
@@ -123,6 +123,12 @@ func TestValidateProxyExtras(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(problems, "\n"), "bandwidth") {
 		t.Error("the bandwidth problem does not name bandwidth")
+	}
+	// v2 is a valid proxy_protocol since the audit round; it must pass cleanly.
+	if problems := c.validateProxyExtras(ProxyConfig{
+		Name: "v2", ProxyProtocol: "v2",
+	}); len(problems) != 0 {
+		t.Fatalf("a v2 proxy_protocol produced problems: %v", problems)
 	}
 }
 
@@ -231,5 +237,33 @@ func TestLoadRecordsTheSourceFile(t *testing.T) {
 	}
 	if cfg.SourceFile != path {
 		t.Fatalf("SourceFile is %q, want %q", cfg.SourceFile, path)
+	}
+}
+
+func TestHTTPS2HTTPPluginValidation(t *testing.T) {
+	c := &Config{}
+	base := ProxyConfig{Name: "site", Type: ProxyTypeTCP, Plugin: PluginHTTPS2HTTP, LocalPort: 8080}
+	if problems := c.validateProxyExtras(base); len(problems) == 0 {
+		t.Fatal("a missing certificate produced no problem")
+	} else if !strings.Contains(strings.Join(problems, "\n"), "plugin_cert_file") {
+		t.Fatalf("the problem does not name plugin_cert_file: %v", problems)
+	}
+	withCert := base
+	withCert.PluginCertFile = "/tmp/site.crt"
+	withCert.PluginKeyFile = "/tmp/site.key"
+	if problems := c.validateProxyExtras(withCert); len(problems) != 0 {
+		t.Fatalf("a complete https2http plugin produced problems: %v", problems)
+	}
+	noPort := base
+	noPort.PluginCertFile = "/tmp/site.crt"
+	noPort.PluginKeyFile = "/tmp/site.key"
+	noPort.LocalPort = 0
+	if problems := c.validateProxyExtras(noPort); len(problems) == 0 {
+		t.Fatal("a missing local_port produced no problem")
+	}
+	if problems := c.validateProxyExtras(ProxyConfig{
+		Name: "site", Type: ProxyTypeTCP, Plugin: "gopherhole",
+	}); len(problems) == 0 {
+		t.Fatal("an unknown plugin produced no problem")
 	}
 }

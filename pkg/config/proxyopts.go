@@ -139,10 +139,15 @@ func ExpandRemotePorts(proxies []ProxyConfig) ([]ProxyConfig, error) {
 const (
 	PluginStaticFile = "static_file"
 	PluginUnixSocket = "unix_domain_socket"
+	// PluginHTTPS2HTTP terminates the visitor's TLS at this client with the
+	// configured certificate and forwards the plaintext to the plain HTTP
+	// service named by local_port, so a server without a certificate of its
+	// own can still publish HTTPS on a dedicated tcp port.
+	PluginHTTPS2HTTP = "https2http"
 )
 
 // ProxyPlugins lists the accepted [[proxies]].plugin values.
-var ProxyPlugins = []string{PluginStaticFile, PluginUnixSocket}
+var ProxyPlugins = []string{PluginStaticFile, PluginUnixSocket, PluginHTTPS2HTTP}
 
 // validateProxyExtras holds the checks every client-side proxy pays for,
 // beyond the type and port rules the caller already applies. It returns the
@@ -154,9 +159,9 @@ func (c *Config) validateProxyExtras(p ProxyConfig) []string {
 			problems = append(problems, fmt.Sprintf("proxy %q: %v", p.Name, err))
 		}
 	}
-	if p.ProxyProtocol != "" && p.ProxyProtocol != "v1" {
+	if p.ProxyProtocol != "" && p.ProxyProtocol != "v1" && p.ProxyProtocol != "v2" {
 		problems = append(problems, fmt.Sprintf(
-			"proxy %q: proxy_protocol must be \"v1\" or empty, got %q", p.Name, p.ProxyProtocol))
+			"proxy %q: proxy_protocol must be \"v1\", \"v2\" or empty, got %q", p.Name, p.ProxyProtocol))
 	}
 	if p.Subdomain != "" {
 		if err := ValidateDNSLabel(p.Subdomain); err != nil {
@@ -167,6 +172,11 @@ func (c *Config) validateProxyExtras(p ProxyConfig) []string {
 		p.Type != ProxyTypeHTTP && p.Type != ProxyTypeHTTPS {
 		problems = append(problems, fmt.Sprintf(
 			"proxy %q: http_user and http_password guard http and https hostnames, not %s",
+			p.Name, p.Type))
+	}
+	if p.UseCompression && IsDatagramProxyType(p.Type) {
+		c.Warnings = append(c.Warnings, fmt.Sprintf(
+			"proxy %q: use_compression compresses byte streams; a %s tunnel moves datagrams and gains nothing from it",
 			p.Name, p.Type))
 	}
 	switch p.Plugin {
@@ -180,6 +190,21 @@ func (c *Config) validateProxyExtras(p ProxyConfig) []string {
 			c.Warnings = append(c.Warnings, fmt.Sprintf(
 				"proxy %q: plugin %q replaces the local service, so local_ip and local_port are ignored",
 				p.Name, p.Plugin))
+		}
+	case PluginHTTPS2HTTP:
+		if p.LocalPort == 0 {
+			problems = append(problems, fmt.Sprintf(
+				"proxy %q: plugin %q forwards to the plain HTTP service named by local_port",
+				p.Name, p.Plugin))
+		}
+		if p.PluginCertFile == "" || p.PluginKeyFile == "" {
+			problems = append(problems, fmt.Sprintf(
+				"proxy %q: plugin %q needs plugin_cert_file and plugin_key_file",
+				p.Name, p.Plugin))
+		}
+		if p.PluginLocalPath != "" {
+			c.Warnings = append(c.Warnings, fmt.Sprintf(
+				"proxy %q: plugin %q has no use for plugin_local_path", p.Name, p.Plugin))
 		}
 	default:
 		problems = append(problems, fmt.Sprintf(

@@ -160,6 +160,14 @@ type ProxyConfig struct {
 	// Multiplexer names the shared entry a tcpmux proxy rides; only
 	// "httpconnect" exists.
 	Multiplexer string `toml:"multiplexer"`
+	// UseCompression carries the proxy's byte streams snappy-compressed
+	// between this client and the server. It has no effect on a datagram
+	// tunnel and on an xtcp path that punched past the server.
+	UseCompression bool `toml:"use_compression"`
+	// PluginCertFile and PluginKeyFile hold the certificate the https2http
+	// plugin terminates the visitor's TLS with.
+	PluginCertFile string `toml:"plugin_cert_file"`
+	PluginKeyFile  string `toml:"plugin_key_file"`
 	// Bandwidth caps this proxy's data rate on the client, both directions
 	// combined, in decimal bytes per second: "1MB", "500KB". Empty means no
 	// limit.
@@ -1682,6 +1690,7 @@ func (c *Config) validateProxyPolicy(p ProxyConfig) []string {
 		{"http_user", p.HTTPUser != ""},
 		{"http_password", p.HTTPPassword != ""},
 		{"multiplexer", p.Multiplexer != ""},
+		{"use_compression", p.UseCompression},
 		{"bandwidth", p.Bandwidth != ""},
 		{"proxy_protocol", p.ProxyProtocol != ""},
 		{"remote_ports", p.RemotePorts != ""},

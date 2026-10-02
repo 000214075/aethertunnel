@@ -281,6 +281,11 @@ func (a *testAgent) serve(request protocol.DataRequest, handler dataHandler) {
 		_ = conn.Close()
 		return
 	}
+	if request.Compressed {
+		// The server echoed the proxy's use_compression; the agent wraps its
+		// side the way the real client does.
+		conn = flynet.CompressConn(conn)
+	}
 	handler(conn, framer)
 }
 

@@ -108,6 +108,10 @@ type client struct {
 	healthStopsMu sync.Mutex
 	healthStops   map[string]context.CancelFunc
 
+	// pluginTLS caches the https2http certificate per proxy name.
+	pluginTLSMu sync.Mutex
+	pluginTLS   map[string]*tls.Config
+
 	// vpnShellOpen and vpnShellProtect are set by RunWithShell for a platform that
 	// supplies the layer-3 device itself. vpnShellOpen is called at the moment the
 	// session is up and the server's address assignment is known; vpnProtect runs
@@ -737,23 +741,24 @@ func (c *client) startVPN(ctx context.Context, framer *protocol.Framer, response
 // than of the server's configuration.
 func proxySpec(proxy config.ProxyConfig) protocol.ProxySpec {
 	return protocol.ProxySpec{
-		Name:          proxy.Name,
-		Type:          proxy.Type,
-		LocalAddr:     proxy.LocalAddr(),
-		RemotePort:    proxy.RemotePort,
-		Domains:       proxy.Domains,
-		ProxyProtocol: proxy.ProxyProtocol,
-		Subdomain:     proxy.Subdomain,
-		HTTPUser:      proxy.HTTPUser,
-		HTTPPassword:  proxy.HTTPPassword,
-		Multiplexer:   proxy.Multiplexer,
-		SecretKey:     proxy.SecretKey,
-		AuthMethod:    proxy.AuthMethod,
-		Group:         proxy.Group,
-		Multipath:     proxy.Multipath,
-		AllowCIDRs:    proxy.AllowCIDRs,
-		DenyCIDRs:     proxy.DenyCIDRs,
-		AllowTargets:  proxy.AllowTargets,
+		Name:           proxy.Name,
+		Type:           proxy.Type,
+		LocalAddr:      proxy.LocalAddr(),
+		RemotePort:     proxy.RemotePort,
+		Domains:        proxy.Domains,
+		ProxyProtocol:  proxy.ProxyProtocol,
+		Subdomain:      proxy.Subdomain,
+		HTTPUser:       proxy.HTTPUser,
+		HTTPPassword:   proxy.HTTPPassword,
+		Multiplexer:    proxy.Multiplexer,
+		UseCompression: proxy.UseCompression,
+		SecretKey:      proxy.SecretKey,
+		AuthMethod:     proxy.AuthMethod,
+		Group:          proxy.Group,
+		Multipath:      proxy.Multipath,
+		AllowCIDRs:     proxy.AllowCIDRs,
+		DenyCIDRs:      proxy.DenyCIDRs,
+		AllowTargets:   proxy.AllowTargets,
 	}
 }
 
@@ -985,7 +990,12 @@ func (c *client) serveStream(session string, request protocol.DataRequest) {
 		return
 	}
 
-	serverSide := &cryptoStreamConn{Stream: crypto.NewStream(conn, streamCipher), conn: conn}
+	var serverSide net.Conn = &cryptoStreamConn{Stream: crypto.NewStream(conn, streamCipher), conn: conn}
+	if request.Compressed {
+		// The server echoed the proxy's use_compression; the wrap goes outside
+		// the encryption layer, where the payload is still plaintext.
+		serverSide = flynet.CompressConn(serverSide)
+	}
 	idle := time.Duration(c.cfg.Client.IdleTimeoutSecs) * time.Second
 	toServer, fromServer := flynet.Pipe(local, serverSide, idle)
 	c.logger.Printf("stream for %q (%s) finished (sent %d bytes to the server, received %d)",
