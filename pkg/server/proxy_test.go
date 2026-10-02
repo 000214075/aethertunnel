@@ -1089,7 +1089,18 @@ func TestSUDPVisitorRelaysDatagrams(t *testing.T) {
 	// without it, a sudp proxy reports zero datagrams while bytes flow, and an
 	// operator watching the series reads that as a tunnel that is not working.
 	oneEachWay := int64(2)
-	if got := rs.server.metrics.udpDatagrams.Load(); got < oneEachWay {
+	// The counter moves in the relay goroutine, which may still be finishing
+	// the return leg when this line runs on a loaded machine, so the check
+	// polls briefly instead of reading once.
+	var got int64
+	for deadline := time.Now().Add(3 * time.Second); ; {
+		got = rs.server.metrics.udpDatagrams.Load()
+		if got >= oneEachWay || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got < oneEachWay {
 		t.Errorf("aethertunnel_udp_datagrams_total is %d after one datagram round trip, want at least %d", got, oneEachWay)
 	}
 }

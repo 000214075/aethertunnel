@@ -1669,8 +1669,16 @@ Test-Check 'the ledger verifies against the published public key' {
 }
 
 Test-Check 'a tampered ledger does not verify' {
-    $body = Invoke-Curl @('-s', "http://127.0.0.1:$dashboardPort/api/ledger")
-    $publicKey = ($body | ConvertFrom-Json).public_key
+    $publicKey = $null
+    for ($i = 0; $i -lt 5; $i++) {
+        $body = Invoke-Curl @('-s', "http://127.0.0.1:$dashboardPort/api/ledger")
+        if ($body) {
+            try { $publicKey = ($body | ConvertFrom-Json).public_key } catch { $publicKey = $null }
+            if ($publicKey) { break }
+        }
+        Start-Sleep -Seconds 2
+    }
+    if (-not $publicKey) { throw "the ledger API did not return a public key" }
 
     $tampered = Join-Path $Root 'ledger-tampered.jsonl'
     $lines = Get-Content (Join-Path $Root 'ledger.jsonl')

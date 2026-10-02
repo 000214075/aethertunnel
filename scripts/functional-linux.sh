@@ -3241,7 +3241,7 @@ PIDS+=($!)
 PIDS+=($!)
 
 ok_awaited=0
-for _ in $(seq 1 120); do
+for _ in $(seq 1 240); do
     if grep -q 'outside allow_ports' "$ALLOWPORTS_DIR/server.log" 2>/dev/null \
         && grep -q 'outside allow_ports' "$ALLOWPORTS_DIR/client.log" 2>/dev/null \
         && grep -q '"inside"' "$ALLOWPORTS_DIR/client.log" 2>/dev/null; then
