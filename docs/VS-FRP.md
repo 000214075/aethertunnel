@@ -24,7 +24,9 @@ executable checks in this repository, not at marketing.
 | 端口段映射（remote_port 区间展开） | ✅ | ✅ | `remote_ports = "6000-6002"` |
 | PROXY protocol 传真实访客 IP | ✅ v1/v2 | ✅ v1 | `proxy_protocol = "v1"`；v2 未做，见下 |
 | allow_ports（服务端端口白名单） | ✅ | ✅ | 注册时拒绝，审计留痕 |
-| 健康检查（本地服务探活） | ✅ 自动摘除 | ✅ 拨号拒绝+自动恢复 | 差异见下 |
+| 健康检查（本地服务探活） | ✅ 失败自动摘除 | ✅ 失败自动摘除 | 摘除撤下公开端点，恢复后重新发布；旧服务端回退为拨号拒绝 |
+| 子域名托管 | ✅ subdomain_host | ✅ `subdomain` + `[server].subdomain_host` | 客户端只声明一个 DNS 标签，服务端拼全名并按域名路由 |
+| 经代理连服务器 | ✅ transport.dialServerProxy | ✅ `dial_via` | socks5/socks5h/http/https；隧道自身的 TLS 加在代理之上 |
 | 客户端插件：static_file | ✅ | ✅ | 含 HTTP basic auth |
 | 客户端插件：unix_domain_socket | ✅ | ✅ | |
 | socks5 出口 | ✅ 客户端插件 | ✅ 服务端代理类型 + allow_targets | 语义不同，见下 |
@@ -49,13 +51,12 @@ executable checks in this repository, not at marketing.
 
 - **frp 的 use_compression**：按代理压缩需要协议协商，混跑新旧两端时语义复杂；
   AetherTunnel 的隧道默认全量加密，压缩的收益场景（明文文本）留给后续带版本协商的实现。
-- **frp 的健康检查会摘除代理**：需要一条"注销代理"协议消息，混跑旧服务端时会被当作
-  协议错误。AetherTunnel 的健康检查在客户端拒绝拨号并自动恢复——公开端点仍在，
-  但坏后端不会被选中；等协议里有了带版本协商的注销消息，再升级为摘除。
 - **frp 的 tcpmux / http2https 等插件型入口**：尚未实现；`static_file` 与
   `unix_domain_socket` 是第一批落地的插件。
-- **OIDC 认证、子域名托管（subdomain_host）**：未实现；`auth_method` 的三种零知识/签名
-  方案覆盖了 frp 用 token+sk 覆盖的场景。
+- **frp 的 use_compression 之外的热重载（SIGHUP）**：尚未实现；改配置仍需重启客户端。
+  进程内已具备按名注销/重注册的协议原语，热重载在其上做差异增删即可。
+- **OIDC 认证**：未实现；`auth_method` 的三种零知识/签名方案覆盖了 frp 用 token+sk
+  覆盖的场景。
 
 ## 一句话 · In one sentence
 

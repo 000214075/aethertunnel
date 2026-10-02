@@ -3191,6 +3191,297 @@ done
 check "$ok_awaited" "1" "the server refused a remote port outside allow_ports and told the client"
 
 
+echo
+# ── frp parity, round two: subdomains, dial_via, health-check withdrawal.
+
+FEATURES_DIR="$WORK/features"
+mkdir -p "$FEATURES_DIR"
+FEATURES_CONTROL_PORT="$(free_port)"
+FEATURES_HTTP_PORT="$(free_port)"
+FEATURES_HEALTH_BACKEND_PORT="$(free_port)"
+FEATURES_HEALTH_PUBLIC_PORT="$(free_port)"
+FEATURES_DIALVIA_PUBLIC_PORT="$(free_port)"
+FEATURES_CONNECT_PORT="$(free_port)"
+
+# A guarded backend the health check watches. The scenario kills it and brings
+# it back, so it is its own process the script can restart.
+cat > "$FEATURES_DIR/health_backend.py" <<'PY'
+import socket, sys
+srv = socket.socket()
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", int(sys.argv[1])))
+srv.listen(16)
+while True:
+    try:
+        conn, _ = srv.accept()
+    except OSError:
+        break
+    try:
+        conn.sendall(b"guarded-backend\n")
+    finally:
+        conn.close()
+PY
+
+# The intermediary dial_via points at: an HTTP CONNECT proxy that forwards every
+# accepted tunnel to the server's control port, and writes down what it was
+# asked to CONNECT to.
+cat > "$FEATURES_DIR/connect_proxy.py" <<'PY'
+import socket, sys, threading
+port, host, upstream_port, log = int(sys.argv[1]), sys.argv[2], int(sys.argv[3]), sys.argv[4]
+upstream = (host, upstream_port)
+srv = socket.socket()
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", port))
+srv.listen(16)
+
+def pipe(a, b):
+    try:
+        while True:
+            data = a.recv(65536)
+            if not data:
+                break
+            b.sendall(data)
+    except OSError:
+        pass
+    try:
+        b.shutdown(socket.SHUT_WR)
+    except OSError:
+        pass
+
+while True:
+    conn, _ = srv.accept()
+    try:
+        request = b""
+        while b"\r\n\r\n" not in request:
+            chunk = conn.recv(65536)
+            if not chunk:
+                raise OSError("peer went away")
+            request += chunk
+        line = request.split(b"\r\n", 1)[0].decode(errors="replace")
+        if not line.startswith("CONNECT "):
+            raise OSError("not a CONNECT request")
+        with open(log, "a") as f:
+            f.write(line + "\n")
+        upstream_sock = socket.create_connection(upstream)
+    except Exception as exc:
+        with open(log, "a") as f:
+            f.write("refused: %s\n" % exc)
+        try:
+            conn.sendall(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+        except OSError:
+            pass
+        conn.close()
+        continue
+    conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+    threading.Thread(target=pipe, args=(conn, upstream_sock), daemon=True).start()
+    threading.Thread(target=pipe, args=(upstream_sock, conn), daemon=True).start()
+PY
+
+cat > "$FEATURES_DIR/server.toml" <<EOF
+[server]
+bind_addr = "127.0.0.1"
+bind_port = $FEATURES_CONTROL_PORT
+auth_token = "$TOKEN"
+http_port = $FEATURES_HTTP_PORT
+subdomain_host = "feats.smoke.test"
+EOF
+
+# Client A carries the subdomain and the health-checked proxy. The guarded
+# backend's probe schedule is one second, so the withdrawal lands quickly.
+cat > "$FEATURES_DIR/client.toml" <<EOF
+[client]
+server_addr = "127.0.0.1:$FEATURES_CONTROL_PORT"
+auth_token = "$TOKEN"
+reconnect_seconds = 1
+max_reconnect_seconds = 1
+
+[[proxies]]
+name = "shopfront"
+type = "http"
+local_ip = "127.0.0.1"
+local_port = $HTTP_ECHO_PORT
+subdomain = "shop"
+
+[[proxies]]
+name = "guarded"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = $FEATURES_HEALTH_BACKEND_PORT
+remote_port = $FEATURES_HEALTH_PUBLIC_PORT
+health_check = { type = "tcp", interval_s = 1, timeout_s = 1, max_failed = 1 }
+EOF
+
+# Client B reaches the same server through the CONNECT proxy: dial_via in
+# front of the control connection.
+cat > "$FEATURES_DIR/dialvia-client.toml" <<EOF
+[client]
+server_addr = "127.0.0.1:$FEATURES_CONTROL_PORT"
+auth_token = "$TOKEN"
+dial_via = "http://127.0.0.1:$FEATURES_CONNECT_PORT"
+reconnect_seconds = 1
+max_reconnect_seconds = 1
+
+[[proxies]]
+name = "through-the-proxy"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = $TCP_ECHO_PORT
+remote_port = $FEATURES_DIALVIA_PUBLIC_PORT
+EOF
+
+python3 "$FEATURES_DIR/health_backend.py" "$FEATURES_HEALTH_BACKEND_PORT" > /dev/null 2>&1 &
+HEALTH_BACKEND_PID=$!
+PIDS+=($!)
+# The client's first probe runs as soon as the process is up, so the backend it
+# watches gets a head start.
+sleep 0.5
+python3 "$FEATURES_DIR/connect_proxy.py" "$FEATURES_CONNECT_PORT" 127.0.0.1 "$FEATURES_CONTROL_PORT" "$FEATURES_DIR/connect.log" > /dev/null 2>&1 &
+PIDS+=($!)
+"$SERVER" --config "$FEATURES_DIR/server.toml" > "$FEATURES_DIR/server.log" 2>&1 &
+PIDS+=($!)
+"$CLIENT" --config "$FEATURES_DIR/client.toml" > "$FEATURES_DIR/client.log" 2>&1 &
+PIDS+=($!)
+"$CLIENT" --config "$FEATURES_DIR/dialvia-client.toml" > "$FEATURES_DIR/dialvia-client.log" 2>&1 &
+PIDS+=($!)
+
+ok_awaited=0
+for _ in $(seq 1 120); do
+    if grep -q 'shopfront' "$FEATURES_DIR/client.log" 2>/dev/null \
+        && grep -q 'guarded' "$FEATURES_DIR/client.log" 2>/dev/null \
+        && grep -q 'through-the-proxy' "$FEATURES_DIR/dialvia-client.log" 2>/dev/null; then
+        ok_awaited=1
+        break
+    fi
+    sleep 0.5
+done
+check "$ok_awaited" "1" "both feature clients are up: the subdomain, the guarded proxy and the dial_via tunnel"
+
+# The health_via helper reads the guarded backend's one-line answer; a port the
+# server stopped publishing answers "refused" instead of opening at all.
+health_via() {
+    python3 - "$1" <<'PY'
+import socket, sys
+try:
+    s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
+except OSError:
+    print("refused")
+else:
+    s.settimeout(5)
+    try:
+        line = b""
+        while b"\n" not in line:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            line += chunk
+        s.close()
+        print("ok" if b"guarded-backend" in line else "got %r" % line)
+    except OSError as exc:
+        print("broken: %s" % exc)
+PY
+}
+
+subdomain_result="$(python3 - "$FEATURES_HTTP_PORT" <<'PY'
+import sys, urllib.request
+req = urllib.request.Request("http://127.0.0.1:%s/" % sys.argv[1])
+req.add_header("Host", "shop.feats.smoke.test")
+try:
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        body = resp.read().decode()
+except Exception as exc:
+    print("no answer: %s" % exc)
+else:
+    print("ok" if "smoketest-http" in body else "got %r" % body)
+PY
+)"
+check "$subdomain_result" "ok" \
+    "a proxy with a subdomain is served as shop.feats.smoke.test"
+
+subdomain_unknown="$(python3 - "$FEATURES_HTTP_PORT" <<'PY'
+import sys, urllib.request, urllib.error
+req = urllib.request.Request("http://127.0.0.1:%s/" % sys.argv[1])
+req.add_header("Host", "not-taken.feats.smoke.test")
+try:
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        body = resp.read().decode()
+except urllib.error.HTTPError as exc:
+    print("refused" if exc.code == 404 else "status %d" % exc.code)
+except Exception as exc:
+    print("no answer: %s" % exc)
+else:
+    print("answered")
+PY
+)"
+check "$subdomain_unknown" "refused" \
+    "a subdomain no client asked for stays unrouted"
+
+check "$(tcp_via "$FEATURES_DIALVIA_PUBLIC_PORT")" "ok" \
+    "a client that dials through dial_via carries bytes"
+connect_seen=0
+for _ in $(seq 1 20); do
+    if grep -qF "CONNECT 127.0.0.1:$FEATURES_CONTROL_PORT" "$FEATURES_DIR/connect.log" 2>/dev/null; then
+        connect_seen=1
+        break
+    fi
+    sleep 0.5
+done
+check "$connect_seen" "1" "the CONNECT proxy saw the client dial the server through it"
+
+healthy_up=0
+for _ in $(seq 1 30); do
+    if [ "$(health_via "$FEATURES_HEALTH_PUBLIC_PORT")" = "ok" ]; then
+        healthy_up=1
+        break
+    fi
+    sleep 0.5
+done
+check "$healthy_up" "1" "a healthy guarded proxy serves its public port"
+
+kill "$HEALTH_BACKEND_PID" 2>/dev/null || true
+withdrawn=0
+for _ in $(seq 1 40); do
+    if [ "$(health_via "$FEATURES_HEALTH_PUBLIC_PORT")" = "refused" ] \
+        && grep -q 'withdrawing the tunnel' "$FEATURES_DIR/client.log" 2>/dev/null; then
+        withdrawn=1
+        break
+    fi
+    sleep 0.5
+done
+check "$withdrawn" "1" \
+    "a failed health check withdraws the proxy: the public port is closed"
+
+python3 "$FEATURES_DIR/health_backend.py" "$FEATURES_HEALTH_BACKEND_PORT" > /dev/null 2>&1 &
+HEALTH_BACKEND_PID=$!
+PIDS+=($!)
+recovered=0
+for _ in $(seq 1 40); do
+    if [ "$(health_via "$FEATURES_HEALTH_PUBLIC_PORT")" = "ok" ] \
+        && grep -q 'the tunnel is published again' "$FEATURES_DIR/client.log" 2>/dev/null; then
+        recovered=1
+        break
+    fi
+    sleep 0.5
+done
+check "$recovered" "1" \
+    "a recovered health check publishes the proxy again"
+
+subdomain_still_up="$(python3 - "$FEATURES_HTTP_PORT" <<'PY'
+import sys, urllib.request
+req = urllib.request.Request("http://127.0.0.1:%s/" % sys.argv[1])
+req.add_header("Host", "shop.feats.smoke.test")
+try:
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        body = resp.read().decode()
+except Exception as exc:
+    print("no answer: %s" % exc)
+else:
+    print("ok" if "smoketest-http" in body else "got %r" % body)
+PY
+)"
+check "$subdomain_still_up" "ok" \
+    "the withdrawal of one proxy leaves the others published"
+
+
 echo "checks passed: $PASSES"
 echo "checks failed: $FAILURES"
 [ "$FAILURES" -eq 0 ] || exit 1

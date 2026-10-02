@@ -123,3 +123,64 @@ func TestValidateProxyExtras(t *testing.T) {
 		t.Error("the bandwidth problem does not name bandwidth")
 	}
 }
+
+func TestValidateDNSLabel(t *testing.T) {
+	for _, ok := range []string{"shop", "a", "a-b", "0auth", "a-b-c", strings.Repeat("a", 63)} {
+		if err := ValidateDNSLabel(ok); err != nil {
+			t.Errorf("ValidateDNSLabel(%q) = %v, want nil", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "-lead", "trail-", "a_b", "UPPER", "a.b", strings.Repeat("a", 64)} {
+		if err := ValidateDNSLabel(bad); err == nil {
+			t.Errorf("ValidateDNSLabel(%q) is nil, want an error", bad)
+		}
+	}
+}
+
+func TestValidateDialVia(t *testing.T) {
+	for _, ok := range []string{
+		"socks5://10.0.0.2:1080",
+		"socks5://user:pass@10.0.0.2:1080",
+		"socks5h://proxy.lan",
+		"http://proxy.lan:3128",
+		"https://user:pass@proxy.lan",
+	} {
+		if err := ValidateDialVia(ok); err != nil {
+			t.Errorf("ValidateDialVia(%q) = %v, want nil", ok, err)
+		}
+	}
+	for _, bad := range []string{"ftp://proxy.lan", "socks5://", "http://", ":"} {
+		if err := ValidateDialVia(bad); err == nil {
+			t.Errorf("ValidateDialVia(%q) is nil, want an error", bad)
+		}
+	}
+}
+
+func TestSubdomainValidationInProxyExtras(t *testing.T) {
+	c := &Config{}
+	problems := c.validateProxyExtras(ProxyConfig{Name: "web", Subdomain: "bad_label!"})
+	if len(problems) == 0 {
+		t.Fatal("an invalid subdomain produced no problem")
+	}
+	if !strings.Contains(strings.Join(problems, "\n"), "subdomain") {
+		t.Fatalf("the problem does not name subdomain: %v", problems)
+	}
+	if problems := c.validateProxyExtras(ProxyConfig{Name: "web", Subdomain: "shop"}); len(problems) != 0 {
+		t.Fatalf("a valid subdomain produced problems: %v", problems)
+	}
+}
+
+func TestClientDialViaValidation(t *testing.T) {
+	cfg := &Config{}
+	cfg.Client.ServerAddr = "127.0.0.1:7000"
+	cfg.Client.AuthToken = "token"
+	cfg.Client.DialVia = "ftp://proxy.lan"
+	err := cfg.Validate(RoleClient)
+	if err == nil || !strings.Contains(err.Error(), "dial_via") {
+		t.Fatalf("a dial_via the client cannot parse passed validation: %v", err)
+	}
+	cfg.Client.DialVia = "socks5://user:pass@10.0.0.2:1080"
+	if err := cfg.Validate(RoleClient); err != nil {
+		t.Fatalf("a valid dial_via failed validation: %v", err)
+	}
+}

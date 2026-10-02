@@ -98,6 +98,11 @@ type ClientConfig struct {
 	HeartbeatSeconds    int `toml:"heartbeat_seconds"`
 	DialTimeoutSecs     int `toml:"dial_timeout_seconds"`
 	IdleTimeoutSecs     int `toml:"idle_timeout_seconds"`
+
+	// DialVia optionally routes the connections to the server through a
+	// SOCKS5 or HTTP CONNECT proxy, for example "socks5://user:pass@10.0.0.2:1080"
+	// or "http://proxy.lan:3128". Empty dials the server directly.
+	DialVia string `toml:"dial_via"`
 }
 
 // ProxyConfig is one [[proxies]] entry.
@@ -140,6 +145,10 @@ type ProxyConfig struct {
 	// client can reach.
 	AllowTargets []string `toml:"allow_targets"`
 
+	// Subdomain publishes an http/https proxy under this label plus the
+	// server's [server].subdomain_host, next to any custom domains. One DNS
+	// label; the server composes and validates the full name.
+	Subdomain string `toml:"subdomain"`
 	// Bandwidth caps this proxy's data rate on the client, both directions
 	// combined, in decimal bytes per second: "1MB", "500KB". Empty means no
 	// limit.
@@ -165,10 +174,10 @@ type ProxyConfig struct {
 
 // HealthCheckConfig probes the local service behind a proxy. Type "tcp" opens
 // a connection; "http" performs a GET on path and accepts any response. After
-// max_failed consecutive failures the proxy refuses dials until a probe
-// succeeds again. The public endpoint stays registered — the refusal is
-// client-side, because the protocol has no proxy-withdrawal message, and
-// keeping it out is what lets an old server accept a new client.
+// max_failed consecutive failures the client withdraws the proxy from the
+// server — the public endpoint closes — and publishes it again when a probe
+// succeeds. A server from before the withdrawal message stays silent, and the
+// client falls back to refusing dials while the proxy stays registered.
 type HealthCheckConfig struct {
 	Type      string `toml:"type"`
 	IntervalS int    `toml:"interval_s"`
@@ -1037,6 +1046,11 @@ func (c *Config) Validate(role string) error {
 		if c.Client.AuthToken == "" {
 			problems = append(problems, "client.auth_token is required")
 		}
+		if c.Client.DialVia != "" {
+			if err := ValidateDialVia(c.Client.DialVia); err != nil {
+				problems = append(problems, fmt.Sprintf("client.dial_via: %v", err))
+			}
+		}
 	}
 
 	if c.Dashboard.Enabled {
@@ -1632,6 +1646,7 @@ func (c *Config) validateProxyPolicy(p ProxyConfig) []string {
 		{"auth_method", p.AuthMethod != ""},
 		{"allow_targets", len(p.AllowTargets) > 0},
 		{"domains", len(p.Domains) > 0},
+		{"subdomain", p.Subdomain != ""},
 		{"bandwidth", p.Bandwidth != ""},
 		{"proxy_protocol", p.ProxyProtocol != ""},
 		{"remote_ports", p.RemotePorts != ""},

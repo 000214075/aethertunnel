@@ -26,12 +26,15 @@ const (
 )
 
 // healthState is one proxy's view of its local service. It starts healthy, so
-// a probe that has not run yet never refuses traffic.
+// a probe that has not run yet never refuses traffic. withdrawn records that
+// this client asked the server to stop publishing the proxy while the service
+// is down; a recovered probe publishes it again.
 type healthState struct {
-	mu      sync.Mutex
-	healthy bool
-	failed  int
-	maxFail int
+	mu        sync.Mutex
+	healthy   bool
+	failed    int
+	maxFail   int
+	withdrawn bool
 }
 
 func newHealthState(maxFail int) *healthState {
@@ -68,6 +71,37 @@ func (h *healthState) isHealthy() bool {
 	return h.healthy
 }
 
+// markWithdrawn records that the server stopped publishing this proxy.
+func (h *healthState) markWithdrawn() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.withdrawn = true
+}
+
+func (h *healthState) isWithdrawn() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.withdrawn
+}
+
+// takeWithdrawn reports whether the proxy was withdrawn and clears the mark,
+// so a recovered service is published again exactly once.
+func (h *healthState) takeWithdrawn() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	w := h.withdrawn
+	h.withdrawn = false
+	return w
+}
+
+// resetWithdrawn drops a stale withdrawal mark before a fresh session
+// registers every proxy again.
+func (h *healthState) resetWithdrawn() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.withdrawn = false
+}
+
 // setHealthState installs one proxy's health state.
 func (c *client) setHealthState(name string, state *healthState) {
 	c.healthMu.Lock()
@@ -89,6 +123,56 @@ func (c *client) proxyHealthy(proxy config.ProxyConfig) bool {
 	defer c.healthMu.Unlock()
 	state := c.health[proxy.Name]
 	return state == nil || state.isHealthy()
+}
+
+// withdrawUnhealthy unpublishes a proxy whose local service is failing its
+// check: the server drops the tunnel and its public endpoint, so visitors stop
+// reaching a dead backend. A server that predates withdrawals stays silent, a
+// session that is not up yet has no control connection, and in both cases the
+// proxy stays registered and the dial refusal in serveStream protects visitors.
+func (c *client) withdrawUnhealthy(proxy config.ProxyConfig, state *healthState) {
+	c.logger.Printf("proxy %q: the local service failed its health check; withdrawing the tunnel until it recovers", proxy.Name)
+	switch err := c.withdrawProxy(proxy); {
+	case err == nil:
+		state.markWithdrawn()
+	case errors.Is(err, errWithdrawUnsupported):
+		c.logger.Printf("proxy %q: dials are refused locally until it recovers", proxy.Name)
+	default:
+		c.logger.Printf("proxy %q: the withdrawal did not go through (%v); dials are refused locally until it recovers", proxy.Name, err)
+	}
+}
+
+// resetHealthWithdrawals clears stale withdrawal markers: a fresh session is
+// about to publish every configured proxy again, so a withdrawal recorded
+// against the previous session no longer describes the server.
+func (c *client) resetHealthWithdrawals() {
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
+	for _, state := range c.health {
+		state.resetWithdrawn()
+	}
+}
+
+// reWithdrawUnhealthy runs right after a session publishes the proxies and
+// withdraws again those whose local service was already failing: the fresh
+// registration put a dead backend back on a public endpoint, and the health
+// state will not fire a new refusal event for a failure it already recorded.
+func (c *client) reWithdrawUnhealthy() {
+	for _, proxy := range c.cfg.Proxies {
+		if proxy.HealthCheck == nil {
+			continue
+		}
+		c.healthMu.Lock()
+		state := c.health[proxy.Name]
+		c.healthMu.Unlock()
+		if state == nil || state.isHealthy() || state.isWithdrawn() {
+			continue
+		}
+		if err := c.withdrawProxy(proxy); err == nil {
+			state.markWithdrawn()
+			c.logger.Printf("proxy %q: the local service is still unhealthy; the tunnel stays withdrawn", proxy.Name)
+		}
+	}
 }
 
 // startHealthChecks probes every proxy that declares a health check for the
@@ -129,9 +213,24 @@ func (c *client) runHealthCheck(ctx context.Context, proxy config.ProxyConfig, s
 		return true
 	}
 
-	if event := state.record(probe()); event == eventRefused {
-		c.logger.Printf("proxy %q: the local service failed its first %d health check(s); dials are refused until it recovers", proxy.Name, h.MaxFailed)
+	apply := func(ok bool) {
+		switch event := state.record(ok); event {
+		case eventRecovered:
+			if state.takeWithdrawn() {
+				if err := c.registerProxyAgain(proxy); err != nil {
+					c.logger.Printf("proxy %q: the local service is healthy again, but re-publishing the tunnel failed: %v", proxy.Name, err)
+					return
+				}
+				c.logger.Printf("proxy %q: the local service is healthy again; the tunnel is published again", proxy.Name)
+				return
+			}
+			c.logger.Printf("proxy %q: the local service is healthy again; dials are accepted", proxy.Name)
+		case eventRefused:
+			c.withdrawUnhealthy(proxy, state)
+		}
 	}
+
+	apply(probe())
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -141,11 +240,14 @@ func (c *client) runHealthCheck(ctx context.Context, proxy config.ProxyConfig, s
 			return
 		case <-ticker.C:
 		}
-		switch event := state.record(probe()); event {
-		case eventRecovered:
-			c.logger.Printf("proxy %q: the local service is healthy again; dials are accepted", proxy.Name)
-		case eventRefused:
-			c.logger.Printf("proxy %q: the local service failed %d health checks; dials are refused until it recovers", proxy.Name, h.MaxFailed)
+		ok := probe()
+		apply(ok)
+		// A withdrawal that raced the session coming up, or one the server
+		// refused for a transient reason, is retried while the service stays
+		// down. A server that stays silent has already set its flag, so this
+		// costs nothing there.
+		if !ok && !state.isHealthy() && !state.isWithdrawn() && !c.withdrawIsUnsupported() {
+			c.withdrawUnhealthy(proxy, state)
 		}
 	}
 }

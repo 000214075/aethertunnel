@@ -7,3 +7,7 @@
 The client as a library. `Run` is the one entry point — cipher negotiation,
 identity loading, DHT resolution waiting, session reconnects; `RunWithShell` lets a
 mobile platform hand over its own tun device at the moment the session is up.
+健康检查的注销/重注册（`withdraw.go`）与经中转代理连服务器（`dialvia.go`）也在这层。
+
+Health checks that withdraw and re-publish a proxy (`withdraw.go`) and the
+dial-through-a-proxy path to the server (`dialvia.go`) live here too.

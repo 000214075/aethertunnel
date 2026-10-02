@@ -14,7 +14,9 @@ require (
 	github.com/consensys/gnark-crypto v0.14.0
 	github.com/pion/ice/v4 v4.4.4
 	github.com/pion/webrtc/v4 v4.2.22
+	golang.org/x/net v0.50.0
 	golang.org/x/sys v0.41.0
+	golang.org/x/time v0.14.0
 )
 
 require (
@@ -47,8 +49,6 @@ require (
 	github.com/rs/zerolog v1.33.0 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	golang.org/x/net v0.50.0 // indirect
 	golang.org/x/sync v0.8.0 // indirect
-	golang.org/x/time v0.14.0 // indirect
 	rsc.io/tmplfunc v0.0.3 // indirect
 )

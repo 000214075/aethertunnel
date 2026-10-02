@@ -75,6 +75,17 @@ const (
 	// TypeVisitorWebRTCAnswer carries the server's answer to that offer.
 	TypeVisitorWebRTCAnswer MessageType = 23
 
+	// TypeProxyWithdraw asks the server to unpublish one of the client's proxies —
+	// a health check that failed, or a configuration reload that removed it. The
+	// server answers with TypeProxyWithdrawAck. A server too old to know the type
+	// silently ignores the frame (its control loop logs unknown types and keeps
+	// reading), so the client waits for the ack briefly and falls back to refusing
+	// dials when none arrives.
+	TypeProxyWithdraw MessageType = 24
+
+	// TypeProxyWithdrawAck confirms or refuses a withdrawal.
+	TypeProxyWithdrawAck MessageType = 25
+
 	// TypeVisitorChallenge carries the nonce a visitor must prove knowledge of
 	// the proxy secret against, for auth_method = "nizk".
 	TypeVisitorChallenge MessageType = 16
@@ -469,6 +480,10 @@ type ProxySpec struct {
 	// on top of the server's own [server] allow_cidrs and deny_cidrs.
 	AllowCIDRs []string `json:"allow_cidrs,omitempty"`
 	DenyCIDRs  []string `json:"deny_cidrs,omitempty"`
+	// Subdomain publishes the proxy under subdomain "." [server].subdomain_host
+	// on the server, next to any custom domains. The server composes and validates
+	// the full name at registration.
+	Subdomain string `json:"subdomain,omitempty"`
 	// ProxyProtocol asks the server to prepend a PROXY protocol v1 header with
 	// the visitor's addresses to the stream the local service receives. "v1" or
 	// empty. Older servers ignore the field and simply send no header.
@@ -623,6 +638,20 @@ type DataOpenAck struct {
 }
 
 // ErrorPayload carries a human-readable failure.
+// ProxyWithdraw unpublishes one proxy by name. The server removes the tunnel
+// and its public endpoint; a re-registration brings it back.
+type ProxyWithdraw struct {
+	Name string `json:"name"`
+}
+
+// ProxyWithdrawAck answers a withdrawal: OK reports whether the proxy existed
+// and was removed, and Error carries the refusal when it was not.
+type ProxyWithdrawAck struct {
+	Name  string `json:"name"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
+
 type ErrorPayload struct {
 	Error string `json:"error"`
 }

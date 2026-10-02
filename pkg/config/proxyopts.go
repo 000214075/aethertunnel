@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -157,6 +158,11 @@ func (c *Config) validateProxyExtras(p ProxyConfig) []string {
 		problems = append(problems, fmt.Sprintf(
 			"proxy %q: proxy_protocol must be \"v1\" or empty, got %q", p.Name, p.ProxyProtocol))
 	}
+	if p.Subdomain != "" {
+		if err := ValidateDNSLabel(p.Subdomain); err != nil {
+			problems = append(problems, fmt.Sprintf("proxy %q: subdomain %v", p.Name, err))
+		}
+	}
 	switch p.Plugin {
 	case "":
 	case PluginStaticFile, PluginUnixSocket:
@@ -205,4 +211,39 @@ func (h *HealthCheckConfig) healthCheckDefaults() {
 	if h.Type == "http" && h.Path == "" {
 		h.Path = "/"
 	}
+}
+
+// ValidateDNSLabel checks one DNS label: lowercase letters, digits and hyphens,
+// 1-63 characters, no leading or trailing hyphen.
+func ValidateDNSLabel(label string) error {
+	if label == "" || len(label) > 63 {
+		return errors.New("a DNS label is 1-63 characters")
+	}
+	if strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+		return errors.New("a DNS label cannot start or end with a hyphen")
+	}
+	for _, r := range label {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return fmt.Errorf("%q is not a lowercase letter, digit or hyphen", string(r))
+		}
+	}
+	return nil
+}
+
+// ValidateDialVia accepts the [client].dial_via URLs: a SOCKS5 or HTTP CONNECT
+// proxy sitting between the client and the server.
+func ValidateDialVia(via string) error {
+	u, err := url.Parse(via)
+	if err != nil {
+		return err
+	}
+	switch u.Scheme {
+	case "socks5", "socks5h", "http", "https":
+	default:
+		return fmt.Errorf("scheme %q is not supported (use socks5, socks5h, http or https)", u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("a proxy host is required, got %q", via)
+	}
+	return nil
 }

@@ -887,6 +887,18 @@ func (s *Server) sessionLoop(session *Session) {
 				s.replyError(session, fmt.Sprintf("malformed register-proxy: %v", err))
 				continue
 			}
+			if spec.Subdomain != "" {
+				if s.cfg.Server.SubdomainHost == "" {
+					s.replyError(session, fmt.Sprintf("proxy %q: a subdomain needs [server].subdomain_host on the server", spec.Name))
+					continue
+				}
+				label := strings.ToLower(spec.Subdomain)
+				if err := config.ValidateDNSLabel(label); err != nil {
+					s.replyError(session, fmt.Sprintf("proxy %q: subdomain %q: %v", spec.Name, spec.Subdomain, err))
+					continue
+				}
+				spec.Domains = append(spec.Domains, label+"."+s.cfg.Server.SubdomainHost)
+			}
 			if spec.RemotePort != 0 && !s.remotePorts.Contains(spec.RemotePort) {
 				s.logger.Printf("client %s: proxy %q asks for remote port %d, which is outside allow_ports", session.ID, spec.Name, spec.RemotePort)
 				s.auditor.Record(AuditEvent{
@@ -917,6 +929,23 @@ func (s *Server) sessionLoop(session *Session) {
 				Detail:  fmt.Sprintf("type=%s local=%s remote_port=%d", spec.Type, spec.LocalAddr, spec.RemotePort),
 			})
 			s.sendProxyList(session)
+
+		case protocol.TypeProxyWithdraw:
+			var withdraw protocol.ProxyWithdraw
+			if err := json.Unmarshal(msg.Payload, &withdraw); err != nil {
+				s.replyError(session, fmt.Sprintf("malformed withdraw: %v", err))
+				continue
+			}
+			if _, getErr := s.tunnels.Get(withdraw.Name); getErr != nil {
+				ack := protocol.ProxyWithdrawAck{Name: withdraw.Name, OK: false, Error: "no such proxy"}
+				_ = session.Framer().WriteJSON(protocol.TypeProxyWithdrawAck, ack)
+				continue
+			}
+			s.tunnels.Unregister(withdraw.Name, session, "withdrawn by the client")
+			ack := protocol.ProxyWithdrawAck{Name: withdraw.Name, OK: true}
+			if err := session.Framer().WriteJSON(protocol.TypeProxyWithdrawAck, ack); err != nil {
+				s.logger.Printf("client %s: could not deliver the withdraw ack: %v", session.ID, err)
+			}
 
 		case protocol.TypeVPNPacket:
 			// A packet from the client goes to the transport the session's peer

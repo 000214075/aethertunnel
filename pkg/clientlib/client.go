@@ -71,6 +71,22 @@ type client struct {
 	staticFilesMu sync.Mutex
 	staticFiles   map[string]*staticFileServer
 
+	// controlFramer is the live session's framer; withdrawals and
+	// re-registrations write through it. specs mirrors what this client has
+	// registered, so a recovered health check can register the proxy again.
+	controlFramerMu sync.Mutex
+	controlFramer   *protocol.Framer
+	specsMu         sync.Mutex
+	specs           map[string]protocol.ProxySpec
+
+	// withdrawMu serializes withdrawals; withdrawWait receives the server's
+	// ack from the control reader. withdrawUnsupported is set when a server
+	// stays silent — an older release that ignores the frame — and the health
+	// check falls back to refusing dials instead.
+	withdrawMu          sync.Mutex
+	withdrawWait        chan protocol.ProxyWithdrawAck
+	withdrawUnsupported bool
+
 	// vpnShellOpen and vpnShellProtect are set by RunWithShell for a platform that
 	// supplies the layer-3 device itself. vpnShellOpen is called at the moment the
 	// session is up and the server's address assignment is known; vpnProtect runs
@@ -332,9 +348,12 @@ func (c *client) dialServer() (net.Conn, error) {
 	target := c.serverAddr()
 	var conn net.Conn
 	var err error
-	if c.tlsConfig == nil {
+	switch {
+	case c.cfg.Client.DialVia != "":
+		conn, err = c.dialServerVia(dialer, target)
+	case c.tlsConfig == nil:
 		conn, err = dialer.Dial("tcp", target)
-	} else {
+	default:
 		conn, err = tls.DialWithDialer(dialer, "tcp", target, c.tlsConfig)
 	}
 	if err != nil {
@@ -352,6 +371,32 @@ func (c *client) dialServer() (net.Conn, error) {
 		return disguised, nil
 	}
 	return conn, nil
+}
+
+// dialServerVia reaches the server through the dial_via intermediary. With TLS
+// enabled the tunnel's TLS rides on the proxied connection, so the handshake
+// runs here: tls.DialWithDialer only knows how to dial directly.
+func (c *client) dialServerVia(dialer *net.Dialer, target string) (net.Conn, error) {
+	timeout := time.Duration(c.cfg.Client.DialTimeoutSecs) * time.Second
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	conn, err := dialVia(ctx, c.cfg.Client.DialVia, dialer, target)
+	if err != nil {
+		return nil, err
+	}
+	if c.tlsConfig == nil {
+		return conn, nil
+	}
+	tlsConn := tls.Client(conn, c.tlsConfig)
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return tlsConn, nil
 }
 
 // attachIdentity adds the Ed25519 assertion the server checks when
@@ -502,9 +547,15 @@ func (c *client) runSession(ctx context.Context) error {
 
 	c.logger.Printf("connected to %s as session %s (server %s)", c.serverAddr(), response.Session, response.ServerVersion)
 
+	c.setControlFramer(framer)
+	c.resetHealthWithdrawals()
 	if err := c.registerProxies(framer); err != nil {
 		return err
 	}
+	// The re-withdrawal waits for the server's ack, which only the control
+	// reader below can deliver — this goroutine is about to become that
+	// reader, so the withdrawal runs on its own.
+	go c.reWithdrawUnhealthy()
 
 	// The server gave this session an address on its layer-3 subnet, so the tunnel
 	// runs for as long as the session does and stops with it.
@@ -552,6 +603,10 @@ func (c *client) runSession(ctx context.Context) error {
 			go c.servePunch(prepare)
 		case protocol.TypeProxyList:
 			c.logProxyList(msg.Payload)
+		case protocol.TypeProxyWithdrawAck:
+			var withdrawAck protocol.ProxyWithdrawAck
+			_ = json.Unmarshal(msg.Payload, &withdrawAck)
+			c.deliverWithdrawAck(withdrawAck)
 		case protocol.TypeError:
 			var payload protocol.ErrorPayload
 			_ = json.Unmarshal(msg.Payload, &payload)
@@ -650,6 +705,29 @@ func (c *client) startVPN(ctx context.Context, framer *protocol.Framer, response
 	}, nil
 }
 
+// proxySpec builds the registration payload for one configured proxy. The
+// visitor filters and, for a socks5 tunnel, the ranges it may dial travel
+// with the registration, because both are properties of this client rather
+// than of the server's configuration.
+func proxySpec(proxy config.ProxyConfig) protocol.ProxySpec {
+	return protocol.ProxySpec{
+		Name:          proxy.Name,
+		Type:          proxy.Type,
+		LocalAddr:     proxy.LocalAddr(),
+		RemotePort:    proxy.RemotePort,
+		Domains:       proxy.Domains,
+		ProxyProtocol: proxy.ProxyProtocol,
+		Subdomain:     proxy.Subdomain,
+		SecretKey:     proxy.SecretKey,
+		AuthMethod:    proxy.AuthMethod,
+		Group:         proxy.Group,
+		Multipath:     proxy.Multipath,
+		AllowCIDRs:    proxy.AllowCIDRs,
+		DenyCIDRs:     proxy.DenyCIDRs,
+		AllowTargets:  proxy.AllowTargets,
+	}
+}
+
 // registerProxies publishes every configured tunnel on the current session.
 func (c *client) registerProxies(framer *protocol.Framer) error {
 	if len(c.cfg.Proxies) == 0 {
@@ -657,24 +735,8 @@ func (c *client) registerProxies(framer *protocol.Framer) error {
 		return nil
 	}
 	for _, proxy := range c.cfg.Proxies {
-		spec := protocol.ProxySpec{
-			Name:          proxy.Name,
-			Type:          proxy.Type,
-			LocalAddr:     proxy.LocalAddr(),
-			RemotePort:    proxy.RemotePort,
-			Domains:       proxy.Domains,
-			ProxyProtocol: proxy.ProxyProtocol,
-			SecretKey:     proxy.SecretKey,
-			AuthMethod:    proxy.AuthMethod,
-			Group:         proxy.Group,
-			Multipath:     proxy.Multipath,
-			// The visitor filters and, for a socks5 tunnel, the ranges it may
-			// dial travel with the registration, because both are properties of
-			// this client rather than of the server's configuration.
-			AllowCIDRs:   proxy.AllowCIDRs,
-			DenyCIDRs:    proxy.DenyCIDRs,
-			AllowTargets: proxy.AllowTargets,
-		}
+		spec := proxySpec(proxy)
+		c.rememberSpec(spec)
 		if err := framer.WriteJSON(protocol.TypeRegisterProxy, spec); err != nil {
 			return fmt.Errorf("register proxy %q: %w", proxy.Name, err)
 		}

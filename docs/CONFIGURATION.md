@@ -54,7 +54,7 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `https_port` | int | 0 | `https` 代理的共享监听端口；非 0 时下面两项必须同时设置 |
 | `https_cert_file` | string | 空 | 共享 HTTPS 监听的证书 |
 | `https_key_file` | string | 空 | 共享 HTTPS 监听的私钥 |
-| `subdomain_host` | string | 空 | 设置后，没有显式 `domains` 的 `http`/`https` 代理以 `<代理名>.<该值>` 注册；为空时这类代理在注册阶段被服务端拒绝 |
+| `subdomain_host` | string | 空 | 子域名托管的域名后缀。设置后，没有显式 `domains` 的 `http`/`https` 代理以 `<代理名>.<该值>` 注册；客户端用 `subdomain` 声明标签时以 `<标签>.<该值>` 注册；为空时这类代理在注册阶段被服务端拒绝 |
 | `p2p_port` | int | 0 | `xtcp` 打洞的 UDP 会合端口，0 表示不支持打洞（xtcp 走中继）。与 `dht.listen_addr` 撞在同一个 UDP 地址上时被拒绝 |
 | `load_balance` | string | `round-robin` | 代理池策略：`round-robin` `random` `latency` `failover` `adaptive` `bandit`。只对声明了 `group` 的代理有影响。`bandit` 是**在线学习**的多臂老虎机（UCB1）：每条流按应答速度记奖励（立即回答记 1，越慢越小），据此估计各成员的平均奖励并加一个探索项来选择成员；没有离线训练、没有模型文件，学习只来自这个池子实际服务过的流。每第 20 次选择会去测观测最少的成员，因此曾经很慢的成员在恢复后仍会被重新测量 |
 
@@ -69,6 +69,7 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `heartbeat_seconds` | int | 30 | 心跳间隔的**回退值**：服务端在会话建立时把自己的 `[server].heartbeat_seconds` 下发下来，客户端按它发心跳（服务端才是"连续 3 次未收到即断开"的一方），因此正常会话里本项不生效；服务端没有下发时（旧版或第三方服务端）才用它。与下发的值不同时会在连接时报告一行。负数被拒绝 |
 | `dial_timeout_seconds` | int | 10 | 连接服务端、等待 `DataOpenAck`、连接本地服务的超时。负数被拒绝（此前负值等于"立即超时"，客户端永远连不上） |
 | `idle_timeout_seconds` | int | 300 | 单条隧道流的空闲上限：超过这段时间没有字节流动就断开。适用于服务端转发的流、访客的本地监听连接，以及打洞后的直连路径。负数被拒绝 |
+| `dial_via` | string | 空 | 经一个中转代理连接服务器：`socks5://user:pass@10.0.0.2:1080`、`socks5h://proxy.lan`、`http://proxy.lan:3128`、`https://…`。直连被封或计费时用它；隧道自身的 TLS 与加密全部加在中转之上，中转只看到不透明的 TLS 形状流量。留空直连 |
 
 ## `[[proxies]]`（客户端，可重复）
 
@@ -80,6 +81,7 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `local_port` | int | 必填 | 本地服务端口（1–65535） |
 | `remote_port` | int | 0 | 服务器上对外开放的端口。`tcp`/`udp` 用它；`http`/`https` 与私有类型必须为 0。同一客户端里两个**同协议**的代理不能请求同一个端口（先注册的绑住它，第二个会被拒绝），`tcp` 与 `udp` 用同一个端口号是允许的：它们绑的是不同协议的两个套接字 |
 | `domains` | []string | 空 | `http`/`https` 的访问域名：精确域名、`*.通配`，或留空后由服务端 `subdomain_host` 拼出 `<代理名>.<该值>`。留空时客户端只给出警告，因为该设置属于服务端 |
+| `subdomain` | string | 空 | 子域名托管：客户端只声明一个 DNS 标签（小写字母/数字/连字符，1–63 字符），服务端把它拼成 `<标签>.<subdomain_host>` 并按该域名路由。声明了 `subdomain` 的代理，代理名不再参与域名拼接。服务端没有 `subdomain_host` 时拒绝注册 |
 | `secret_key` | string | 空 | 私有类型必填，也是访客侧的凭据 |
 | `auth_method` | string | `secret` | `secret` 直接比对；`nizk` 用 Schnorr 证明，secret 不出现在线上；`snark` 用 Groth16 的 zk-SNARK 证明（电路与可信设置说明见 `pkg/snarkauth`），secret 不出现在线上且证明绑定本次挑战 |
 | `group` | string | 空 | 填入同一名字的多个客户端组成代理池 |
@@ -93,7 +95,7 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `plugin` | string | 空 | 用客户端自带的组件代替本地服务：`static_file`（把 `plugin_local_path` 目录以 HTTP 发布）、`unix_domain_socket`（拨 `plugin_local_path` 的套接字） |
 | `plugin_local_path` | string | 空 | 插件用的本地路径，`plugin` 非空时必填 |
 | `plugin_http_user` / `plugin_http_password` | string | 空 | `static_file` 的 HTTP basic auth；两者任一非空即启用 |
-| `health_check` | 表 | 空 | 本地服务健康检查：`type = "tcp"` 或 `"http"`，`interval_s`（默认 10）、`timeout_s`（默认 3）、`max_failed`（默认 3）、`path`（仅 http，默认 `/`）。连续失败达到 `max_failed` 后，该代理拒绝拨号直到探活恢复；公开端点保持注册（协议没有注销消息，这是新旧版本混跑的取舍），见 `docs/VS-FRP.md` |
+| `health_check` | 表 | 空 | 本地服务健康检查：`type = "tcp"` 或 `"http"`，`interval_s`（默认 10）、`timeout_s`（默认 3）、`max_failed`（默认 3）、`path`（仅 http，默认 `/`）。连续失败达到 `max_failed` 后，客户端向服务端注销该代理（协议消息 `ProxyWithdraw`），公开端点随之关闭；探活恢复后自动重新注册。旧版服务端不认识注销消息，客户端回退为拒绝拨号、代理保持注册，见 `docs/VS-FRP.md` |
 
 `socks5` 没有本地服务，因此 `local_ip` 与 `local_port` 会被忽略并给出警告，必须设置
 `remote_port`。它支持 TCP `CONNECT` 与 UDP `ASSOCIATE`：前者按访客指定的目标拨号，后者在
@@ -123,7 +125,7 @@ SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` �
 指出是服务端策略拒绝的。
 
 描述客户端自身服务的键（`local_ip`、`local_port`、`group`、`multipath`、`secret_key`、
-`auth_method`、`allow_targets`、`domains`、`bandwidth`、`proxy_protocol`、`remote_ports`、
+`auth_method`、`allow_targets`、`domains`、`subdomain`、`bandwidth`、`proxy_protocol`、`remote_ports`、
 `plugin`、`health_check`）在服务端配置里会加载成功但不生效，`--check` 会逐条
 输出警告。因此同一份 `[[proxies]]` 列表可以放在两种角色的配置里，只是含义不同。
 
