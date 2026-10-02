@@ -263,7 +263,7 @@ jobs:
           [ "$ok" = 1 ] || {
             echo "the tunnel session never came up"
             "$adb" shell dumpsys activity services io.github.aethertunnel.app | head -30
-            "$adb" logcat -d | grep -iE 'GoLog|aethertunnel' | tail -60
+            "$adb" logcat -d -s GoLog:* AetherTunnel:* | tail -120
             tail -40 /tmp/server.log
             exit 1
           }
