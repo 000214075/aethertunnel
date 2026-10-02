@@ -121,19 +121,25 @@ jobs:
           # removes the ordering race that lost these two files when the upload
           # lived in the mobile workflow and both sides recreated the release.
           tag="${{ github.ref_name }}"
+          sha="${{ github.sha }}"
           row=""
           run_id=""
+          # Match on the commit, not just the branch: an older mobile run for
+          # the same tag name would otherwise satisfy the wait and its artifacts
+          # are not this release's.
           for _ in $(seq 1 120); do
-            row=$(gh run list --workflow=mobile-app.yml --branch "$tag" --limit 1 \
-              --json databaseId,status,conclusion \
-              -q '.[0] | "\(.databaseId) \(.status)/\(.conclusion // "pending")"' 2>/dev/null || echo none)
+            row=$(gh run list --workflow=mobile-app.yml --branch "$tag" --limit 10 \
+              --json databaseId,headSha,status,conclusion \
+              -q --arg sha "$sha" \
+              '[.[] | select(.headSha == $sha)] | if length == 0 then "none" else (.[0] | "\(.databaseId) \(.status)/\(.conclusion // "pending")") end' \
+              2>/dev/null || echo none)
             case "$row" in
               *"completed/success"*) run_id=${row%% *}; break ;;
               *"completed/"*) echo "the mobile-app run did not go green: $row"; exit 1 ;;
             esac
             sleep 10
           done
-          [ -n "$run_id" ] || { echo "the mobile-app run never finished: $row"; exit 1; }
+          [ -n "$run_id" ] || { echo "no mobile-app run for this commit ever finished: $row"; exit 1; }
           gh run download "$run_id" -n app-debug-apk -D dist/mobile
           gh run download "$run_id" -n mobile-aar -D dist/mobile
           gh release upload "$tag" --clobber \
