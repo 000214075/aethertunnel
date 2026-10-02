@@ -46,7 +46,7 @@ func TestAProxyWithoutAHealthCheckIsAlwaysHealthy(t *testing.T) {
 }
 
 func TestDialForProxyRefusesAnUnhealthyService(t *testing.T) {
-	c := &client{logger: log.New(io.Discard, "", 0)}
+	c := &client{cfg: &config.Config{}, logger: log.New(io.Discard, "", 0)}
 	unhealthy := newHealthState(1)
 	unhealthy.record(false)
 	c.setHealthState("db", unhealthy)
@@ -71,7 +71,7 @@ func TestStaticFilePluginServesTheDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	proxy := config.ProxyConfig{Name: "site", Type: "tcp", Plugin: config.PluginStaticFile, PluginLocalPath: dir}
-	c := &client{logger: log.New(io.Discard, "", 0)}
+	c := &client{cfg: &config.Config{}, logger: log.New(io.Discard, "", 0)}
 
 	fetch := func() string {
 		conn, err := c.dialForProxy(proxy, "")
@@ -112,7 +112,7 @@ func TestStaticFilePluginHonorsBasicAuth(t *testing.T) {
 		Name: "vault", Type: "tcp", Plugin: config.PluginStaticFile, PluginLocalPath: dir,
 		PluginHTTPUser: "ada", PluginHTTPPassword: "lovelace",
 	}
-	c := &client{logger: log.New(io.Discard, "", 0)}
+	c := &client{cfg: &config.Config{}, logger: log.New(io.Discard, "", 0)}
 
 	do := func(auth string) int {
 		conn, err := c.dialForProxy(proxy, "")
@@ -164,7 +164,7 @@ func TestUnixSocketPluginDialsTheSocket(t *testing.T) {
 		}
 	}()
 
-	c := &client{logger: log.New(io.Discard, "", 0)}
+	c := &client{cfg: &config.Config{}, logger: log.New(io.Discard, "", 0)}
 	proxy := config.ProxyConfig{Name: "uds", Type: "tcp", Plugin: config.PluginUnixSocket, PluginLocalPath: sock}
 	conn, err := c.dialForPlugin(proxy)
 	if err != nil {

@@ -906,11 +906,10 @@ func (c *client) serveStream(session string, request protocol.DataRequest) {
 // configuration allows; every other type is dialled at its configured local
 // service.
 func (c *client) dialForProxy(proxy config.ProxyConfig, target string) (net.Conn, error) {
-	dialTimeout := time.Duration(c.cfg.Client.DialTimeoutSecs) * time.Second
-
 	if proxy.Plugin != "" {
 		return c.dialForPlugin(proxy)
 	}
+	dialTimeout := time.Duration(c.cfg.Client.DialTimeoutSecs) * time.Second
 
 	if proxy.Type != config.ProxyTypeSOCKS {
 		conn, err := net.DialTimeout("tcp", proxy.LocalAddr(), dialTimeout)
