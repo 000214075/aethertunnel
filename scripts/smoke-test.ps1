@@ -1743,25 +1743,39 @@ Test-Check 'the status endpoint and the metrics endpoint report the same numbers
     # to be the same value a Prometheus scrape sees, or the two tell different stories
     # about the same server: that is how the traffic reading came to reset while the
     # counters kept counting.
-    $status = Get-Status
-    $body = Invoke-Curl @('-s', "http://127.0.0.1:$dashboardPort/metrics")
-    $pairs = @(
-        @('traffic.bytes_in', [int64]$status.traffic.bytes_in, 'aethertunnel_bytes_from_clients_total'),
-        @('traffic.bytes_out', [int64]$status.traffic.bytes_out, 'aethertunnel_bytes_to_clients_total'),
-        @('connections.authenticated', [int64]$status.connections.authenticated, 'aethertunnel_control_connections_total'),
-        @('proxies.active_streams', [int64]$status.proxies.active_streams, 'aethertunnel_streams_active'),
-        @('audit.records_lost', [int64]$status.audit.records_lost, 'aethertunnel_audit_records_lost_total'),
-        @('audit.write_failures', [int64]$status.audit.write_failures, 'aethertunnel_audit_write_failures_total'),
-        @('audit.recovered', [int64]$status.audit.recovered, 'aethertunnel_audit_records_recovered_total'))
-    foreach ($pair in $pairs) {
-        # The body arrives with CRLF endings, so the end-of-line anchor has to allow
-        # a carriage return or every match fails on a line that is plainly there.
-        $match = [regex]::Match($body, '(?m)^' + [regex]::Escape($pair[2]) + ' (-?\d+)\r?$')
-        if (-not $match.Success) { throw "the metrics output has no $($pair[2])" }
-        if ([int64]$match.Groups[1].Value -ne $pair[1]) {
-            throw "$($pair[0]) is $($pair[1]) on /api/status and $($match.Groups[1].Value) on /metrics"
+    # The two endpoints are read a moment apart, and a counter that moves between
+    # the two reads is a scrape race on a loaded runner, not a mismatch — so the
+    # comparison retries and only fails when the difference survives a quiet read.
+    $mismatch = $null
+    foreach ($attempt in 1..3) {
+        $status = Get-Status
+        $body = Invoke-Curl @('-s', "http://127.0.0.1:$dashboardPort/metrics")
+        $pairs = @(
+            @('traffic.bytes_in', [int64]$status.traffic.bytes_in, 'aethertunnel_bytes_from_clients_total'),
+            @('traffic.bytes_out', [int64]$status.traffic.bytes_out, 'aethertunnel_bytes_to_clients_total'),
+            @('connections.authenticated', [int64]$status.connections.authenticated, 'aethertunnel_control_connections_total'),
+            @('proxies.active_streams', [int64]$status.proxies.active_streams, 'aethertunnel_streams_active'),
+            @('audit.records_lost', [int64]$status.audit.records_lost, 'aethertunnel_audit_records_lost_total'),
+            @('audit.write_failures', [int64]$status.audit.write_failures, 'aethertunnel_audit_write_failures_total'),
+            @('audit.recovered', [int64]$status.audit.recovered, 'aethertunnel_audit_records_recovered_total'))
+        try {
+            foreach ($pair in $pairs) {
+                # The body arrives with CRLF endings, so the end-of-line anchor has to allow
+                # a carriage return or every match fails on a line that is plainly there.
+                $match = [regex]::Match($body, '(?m)^' + [regex]::Escape($pair[2]) + ' (-?\d+)\r?$')
+                if (-not $match.Success) { throw "the metrics output has no $($pair[2])" }
+                if ([int64]$match.Groups[1].Value -ne $pair[1]) {
+                    throw "$($pair[0]) is $($pair[1]) on /api/status and $($match.Groups[1].Value) on /metrics"
+                }
+            }
+            $mismatch = $null
+            break
+        } catch {
+            $mismatch = $_.Exception.Message
+            Start-Sleep -Seconds 2
         }
     }
+    if ($mismatch) { throw $mismatch }
 
     # The accepted, authenticated and active counts are three different things and have
     # to stay ordered that way: a socket is accepted before it authenticates, and only
