@@ -116,6 +116,34 @@ jobs:
             server.toml.example client.toml.example
           echo "released $tag"
 
+          # The Android artifacts are built by the mobile-app workflow's run on
+          # this same tag. Waiting here — inside the job that owns the release —
+          # removes the ordering race that lost these two files when the upload
+          # lived in the mobile workflow and both sides recreated the release.
+          tag="${{ github.ref_name }}"
+          row=""
+          run_id=""
+          for _ in $(seq 1 120); do
+            row=$(gh run list --workflow=mobile-app.yml --branch "$tag" --limit 1 \
+              --json databaseId,status,conclusion \
+              -q '.[0] | "\(.databaseId) \(.status)/\(.conclusion // "pending")"' 2>/dev/null || echo none)
+            case "$row" in
+              *"completed/success"*) run_id=${row%% *}; break ;;
+              *"completed/"*) echo "the mobile-app run did not go green: $row"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          [ -n "$run_id" ] || { echo "the mobile-app run never finished: $row"; exit 1; }
+          gh run download "$run_id" -n app-debug-apk -D dist/mobile
+          gh run download "$run_id" -n mobile-aar -D dist/mobile
+          gh release upload "$tag" --clobber \
+            dist/mobile/aethertunnel-mobile-android.aar \
+            dist/mobile/aethertunnel-app-android-arm64-debug.apk
+          names=$(gh release view "$tag" --json assets -q '.assets[].name')
+          echo "$names" | grep -F aethertunnel-mobile-android.aar
+          echo "$names" | grep -F aethertunnel-app-android-arm64-debug.apk
+          echo "the release holds $(echo "$names" | grep -c .) assets"
+
   # Checks the release page itself, from a network that can download it: every
   # published file against SHA256SUMS, the version the published binaries report, the
   # example configurations shipped beside them, and then the whole operations script

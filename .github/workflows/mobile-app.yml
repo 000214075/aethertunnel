@@ -107,14 +107,23 @@ jobs:
           cp "$apk" aethertunnel-app-android-arm64-debug.apk
           ls -l aethertunnel-mobile-android.aar aethertunnel-app-android-arm64-debug.apk
 
-      - name: hand the APK to the e2e job
+      - name: hand the APK to the e2e job and the release job
         uses: actions/upload-artifact@v4
         with:
           name: app-debug-apk
           path: aethertunnel-app-android-arm64-debug.apk
           retention-days: 3
 
-      - name: upload to the release
+      - name: hand the AAR to the release job
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-aar
+          path: aethertunnel-mobile-android.aar
+          retention-days: 3
+
+      # The Release workflow folds both files into the release after it creates
+      # it; uploading from here raced the release's own delete-and-recreate and
+      # lost the files (see the release job in release.yml).
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
