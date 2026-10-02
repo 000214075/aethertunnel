@@ -252,7 +252,9 @@ jobs:
           "$adb" shell run-as io.github.aethertunnel.app mkdir -p files
           "$adb" shell run-as io.github.aethertunnel.app cp -f /data/local/tmp/client.toml files/client.toml
           "$adb" shell appops set io.github.aethertunnel.app ACTIVATE_VPN allow
-          "$adb" shell am startservice -n io.github.aethertunnel.app/.TunnelVpnService
+          # The service is not exported, so the shell cannot start it; the
+          # activity starts it, and with appops set the consent dialog is gone.
+          "$adb" shell am start -n io.github.aethertunnel.app/.MainActivity --ez start_vpn true
           ok=0
           for i in $(seq 1 60); do
             if "$adb" logcat -d | grep -q 'tunnel interface'; then ok=1; break; fi

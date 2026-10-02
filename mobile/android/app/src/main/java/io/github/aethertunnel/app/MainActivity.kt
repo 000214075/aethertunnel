@@ -135,6 +135,13 @@ class MainActivity : Activity() {
             )
         }
         setContentView(root)
+
+        // CI mode: started with --ez start_vpn true, the activity hands the VPN
+        // consent it was granted to the service, which reads its configuration
+        // from the app's files directory instead of the text box.
+        if (intent?.getBooleanExtra(EXTRA_START_VPN, false) == true) {
+            startVpn(fromIntent = true)
+        }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -148,15 +155,16 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun startVpn() {
+    private fun startVpn(fromIntent: Boolean = false) {
         running = true
         val full = fullTunnelBox.isChecked
         logLine(if (full) "starting the VPN service (full tunnel)" else "starting the VPN service (subnet)")
-        startService(
-            Intent(this, TunnelVpnService::class.java)
-                .putExtra(TunnelVpnService.EXTRA_CONFIG, configView.text.toString())
-                .putExtra(TunnelVpnService.EXTRA_FULL_TUNNEL, full)
-        )
+        val service = Intent(this, TunnelVpnService::class.java)
+            .putExtra(TunnelVpnService.EXTRA_FULL_TUNNEL, full)
+        if (!fromIntent) {
+            service.putExtra(TunnelVpnService.EXTRA_CONFIG, configView.text.toString())
+        }
+        startService(service)
     }
 
     private fun weight(weight: Float) =
@@ -168,6 +176,7 @@ class MainActivity : Activity() {
 
     private companion object {
         const val REQUEST_VPN = 41
+        const val EXTRA_START_VPN = "start_vpn"
         const val SAMPLE = "[client]\n" +
             "server_addr = \"127.0.0.1:7001\"\n" +
             "auth_token = \"change-me-16-random-characters\"\n"
