@@ -3,6 +3,7 @@ package io.github.aethertunnel.app
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Typeface
+import android.util.Log
 import android.net.VpnService
 import android.os.Bundle
 import android.view.Gravity
@@ -149,6 +150,7 @@ class MainActivity : Activity() {
     // UI up, the second carries start_vpn.
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        Log.i(TAG, "onNewIntent start_vpn=${intent.getBooleanExtra(EXTRA_START_VPN, false)}")
         if (intent.getBooleanExtra(EXTRA_START_VPN, false)) {
             startVpn(fromIntent = true)
         }
@@ -168,6 +170,7 @@ class MainActivity : Activity() {
     private fun startVpn(fromIntent: Boolean = false) {
         running = true
         val full = fullTunnelBox.isChecked
+        Log.i(TAG, "startVpn fromIntent=$fromIntent full=$full")
         logLine(if (full) "starting the VPN service (full tunnel)" else "starting the VPN service (subnet)")
         val service = Intent(this, TunnelVpnService::class.java)
             .putExtra(TunnelVpnService.EXTRA_FULL_TUNNEL, full)
@@ -185,6 +188,7 @@ class MainActivity : Activity() {
     }
 
     private companion object {
+        private const val TAG = "AetherTunnel"
         const val REQUEST_VPN = 41
         const val EXTRA_START_VPN = "start_vpn"
         const val SAMPLE = "[client]\n" +

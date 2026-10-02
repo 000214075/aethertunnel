@@ -33,8 +33,10 @@ class TunnelVpnService : VpnService(), PlatformVPN {
             }
         }
         if (config.isNullOrEmpty() || worker != null) {
+            Log.i(TAG, "service not started: config empty=${config.isNullOrEmpty()} worker running=${worker != null}")
             return START_NOT_STICKY
         }
+        Log.i(TAG, "service starting: config ${config.length} chars, fullTunnel=$fullTunnel")
         fullTunnel = intent?.getBooleanExtra(EXTRA_FULL_TUNNEL, false) ?: false
         worker = Thread {
             try {
