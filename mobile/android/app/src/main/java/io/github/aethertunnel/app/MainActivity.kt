@@ -144,6 +144,16 @@ class MainActivity : Activity() {
         }
     }
 
+    // A second launch delivers its intent here when the activity is already on
+    // top — which is exactly how CI starts the VPN: the first launch sets the
+    // UI up, the second carries start_vpn.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_START_VPN, false)) {
+            startVpn(fromIntent = true)
+        }
+    }
+
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_VPN) {
