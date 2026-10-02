@@ -249,7 +249,7 @@ jobs:
           enabled = true
           EOF
           "$adb" push /tmp/client.toml /data/local/tmp/client.toml
-          "$adb" shell run-as io.github.aethertunnel.app sh -c 'cp /data/local/tmp/client.toml files/client.toml'
+          "$adb" shell run-as io.github.aethertunnel.app cp -f /data/local/tmp/client.toml files/client.toml
           "$adb" shell appops set io.github.aethertunnel.app ACTIVATE_VPN allow
           "$adb" shell am startservice -n io.github.aethertunnel.app/.TunnelVpnService
           ok=0
