@@ -451,6 +451,10 @@ const (
 	// and the client dials it, which is what lets a machine that cannot create a
 	// tun device route TCP traffic through the tunnel.
 	ProxyTypeSOCKS = "socks5"
+	// ProxyTypeTCPMux rides the server's HTTP CONNECT multiplexer: a visitor
+	// sends a CONNECT whose authority names the hostname, and the bytes after
+	// the 200 answer belong to the tunnel. One port serves every tcpmux proxy.
+	ProxyTypeTCPMux = "tcpmux"
 )
 
 // ProxySpec describes a tunnel a client wants to publish.
@@ -484,6 +488,15 @@ type ProxySpec struct {
 	// on the server, next to any custom domains. The server composes and validates
 	// the full name at registration.
 	Subdomain string `json:"subdomain,omitempty"`
+	// HTTPUser and HTTPPassword guard an http/https hostname with HTTP basic
+	// auth: the server checks the visitor's Authorization header before any
+	// byte is relayed and answers a mismatch with 401. Older servers ignore
+	// the fields and publish the hostname unguarded.
+	HTTPUser     string `json:"http_user,omitempty"`
+	HTTPPassword string `json:"http_password,omitempty"`
+	// Multiplexer selects the shared entry a tcpmux proxy rides. "httpconnect"
+	// is the only one.
+	Multiplexer string `json:"multiplexer,omitempty"`
 	// ProxyProtocol asks the server to prepend a PROXY protocol v1 header with
 	// the visitor's addresses to the stream the local service receives. "v1" or
 	// empty. Older servers ignore the field and simply send no header.

@@ -64,6 +64,7 @@ type Server struct {
 	auditor   *Auditor
 	ledger    *ledgerStore
 	vhost     *vhostSet
+	tcpmux    *tcpmuxSet
 	p2p       *p2pRendezvous
 	directory *directory
 	vpn       *vpnService
@@ -170,6 +171,8 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 
 	s.vhost = newVhostSet(cfg, logger, s.metrics)
 	s.tunnels.vhost = s.vhost
+	s.tcpmux = newTCPMuxSet(cfg, logger)
+	s.tunnels.tcpmux = s.tcpmux
 	if cfg.Server.P2PPort > 0 {
 		s.p2p = newP2PRendezvous(logger)
 		s.tunnels.p2p = s.p2p
@@ -282,6 +285,11 @@ func (s *Server) Run(ctx context.Context) error {
 	s.logger.Printf("max connections: %d, heartbeat: %ds, idle timeout: %ds",
 		s.cfg.Server.MaxConnections, s.cfg.Server.HeartbeatSeconds, s.cfg.Server.ReadTimeoutSecs)
 
+	if s.tcpmux != nil {
+		if err := s.tcpmux.start(); err != nil {
+			return err
+		}
+	}
 	if err := s.vhost.start(); err != nil {
 		_ = listener.Close()
 		return err
@@ -292,6 +300,9 @@ func (s *Server) Run(ctx context.Context) error {
 	if s.p2p != nil {
 		if err := s.p2p.Start(s.cfg.P2PAddr()); err != nil {
 			s.vhost.stop()
+			if s.tcpmux != nil {
+				s.tcpmux.stop()
+			}
 			_ = listener.Close()
 			return err
 		}
@@ -453,6 +464,9 @@ func (s *Server) Shutdown(reason string) {
 		_ = listener.Close()
 	}
 	s.vhost.stop()
+	if s.tcpmux != nil {
+		s.tcpmux.stop()
+	}
 	if s.p2p != nil {
 		_ = s.p2p.Close()
 	}

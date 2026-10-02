@@ -163,6 +163,12 @@ func (c *Config) validateProxyExtras(p ProxyConfig) []string {
 			problems = append(problems, fmt.Sprintf("proxy %q: subdomain %v", p.Name, err))
 		}
 	}
+	if (p.HTTPUser != "" || p.HTTPPassword != "") &&
+		p.Type != ProxyTypeHTTP && p.Type != ProxyTypeHTTPS {
+		problems = append(problems, fmt.Sprintf(
+			"proxy %q: http_user and http_password guard http and https hostnames, not %s",
+			p.Name, p.Type))
+	}
 	switch p.Plugin {
 	case "":
 	case PluginStaticFile, PluginUnixSocket:

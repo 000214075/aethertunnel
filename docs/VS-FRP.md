@@ -27,6 +27,9 @@ executable checks in this repository, not at marketing.
 | 健康检查（本地服务探活） | ✅ 失败自动摘除 | ✅ 失败自动摘除 | 摘除撤下公开端点，恢复后重新发布；旧服务端回退为拨号拒绝 |
 | 子域名托管 | ✅ subdomain_host | ✅ `subdomain` + `[server].subdomain_host` | 客户端只声明一个 DNS 标签，服务端拼全名并按域名路由 |
 | 经代理连服务器 | ✅ transport.dialServerProxy | ✅ `dial_via` | socks5/socks5h/http/https；隧道自身的 TLS 加在代理之上 |
+| http/https 基本认证 | ✅ httpUser/httpPassword | ✅ `http_user`/`http_password` | 服务端在转发前检查，失败回 401 并带上挑战头 |
+| tcpmux（HTTP CONNECT 多路复用） | ✅ | ✅ | 一个端口按 CONNECT 的主机名分流任意多条 TCP 隧道 |
+| 热重载 | ✅ 管理 API / SIGHUP | ✅ SIGHUP | 重读配置并按名增删代理、重绑访客；会话级设置改动提示重启后生效 |
 | 客户端插件：static_file | ✅ | ✅ | 含 HTTP basic auth |
 | 客户端插件：unix_domain_socket | ✅ | ✅ | |
 | socks5 出口 | ✅ 客户端插件 | ✅ 服务端代理类型 + allow_targets | 语义不同，见下 |
@@ -51,12 +54,12 @@ executable checks in this repository, not at marketing.
 
 - **frp 的 use_compression**：按代理压缩需要协议协商，混跑新旧两端时语义复杂；
   AetherTunnel 的隧道默认全量加密，压缩的收益场景（明文文本）留给后续带版本协商的实现。
-- **frp 的 tcpmux / http2https 等插件型入口**：尚未实现；`static_file` 与
-  `unix_domain_socket` 是第一批落地的插件。
-- **frp 的 use_compression 之外的热重载（SIGHUP）**：尚未实现；改配置仍需重启客户端。
-  进程内已具备按名注销/重注册的协议原语，热重载在其上做差异增删即可。
-- **OIDC 认证**：未实现；`auth_method` 的三种零知识/签名方案覆盖了 frp 用 token+sk
-  覆盖的场景。
+- **frp 的 use_compression**：按代理压缩在两端数据路径上各加一层流式压缩，混跑新旧
+  两端时需要协商确认（本项目的隧道默认全量加密，压缩的收益场景是明文文本）；尚未实现。
+- **frp 的 http2https、https2http 等协议转换插件**：尚未实现；`static_file` 与
+  `unix_domain_socket` 是已落地的插件。
+- **frp 的 OIDC 认证**：未实现；`auth_method` 的三种零知识/签名方案覆盖了 frp 用
+  token+sk 覆盖的场景。
 
 ## 一句话 · In one sentence
 

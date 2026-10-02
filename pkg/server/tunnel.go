@@ -372,6 +372,7 @@ type TunnelManager struct {
 	policies *proxyPolicies
 
 	vhost     *vhostSet
+	tcpmux    *tcpmuxSet
 	p2p       *p2pRendezvous
 	directory *directory
 }
@@ -418,6 +419,18 @@ func (m *TunnelManager) Register(session *Session, spec protocol.ProxySpec) (*Tu
 		// The list is what bounds the endpoint, so a registration that leaves it
 		// out is refused rather than published as an exit for everything.
 		return nil, errors.New("a socks5 tunnel needs allow_targets: it names the ranges the client may dial")
+	}
+	if spec.Type == protocol.ProxyTypeTCPMux {
+		if spec.Multiplexer != config.MultiplexerHTTPConnect {
+			return nil, fmt.Errorf("proxy %q: multiplexer %q is not supported (the only multiplexer is %q)",
+				spec.Name, spec.Multiplexer, config.MultiplexerHTTPConnect)
+		}
+		if spec.RemotePort != 0 {
+			return nil, fmt.Errorf("proxy %q: tcpmux is routed by hostname and must not open a public port", spec.Name)
+		}
+		if len(spec.Domains) == 0 {
+			return nil, fmt.Errorf("proxy %q: a tcpmux tunnel needs domains (or subdomain on a server with subdomain_host)", spec.Name)
+		}
 	}
 	for _, cidr := range append(append([]string{}, spec.AllowCIDRs...), spec.DenyCIDRs...) {
 		if _, _, err := net.ParseCIDR(strings.TrimSpace(cidr)); err != nil {

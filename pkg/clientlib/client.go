@@ -87,6 +87,27 @@ type client struct {
 	withdrawWait        chan protocol.ProxyWithdrawAck
 	withdrawUnsupported bool
 
+	// baseCtx is the client's lifetime; resources a reload creates (visitor
+	// listeners, health probes) hang off children of it so a reload can stop
+	// them one by one without touching the session.
+	baseCtx context.Context
+
+	// proxies and visitors are the dispatch lists a reload swaps: findProxy,
+	// the health checks and the visitor listeners read them instead of the
+	// frozen session-level configuration.
+	proxies   []config.ProxyConfig
+	visitors  []config.VisitorConfig
+	proxiesMu sync.RWMutex
+
+	// visitorsMu also guards the context the visitor listeners run under; a
+	// reload that changes the set cancels it and starts the new listeners.
+	visitorsMu     sync.Mutex
+	visitorsCtx    context.Context
+	visitorsCancel context.CancelFunc
+
+	healthStopsMu sync.Mutex
+	healthStops   map[string]context.CancelFunc
+
 	// vpnShellOpen and vpnShellProtect are set by RunWithShell for a platform that
 	// supplies the layer-3 device itself. vpnShellOpen is called at the moment the
 	// session is up and the server's address assignment is known; vpnProtect runs
@@ -228,6 +249,10 @@ func runWithShell(ctx context.Context, cfg *config.Config, logger *log.Logger,
 	}
 	c := &client{cfg: cfg, cipher: cipher, tlsConfig: tlsConfig, logger: logger, target: cfg.Client.ServerAddr,
 		vpnShellOpen: openDevice, vpnShellProtect: protect}
+	c.baseCtx = ctx
+	c.proxies = cfg.Proxies
+	c.visitors = cfg.Visitors
+	c.startReloadWatcher()
 	c.startHealthChecks(ctx)
 
 	if cfg.Identity.Enabled {
@@ -290,8 +315,9 @@ func (c *client) run(ctx context.Context) {
 	maxBackoff := time.Duration(c.cfg.Client.MaxReconnectSeconds) * time.Second
 
 	// Visitor listeners are independent of the control session: each visiting
-	// connection opens its own connection to the server.
-	c.runVisitors(ctx)
+	// connection opens its own connection to the server. They run on a child of
+	// the client's context so a reload can restart them as a set.
+	c.startVisitors()
 
 	for {
 		if ctx.Err() != nil {
@@ -718,6 +744,9 @@ func proxySpec(proxy config.ProxyConfig) protocol.ProxySpec {
 		Domains:       proxy.Domains,
 		ProxyProtocol: proxy.ProxyProtocol,
 		Subdomain:     proxy.Subdomain,
+		HTTPUser:      proxy.HTTPUser,
+		HTTPPassword:  proxy.HTTPPassword,
+		Multiplexer:   proxy.Multiplexer,
 		SecretKey:     proxy.SecretKey,
 		AuthMethod:    proxy.AuthMethod,
 		Group:         proxy.Group,
@@ -730,11 +759,11 @@ func proxySpec(proxy config.ProxyConfig) protocol.ProxySpec {
 
 // registerProxies publishes every configured tunnel on the current session.
 func (c *client) registerProxies(framer *protocol.Framer) error {
-	if len(c.cfg.Proxies) == 0 {
+	if len(c.proxyList()) == 0 {
 		c.logger.Printf("no [[proxies]] configured: the connection is up but publishes nothing")
 		return nil
 	}
-	for _, proxy := range c.cfg.Proxies {
+	for _, proxy := range c.proxyList() {
 		spec := proxySpec(proxy)
 		c.rememberSpec(spec)
 		if err := framer.WriteJSON(protocol.TypeRegisterProxy, spec); err != nil {
@@ -1090,7 +1119,7 @@ func (c *client) serveDatagrams(proxy string, conn net.Conn, framer *protocol.Fr
 }
 
 func (c *client) findProxy(name string) (config.ProxyConfig, error) {
-	for _, proxy := range c.cfg.Proxies {
+	for _, proxy := range c.proxyList() {
 		if proxy.Name == name {
 			return proxy, nil
 		}

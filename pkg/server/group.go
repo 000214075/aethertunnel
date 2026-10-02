@@ -38,6 +38,10 @@ type ProxyGroup struct {
 	Private bool
 
 	Domains         []string
+	Subdomain       string
+	HTTPUser        string
+	HTTPPassword    string
+	tcpmux          *tcpmuxBinding
 	SecretKey       string
 	AuthMethod      string
 	SecretPublicKey []byte
@@ -196,6 +200,9 @@ func newProxyGroup(spec protocol.ProxySpec, manager *TunnelManager) *ProxyGroup 
 		Type:         spec.Type,
 		Private:      config.IsPrivateProxyType(spec.Type),
 		Domains:      append([]string(nil), spec.Domains...),
+		Subdomain:    spec.Subdomain,
+		HTTPUser:     spec.HTTPUser,
+		HTTPPassword: spec.HTTPPassword,
 		SecretKey:    spec.SecretKey,
 		AuthMethod:   spec.AuthMethod,
 		RemotePort:   spec.RemotePort,
@@ -426,8 +433,8 @@ func (g *ProxyGroup) close(reason string) {
 		close(g.done)
 
 		g.endpointMu.Lock()
-		listener, packet, pump, binding := g.listener, g.packet, g.pump, g.vhost
-		g.listener, g.packet, g.pump, g.vhost = nil, nil, nil, nil
+		listener, packet, pump, binding, mux := g.listener, g.packet, g.pump, g.vhost, g.tcpmux
+		g.listener, g.packet, g.pump, g.vhost, g.tcpmux = nil, nil, nil, nil, nil
 		g.endpointMu.Unlock()
 
 		if listener != nil {
@@ -441,6 +448,9 @@ func (g *ProxyGroup) close(reason string) {
 		}
 		if binding != nil {
 			binding.remove()
+		}
+		if mux != nil {
+			mux.remove()
 		}
 		g.logger.Printf("proxy %q closed (%s)", g.Name, reason)
 	})
@@ -492,6 +502,20 @@ func (g *ProxyGroup) bind() error {
 		g.endpointMu.Lock()
 		g.vhost = binding
 		g.endpointMu.Unlock()
+
+	case protocol.ProxyTypeTCPMux:
+		if g.manager.tcpmux == nil {
+			return fmt.Errorf("proxy %q is type %s but server.tcpmux_port is not configured", g.Name, g.Type)
+		}
+		mux, err := g.manager.tcpmux.add(g)
+		if err != nil {
+			return err
+		}
+		g.endpointMu.Lock()
+		g.tcpmux = mux
+		g.endpointMu.Unlock()
+		g.logger.Printf("proxy %q (%s) reachable on the tcpmux listener as %s",
+			g.Name, g.Type, strings.Join(g.Domains, ", "))
 
 	case protocol.ProxyTypeSTCP, protocol.ProxyTypeSUDP, protocol.ProxyTypeXTCP:
 		if g.AuthMethod == config.AuthMethodNIZK {
@@ -1274,6 +1298,23 @@ func (g *ProxyGroup) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	remote, err := net.ResolveTCPAddr("tcp", r.RemoteAddr)
+
+	// Basic auth is checked before anything about the request is acted on, and
+	// the failure is the response a browser knows how to prompt for. The
+	// comparison runs in constant time: the password is a credential, and a
+	// timing side channel across the shared listener would leak it byte by byte.
+	if g.HTTPUser != "" || g.HTTPPassword != "" {
+		user, password, ok := r.BasicAuth()
+		if !ok || !crypto.EqualTokens(user, g.HTTPUser) || !crypto.EqualTokens(password, g.HTTPPassword) {
+			if err == nil {
+				g.refuseVisitor(remote, "basic auth mismatch")
+			}
+			w.Header().Set("WWW-Authenticate", `Basic realm="Restricted"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+
 	if err == nil {
 		if allowed, reason := g.visitorAllowed(remote); !allowed {
 			g.refuseVisitor(remote, reason)

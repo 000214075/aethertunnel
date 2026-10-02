@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -182,5 +184,52 @@ func TestClientDialViaValidation(t *testing.T) {
 	cfg.Client.DialVia = "socks5://user:pass@10.0.0.2:1080"
 	if err := cfg.Validate(RoleClient); err != nil {
 		t.Fatalf("a valid dial_via failed validation: %v", err)
+	}
+}
+
+func TestHTTPAuthValidation(t *testing.T) {
+	c := &Config{}
+	if problems := c.validateProxyExtras(ProxyConfig{
+		Name: "web", Type: ProxyTypeTCP, HTTPUser: "ops", HTTPPassword: "s3cret",
+	}); len(problems) == 0 {
+		t.Fatal("basic auth on a tcp proxy produced no problem")
+	} else if !strings.Contains(strings.Join(problems, "\n"), "http_user") {
+		t.Fatalf("the problem does not name http_user: %v", problems)
+	}
+	if problems := c.validateProxyExtras(ProxyConfig{
+		Name: "web", Type: ProxyTypeHTTPS, HTTPUser: "ops", HTTPPassword: "s3cret",
+	}); len(problems) != 0 {
+		t.Fatalf("basic auth on an https proxy produced problems: %v", problems)
+	}
+}
+
+func TestTCPMuxValidation(t *testing.T) {
+	base := "[client]\nserver_addr = \"127.0.0.1:1\"\nauth_token = \"token\"\n\n"
+	mux := "mux.toml"
+	_, err := LoadString(base+"[[proxies]]\nname = \"mux\"\ntype = \"tcpmux\"\nmultiplexer = \"socksify\"\ndomains = [\"tunnel1\"]\nlocal_port = 8000\n", mux, ValidateOptions{Role: RoleClient})
+	if err == nil || !strings.Contains(err.Error(), "multiplexer") {
+		t.Fatalf("an unknown multiplexer passed validation: %v", err)
+	}
+	_, err = LoadString(base+"[[proxies]]\nname = \"mux\"\ntype = \"tcpmux\"\nmultiplexer = \"httpconnect\"\ndomains = [\"tunnel1\"]\nlocal_port = 8000\nremote_port = 7000\n", mux, ValidateOptions{Role: RoleClient})
+	if err == nil || !strings.Contains(err.Error(), "remote_port") {
+		t.Fatalf("a tcpmux proxy with a public port passed validation: %v", err)
+	}
+	if _, err := LoadString(base+"[[proxies]]\nname = \"mux\"\ntype = \"tcpmux\"\nmultiplexer = \"httpconnect\"\ndomains = [\"tunnel1\"]\nlocal_port = 8000\n", mux, ValidateOptions{Role: RoleClient}); err != nil {
+		t.Fatalf("a valid tcpmux proxy failed validation: %v", err)
+	}
+}
+
+func TestLoadRecordsTheSourceFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client.toml")
+	body := "[client]\nserver_addr = \"127.0.0.1:1\"\nauth_token = \"token\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := Load(path, ValidateOptions{Role: RoleClient})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.SourceFile != path {
+		t.Fatalf("SourceFile is %q, want %q", cfg.SourceFile, path)
 	}
 }

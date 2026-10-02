@@ -158,7 +158,7 @@ func (c *client) resetHealthWithdrawals() {
 // registration put a dead backend back on a public endpoint, and the health
 // state will not fire a new refusal event for a failure it already recorded.
 func (c *client) reWithdrawUnhealthy() {
-	for _, proxy := range c.cfg.Proxies {
+	for _, proxy := range c.proxyList() {
 		if proxy.HealthCheck == nil {
 			continue
 		}
@@ -179,14 +179,56 @@ func (c *client) reWithdrawUnhealthy() {
 // client's lifetime. The first probe runs at once, so a service that is down
 // when the client starts is refused from the first visitor.
 func (c *client) startHealthChecks(ctx context.Context) {
-	for _, proxy := range c.cfg.Proxies {
-		if proxy.HealthCheck == nil {
-			continue
-		}
-		state := newHealthState(proxy.HealthCheck.MaxFailed)
-		c.setHealthState(proxy.Name, state)
-		go c.runHealthCheck(ctx, proxy, state)
+	for _, proxy := range c.proxyList() {
+		c.startHealthCheck(proxy)
 	}
+}
+
+// startHealthCheck probes one proxy until a reload stops it. Its context hangs
+// off the client's lifetime, so stopping one probe never touches another.
+func (c *client) startHealthCheck(proxy config.ProxyConfig) {
+	if proxy.HealthCheck == nil {
+		return
+	}
+	c.healthStopsMu.Lock()
+	if _, live := c.healthStops[proxy.Name]; live {
+		c.healthStopsMu.Unlock()
+		return
+	}
+	probeCtx, cancel := context.WithCancel(c.baseCtx)
+	if c.healthStops == nil {
+		c.healthStops = map[string]context.CancelFunc{}
+	}
+	c.healthStops[proxy.Name] = cancel
+	c.healthStopsMu.Unlock()
+
+	state := newHealthState(proxy.HealthCheck.MaxFailed)
+	c.setHealthState(proxy.Name, state)
+	go func() {
+		defer c.forgetHealthStop(proxy.Name)
+		c.runHealthCheck(probeCtx, proxy, state)
+	}()
+}
+
+// stopHealthCheck cancels one proxy's probe and drops its state, so a reload
+// that replaces the proxy starts from healthy again.
+func (c *client) stopHealthCheck(name string) {
+	c.healthStopsMu.Lock()
+	cancel, live := c.healthStops[name]
+	delete(c.healthStops, name)
+	c.healthStopsMu.Unlock()
+	if live {
+		cancel()
+	}
+	c.healthMu.Lock()
+	delete(c.health, name)
+	c.healthMu.Unlock()
+}
+
+func (c *client) forgetHealthStop(name string) {
+	c.healthStopsMu.Lock()
+	delete(c.healthStops, name)
+	c.healthStopsMu.Unlock()
 }
 
 func (c *client) runHealthCheck(ctx context.Context, proxy config.ProxyConfig, state *healthState) {

@@ -46,10 +46,67 @@ func (p *visitorPath) close() {
 // opens its own connection to the server, so a visitor needs no session of its
 // own and reconnects per connection.
 func (c *client) runVisitors(ctx context.Context) {
-	for _, visitor := range c.cfg.Visitors {
+	for _, visitor := range c.visitorList() {
 		visitor := visitor
 		go c.serveVisitor(ctx, visitor)
 	}
+}
+
+// startVisitors starts the visitor listeners on the context a reload can
+// replace: cancelling it closes every listener and lets a changed set come up
+// in its place.
+func (c *client) startVisitors() {
+	c.visitorsMu.Lock()
+	if c.visitorsCtx == nil {
+		c.visitorsCtx, c.visitorsCancel = context.WithCancel(c.baseCtx)
+	}
+	ctx := c.visitorsCtx
+	c.visitorsMu.Unlock()
+	c.runVisitors(ctx)
+}
+
+// listenForVisitor binds a visitor's listen address. A reload that restarts
+// the set races its own old listeners: each one closes on cancellation, but
+// the close lands a moment after the new bind attempt, so a few short retries
+// absorb the overlap instead of failing the visitor.
+func (c *client) listenForVisitor(cfg config.VisitorConfig) (net.Listener, error) {
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-c.baseCtx.Done():
+				return nil, c.baseCtx.Err()
+			case <-time.After(200 * time.Millisecond):
+			}
+		}
+		listener, err := net.Listen("tcp", cfg.ListenAddr())
+		if err == nil {
+			return listener, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+// listenPacketForVisitor is listenForVisitor for a datagram visitor's UDP
+// socket, with the same reload-rebind tolerance.
+func (c *client) listenPacketForVisitor(cfg config.VisitorConfig) (net.PacketConn, error) {
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-c.baseCtx.Done():
+				return nil, c.baseCtx.Err()
+			case <-time.After(200 * time.Millisecond):
+			}
+		}
+		socket, err := net.ListenPacket("udp", cfg.ListenAddr())
+		if err == nil {
+			return socket, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
 }
 
 func (c *client) serveVisitor(ctx context.Context, cfg config.VisitorConfig) {
@@ -61,7 +118,7 @@ func (c *client) serveVisitor(ctx context.Context, cfg config.VisitorConfig) {
 }
 
 func (c *client) serveStreamVisitor(ctx context.Context, cfg config.VisitorConfig) {
-	listener, err := net.Listen("tcp", cfg.ListenAddr())
+	listener, err := c.listenForVisitor(cfg)
 	if err != nil {
 		c.logger.Printf("visitor %q: %v", cfg.Name, flynet.ListenError(cfg.ListenAddr(), err))
 		return
@@ -102,7 +159,7 @@ func (c *client) handleVisitorTCP(ctx context.Context, cfg config.VisitorConfig,
 // visitor connection, so the far end sees one stream per address the same way a
 // udp proxy on the server does.
 func (c *client) serveUDPVisitor(ctx context.Context, cfg config.VisitorConfig) {
-	socket, err := net.ListenPacket("udp", cfg.ListenAddr())
+	socket, err := c.listenPacketForVisitor(cfg)
 	if err != nil {
 		c.logger.Printf("visitor %q: %v", cfg.Name, flynet.ListenError(cfg.ListenAddr(), err))
 		return

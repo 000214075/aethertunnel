@@ -78,6 +78,10 @@ type ServerConfig struct {
 	HTTPSPort     int    `toml:"https_port"`
 	HTTPSCertFile string `toml:"https_cert_file"`
 	HTTPSKeyFile  string `toml:"https_key_file"`
+	// TCPMuxPort serves every tcpmux proxy on one listener: a visitor sends an
+	// HTTP CONNECT whose authority names the hostname, and the server routes by
+	// it. 0 disables the multiplexer.
+	TCPMuxPort int `toml:"tcpmux_port"`
 
 	// SubdomainHost, when set, lets an http proxy without explicit domains be
 	// reached at <proxy-name>.<subdomain_host>.
@@ -149,6 +153,13 @@ type ProxyConfig struct {
 	// server's [server].subdomain_host, next to any custom domains. One DNS
 	// label; the server composes and validates the full name.
 	Subdomain string `toml:"subdomain"`
+	// HTTPUser and HTTPPassword guard an http/https hostname with HTTP basic
+	// auth; the server checks them before any byte reaches the tunnel.
+	HTTPUser     string `toml:"http_user"`
+	HTTPPassword string `toml:"http_password"`
+	// Multiplexer names the shared entry a tcpmux proxy rides; only
+	// "httpconnect" exists.
+	Multiplexer string `toml:"multiplexer"`
 	// Bandwidth caps this proxy's data rate on the client, both directions
 	// combined, in decimal bytes per second: "1MB", "500KB". Empty means no
 	// limit.
@@ -206,21 +217,26 @@ const (
 
 // Proxy types accepted in [[proxies]].
 const (
-	ProxyTypeTCP   = "tcp"
-	ProxyTypeUDP   = "udp"
-	ProxyTypeHTTP  = "http"
-	ProxyTypeHTTPS = "https"
-	ProxyTypeSTCP  = "stcp"
-	ProxyTypeSUDP  = "sudp"
-	ProxyTypeXTCP  = "xtcp"
-	ProxyTypeSOCKS = "socks5"
+	ProxyTypeTCP    = "tcp"
+	ProxyTypeUDP    = "udp"
+	ProxyTypeHTTP   = "http"
+	ProxyTypeHTTPS  = "https"
+	ProxyTypeSTCP   = "stcp"
+	ProxyTypeSUDP   = "sudp"
+	ProxyTypeXTCP   = "xtcp"
+	ProxyTypeSOCKS  = "socks5"
+	ProxyTypeTCPMUX = "tcpmux"
 )
 
 // ProxyTypes lists every type this build implements.
 var ProxyTypes = []string{
 	ProxyTypeTCP, ProxyTypeUDP, ProxyTypeHTTP, ProxyTypeHTTPS,
 	ProxyTypeSTCP, ProxyTypeSUDP, ProxyTypeXTCP, ProxyTypeSOCKS,
+	ProxyTypeTCPMUX,
 }
+
+// MultiplexerHTTPConnect is the only multiplexer a tcpmux proxy can ride.
+const MultiplexerHTTPConnect = "httpconnect"
 
 // IsProxyType reports whether name is an implemented proxy type.
 func IsProxyType(name string) bool {
@@ -516,6 +532,11 @@ type Config struct {
 	VPN         VPNConfig         `toml:"vpn"`
 	Proxies     []ProxyConfig     `toml:"proxies"`
 	Visitors    []VisitorConfig   `toml:"visitors"`
+
+	// SourceFile is the path the configuration was read from, set by Load. A
+	// client whose configuration names a file re-reads it on SIGHUP; a
+	// configuration built from a string has none to reload from.
+	SourceFile string `toml:"-"`
 
 	// Warnings collects non-fatal problems found while loading (unknown keys,
 	// settings that will be ignored). Callers are expected to log them.
@@ -977,6 +998,11 @@ func (c *Config) listeners(role string) []boundListener {
 		if c.Server.HTTPSPort > 0 {
 			listeners = append(listeners, boundListener{
 				key: "server.https_port", kind: "tcp", host: c.Server.BindAddr, port: c.Server.HTTPSPort,
+			})
+		}
+		if c.Server.TCPMuxPort > 0 {
+			listeners = append(listeners, boundListener{
+				key: "server.tcpmux_port", kind: "tcp", host: c.Server.BindAddr, port: c.Server.TCPMuxPort,
 			})
 		}
 		if c.DHT.Enabled {
@@ -1470,7 +1496,7 @@ func (c *Config) Validate(role string) error {
 					problems = append(problems, fmt.Sprintf("proxy %q: allow_targets entry %q: %v", p.Name, cidr, err))
 				}
 			}
-		case ProxyTypeHTTP, ProxyTypeHTTPS:
+		case ProxyTypeHTTP, ProxyTypeHTTPS, ProxyTypeTCPMUX:
 			if p.RemotePort != 0 {
 				problems = append(problems, fmt.Sprintf(
 					"proxy %q: %s tunnels are reached through the server's shared listener, so remote_port must be 0",
@@ -1505,6 +1531,11 @@ func (c *Config) Validate(role string) error {
 					p.Name, p.AuthMethod, AuthMethodSecret, AuthMethodNIZK))
 			}
 		}
+		if p.Type == ProxyTypeTCPMUX && p.Multiplexer != MultiplexerHTTPConnect {
+			problems = append(problems, fmt.Sprintf(
+				"proxy %q: multiplexer %q is not supported (the only multiplexer is %q)",
+				p.Name, p.Multiplexer, MultiplexerHTTPConnect))
+		}
 		if p.Multipath < 0 || p.Multipath > MaxMultipath {
 			problems = append(problems, fmt.Sprintf(
 				"proxy %q: multipath must be 0-%d, got %d", p.Name, MaxMultipath, p.Multipath))
@@ -1515,6 +1546,7 @@ func (c *Config) Validate(role string) error {
 					"a byte stream stays on the path it started on", p.Name, p.Type))
 		}
 		if p.RemotePort == 0 && p.Group == "" && p.Type != ProxyTypeHTTP && p.Type != ProxyTypeHTTPS &&
+			p.Type != ProxyTypeTCPMUX &&
 			!IsPrivateProxyType(p.Type) {
 			c.Warnings = append(c.Warnings, fmt.Sprintf(
 				"proxy %q: it has no remote_port and no group, so nothing can reach it", p.Name))
@@ -1647,6 +1679,9 @@ func (c *Config) validateProxyPolicy(p ProxyConfig) []string {
 		{"allow_targets", len(p.AllowTargets) > 0},
 		{"domains", len(p.Domains) > 0},
 		{"subdomain", p.Subdomain != ""},
+		{"http_user", p.HTTPUser != ""},
+		{"http_password", p.HTTPPassword != ""},
+		{"multiplexer", p.Multiplexer != ""},
 		{"bandwidth", p.Bandwidth != ""},
 		{"proxy_protocol", p.ProxyProtocol != ""},
 		{"remote_ports", p.RemotePorts != ""},
@@ -1741,7 +1776,11 @@ func Load(filename string, opts ValidateOptions) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", filename, err)
 	}
-	return LoadString(string(data), filename, opts)
+	cfg, err := LoadString(string(data), filename, opts)
+	if cfg != nil {
+		cfg.SourceFile = filename
+	}
+	return cfg, err
 }
 
 // LoadString parses and validates a configuration held in a string. It behaves

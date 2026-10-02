@@ -143,10 +143,10 @@ func TestRegisterProxyAgainResendsTheStoredSpec(t *testing.T) {
 
 func TestReWithdrawUnhealthyWithdrawsFailingProxies(t *testing.T) {
 	c, peer, _ := newWithdrawHarness(t)
-	c.cfg.Proxies = []config.ProxyConfig{{
+	c.setProxyList([]config.ProxyConfig{{
 		Name: "web", Type: config.ProxyTypeTCP, LocalPort: 8080,
 		HealthCheck: &config.HealthCheckConfig{Type: "tcp"},
-	}}
+	}})
 	state := newHealthState(1)
 	if event := state.record(false); event != eventRefused {
 		t.Fatalf("record(false) = %v, want eventRefused", event)
@@ -187,10 +187,10 @@ func TestReWithdrawUnhealthyLeavesHealthyProxiesAlone(t *testing.T) {
 	c, peer, serverSide := newWithdrawHarness(t)
 	healthy := newHealthState(1)
 	c.setHealthState("ok", healthy)
-	c.cfg.Proxies = []config.ProxyConfig{{
+	c.setProxyList([]config.ProxyConfig{{
 		Name: "ok", Type: config.ProxyTypeTCP, LocalPort: 8080,
 		HealthCheck: &config.HealthCheckConfig{Type: "tcp"},
-	}}
+	}})
 
 	// Nothing may arrive for a proxy that never failed a check.
 	if err := serverSide.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {

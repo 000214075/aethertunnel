@@ -75,6 +75,23 @@
   （一台服务器、两个客户端、一个可查日志的 CONNECT 中转、一个可杀可复活的后端），
   总数到 **301 项**（无浏览器 158 项）。`docs/VS-FRP.md` 同步：健康检查与
   `transport.dialServerProxy`、`subdomain_host` 从"未做"移入"都有"。
+- **对标 frp 第三轮：HTTP 基本认证、tcpmux、SIGHUP 热重载**。这次先把 frp 源码克隆下来
+  逐处研读（`server/proxy/tcpmux.go` 的 CONNECT 多路复用、`pkg/util/vhost/http.go` 的
+  401 形状、`client/config_manager.go` 的重载路径），再按本项目的结构落地。`[[proxies]]`
+  新增 `http_user`/`http_password`（仅 http/https）：服务器在转发之前用常数时间比较
+  Authorization 头，不匹配回 401 并带 `WWW-Authenticate: Basic` 挑战，与浏览器的提示
+  流程一致。新增 `tcpmux` 代理类型与 `[server].tcpmux_port`：访问者对共享端口发一条
+  `CONNECT 主机名:端口`，服务器按主机名选中隧道、回 200，之后的字节就是这条隧道的——
+  一个端口发布任意多条 TCP 服务；主机名查不到回 404，非 CONNECT 回 405，不泄漏端口后面
+  有哪些名字；访客名单、审计与指标沿用原有路径。客户端新增 SIGHUP 热重载：配置来自文件
+  时，信号触发重读与校验，按名差异增删代理（注销/注册走已有的 Withdraw 原语，会话未连上
+  时新代理在会话恢复后自动发布）、健康检查与 static_file 插件缓存跟随代理启停、访客
+  监听按整组重启（重绑定容忍旧监听器收尾的短暂窗口）；会话级设置（`[transport]`、
+  `[encryption]`、`[identity]`、`[dht]`、`[vpn]`）的改动逐项点名"重启后生效"，不静默。
+  配置校验补 `tcpmux` 的 multiplexer/端口规则、`http_user` 的适用类型，服务端策略的
+  无效键清单同步。单测覆盖 401/放行、CONNECT 路由与 404/405、无主机名注册的拒绝、
+  重载的线上收敛（注销+注册帧）、进程内真实 SIGHUP 端到端；功能套件新增一节，总数到
+  **309 项**（无浏览器 166 项）。
 - **`transport = "webrtc"`：私有代理的访客数据路径可以走 WebRTC DataChannel**。信令就是
   已经完成认证的控制连接（一次 offer 帧、一次 answer 帧，ICE 候选非渐进收集），数据本身是
   DTLS 加密、ICE 选路的 UDP 字节流——直连被墙的网络环境下数据路径的另一种形态。访客配置

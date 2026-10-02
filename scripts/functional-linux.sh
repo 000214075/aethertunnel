@@ -3482,6 +3482,267 @@ check "$subdomain_still_up" "ok" \
     "the withdrawal of one proxy leaves the others published"
 
 
+echo
+# ── frp parity, round three: basic auth, tcpmux, SIGHUP hot reload.
+
+F3_DIR="$WORK/features3"
+mkdir -p "$F3_DIR"
+F3_CONTROL_PORT="$(free_port)"
+F3_HTTP_PORT="$(free_port)"
+F3_MUX_PORT="$(free_port)"
+F3_ECHO_PORT="$(free_port)"
+F3_BASE_PUBLIC_PORT="$(free_port)"
+F3_ADDED_PUBLIC_PORT="$(free_port)"
+
+# One echo service answers both the tcpmux tunnel and the reload tunnels.
+cat > "$F3_DIR/echo.py" <<'PY'
+import socket, sys, threading
+srv = socket.socket()
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", int(sys.argv[1])))
+srv.listen(16)
+def pipe(conn):
+    try:
+        while True:
+            data = conn.recv(65536)
+            if not data:
+                break
+            conn.sendall(data)
+    except OSError:
+        pass
+    finally:
+        conn.close()
+while True:
+    try:
+        conn, _ = srv.accept()
+    except OSError:
+        break
+    threading.Thread(target=pipe, args=(conn,), daemon=True).start()
+PY
+
+cat > "$F3_DIR/server.toml" <<EOF
+[server]
+bind_addr = "127.0.0.1"
+bind_port = $F3_CONTROL_PORT
+auth_token = "$TOKEN"
+http_port = $F3_HTTP_PORT
+tcpmux_port = $F3_MUX_PORT
+EOF
+
+# The reload client's configuration: basic-authed http, a tcpmux tunnel and a
+# tcp tunnel the reload below will remove.
+cat > "$F3_DIR/client.toml" <<EOF
+[client]
+server_addr = "127.0.0.1:$F3_CONTROL_PORT"
+auth_token = "$TOKEN"
+reconnect_seconds = 1
+max_reconnect_seconds = 1
+
+[[proxies]]
+name = "authed"
+type = "http"
+local_ip = "127.0.0.1"
+local_port = $HTTP_ECHO_PORT
+domains = ["authed.smoke.test"]
+http_user = "ops"
+http_password = "s3cret"
+
+[[proxies]]
+name = "muxed"
+type = "tcpmux"
+multiplexer = "httpconnect"
+local_ip = "127.0.0.1"
+local_port = $F3_ECHO_PORT
+domains = ["muxed"]
+
+[[proxies]]
+name = "base"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = $F3_ECHO_PORT
+remote_port = $F3_BASE_PUBLIC_PORT
+EOF
+
+python3 "$F3_DIR/echo.py" "$F3_ECHO_PORT" > /dev/null 2>&1 &
+PIDS+=($!)
+"$SERVER" --config "$F3_DIR/server.toml" > "$F3_DIR/server.log" 2>&1 &
+PIDS+=($!)
+"$CLIENT" --config "$F3_DIR/client.toml" > "$F3_DIR/client.log" 2>&1 &
+F3_CLIENT_PID=$!
+PIDS+=($!)
+
+ok_awaited=0
+for _ in $(seq 1 120); do
+    if grep -q 'authed' "$F3_DIR/client.log" 2>/dev/null \
+        && grep -q 'muxed' "$F3_DIR/client.log" 2>/dev/null \
+        && grep -q 'base' "$F3_DIR/client.log" 2>/dev/null; then
+        ok_awaited=1
+        break
+    fi
+    sleep 0.5
+done
+check "$ok_awaited" "1" "the round-three client is up: authed, muxed and base"
+
+auth_refused="$(python3 - "$F3_HTTP_PORT" <<'PY'
+import sys, urllib.request, urllib.error
+req = urllib.request.Request("http://127.0.0.1:%s/" % sys.argv[1])
+req.add_header("Host", "authed.smoke.test")
+try:
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return_code = resp.status
+except urllib.error.HTTPError as exc:
+    header = exc.headers.get("WWW-Authenticate", "")
+    print("401" if exc.code == 401 and "Basic" in header else "status %d %s" % (exc.code, header))
+except Exception as exc:
+    print("no answer: %s" % exc)
+else:
+    print("answered %d" % return_code)
+PY
+)"
+check "$auth_refused" "401" "a basic-authed hostname challenges a visitor without credentials"
+
+auth_ok="$(python3 - "$F3_HTTP_PORT" <<'PY'
+import sys, urllib.request, base64
+req = urllib.request.Request("http://127.0.0.1:%s/" % sys.argv[1])
+req.add_header("Host", "authed.smoke.test")
+req.add_header("Authorization", "Basic " + base64.b64encode(b"ops:s3cret").decode())
+try:
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        body = resp.read().decode()
+except Exception as exc:
+    print("no answer: %s" % exc)
+else:
+    print("ok" if "smoketest-http" in body else "got %r" % body)
+PY
+)"
+check "$auth_ok" "ok" "the right basic-auth credentials reach the tunnel"
+
+mux_result="$(python3 - "$F3_MUX_PORT" <<'PY'
+import socket, sys
+try:
+    s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=15)
+except OSError as exc:
+    print("no connection: %s" % exc)
+else:
+    s.settimeout(15)
+    s.sendall(b"CONNECT muxed:1 HTTP/1.1\r\nHost: muxed:1\r\n\r\n")
+    answer = b""
+    while b"\r\n\r\n" not in answer:
+        chunk = s.recv(4096)
+        if not chunk:
+            break
+        answer += chunk
+    if b" 200 " not in answer.split(b"\r\n", 1)[0]:
+        print("mux answered %r" % answer.split(b"\r\n", 1)[0])
+    else:
+        payload = b"mux-check"
+        s.sendall(payload)
+        got = b""
+        while len(got) < len(payload):
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            got += chunk
+        print("ok" if got == payload else "got %r" % got)
+PY
+)"
+check "$mux_result" "ok" "a tcpmux tunnel is reached through a CONNECT on the shared port"
+
+mux_unknown="$(python3 - "$F3_MUX_PORT" <<'PY'
+import socket, sys
+try:
+    s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=15)
+except OSError as exc:
+    print("no connection: %s" % exc)
+else:
+    s.settimeout(15)
+    s.sendall(b"CONNECT nobody:1 HTTP/1.1\r\nHost: nobody:1\r\n\r\n")
+    answer = b""
+    while b"\r\n\r\n" not in answer:
+        chunk = s.recv(4096)
+        if not chunk:
+            break
+        answer += chunk
+    first = answer.split(b"\r\n", 1)[0]
+    print("refused" if b" 404 " in first else "answered %r" % first)
+PY
+)"
+check "$mux_unknown" "refused" "a hostname no tcpmux proxy publishes is answered 404"
+
+# The hot reload: add a tunnel, remove another, and let SIGHUP apply the edit
+# to the running client.
+cat > "$F3_DIR/client.toml" <<EOF
+[client]
+server_addr = "127.0.0.1:$F3_CONTROL_PORT"
+auth_token = "$TOKEN"
+reconnect_seconds = 1
+max_reconnect_seconds = 1
+
+[[proxies]]
+name = "authed"
+type = "http"
+local_ip = "127.0.0.1"
+local_port = $HTTP_ECHO_PORT
+domains = ["authed.smoke.test"]
+http_user = "ops"
+http_password = "s3cret"
+
+[[proxies]]
+name = "muxed"
+type = "tcpmux"
+multiplexer = "httpconnect"
+local_ip = "127.0.0.1"
+local_port = $F3_ECHO_PORT
+domains = ["muxed"]
+
+[[proxies]]
+name = "added"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = $F3_ECHO_PORT
+remote_port = $F3_ADDED_PUBLIC_PORT
+EOF
+kill -HUP "$F3_CLIENT_PID"
+
+reloaded=0
+for _ in $(seq 1 40); do
+    if grep -q 'reload: 1 proxy(es) added, 0 changed, 1 removed' "$F3_DIR/client.log" 2>/dev/null; then
+        reloaded=1
+        break
+    fi
+    sleep 0.5
+done
+check "$reloaded" "1" "SIGHUP applies the edited configuration to the running client"
+
+added_serves=0
+for _ in $(seq 1 30); do
+    if [ "$(tcp_via "$F3_ADDED_PUBLIC_PORT")" = "ok" ]; then
+        added_serves=1
+        break
+    fi
+    sleep 0.5
+done
+check "$added_serves" "1" "a tunnel the reload added is serving without a restart"
+
+base_gone=0
+for _ in $(seq 1 30); do
+    probe="$(python3 -c "
+import socket
+try:
+    socket.create_connection(('127.0.0.1', $F3_BASE_PUBLIC_PORT), timeout=3).close()
+    print('open')
+except OSError:
+    print('refused')
+")"
+    if [ "$probe" = "refused" ]; then
+        base_gone=1
+        break
+    fi
+    sleep 0.5
+done
+check "$base_gone" "1" "a tunnel the reload removed really closed its public port"
+
+
 echo "checks passed: $PASSES"
 echo "checks failed: $FAILURES"
 [ "$FAILURES" -eq 0 ] || exit 1

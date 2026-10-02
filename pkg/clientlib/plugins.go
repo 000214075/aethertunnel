@@ -52,6 +52,14 @@ type staticFileServer struct {
 
 // staticFileServerFor returns (building on first use) the server behind one
 // static_file proxy, keyed by proxy name.
+// forgetStaticFile drops a cached plugin server, so a reload that replaces the
+// proxy rebuilds it from the new settings.
+func (c *client) forgetStaticFile(name string) {
+	c.staticFilesMu.Lock()
+	defer c.staticFilesMu.Unlock()
+	delete(c.staticFiles, name)
+}
+
 func (c *client) staticFileServerFor(proxy config.ProxyConfig) *pluginListener {
 	c.staticFilesMu.Lock()
 	defer c.staticFilesMu.Unlock()

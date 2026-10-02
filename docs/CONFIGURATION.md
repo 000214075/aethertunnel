@@ -55,6 +55,7 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `https_cert_file` | string | 空 | 共享 HTTPS 监听的证书 |
 | `https_key_file` | string | 空 | 共享 HTTPS 监听的私钥 |
 | `subdomain_host` | string | 空 | 子域名托管的域名后缀。设置后，没有显式 `domains` 的 `http`/`https` 代理以 `<代理名>.<该值>` 注册；客户端用 `subdomain` 声明标签时以 `<标签>.<该值>` 注册；为空时这类代理在注册阶段被服务端拒绝 |
+| `tcpmux_port` | int | 0 | `tcpmux` 代理的共享监听端口，0 表示不启用。访问者发一条 `CONNECT 主机名:端口`，服务器按主机名选中隧道并回 200，之后的字节都属于这条隧道；一个端口就能发布任意多条 TCP 服务 |
 | `p2p_port` | int | 0 | `xtcp` 打洞的 UDP 会合端口，0 表示不支持打洞（xtcp 走中继）。与 `dht.listen_addr` 撞在同一个 UDP 地址上时被拒绝 |
 | `load_balance` | string | `round-robin` | 代理池策略：`round-robin` `random` `latency` `failover` `adaptive` `bandit`。只对声明了 `group` 的代理有影响。`bandit` 是**在线学习**的多臂老虎机（UCB1）：每条流按应答速度记奖励（立即回答记 1，越慢越小），据此估计各成员的平均奖励并加一个探索项来选择成员；没有离线训练、没有模型文件，学习只来自这个池子实际服务过的流。每第 20 次选择会去测观测最少的成员，因此曾经很慢的成员在恢复后仍会被重新测量 |
 
@@ -76,12 +77,14 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | 键 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `name` | string | 必填 | 代理名，同一客户端内不可重复；同一 `group` 内多个客户端可以同名 |
-| `type` | string | `tcp` | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5` |
+| `type` | string | `tcp` | `tcp` `udp` `http` `https` `stcp` `sudp` `xtcp` `socks5` `tcpmux` |
 | `local_ip` | string | `127.0.0.1` | 本地服务地址；IPv6 地址同样可用（如 `::1`） |
 | `local_port` | int | 必填 | 本地服务端口（1–65535） |
 | `remote_port` | int | 0 | 服务器上对外开放的端口。`tcp`/`udp` 用它；`http`/`https` 与私有类型必须为 0。同一客户端里两个**同协议**的代理不能请求同一个端口（先注册的绑住它，第二个会被拒绝），`tcp` 与 `udp` 用同一个端口号是允许的：它们绑的是不同协议的两个套接字 |
 | `domains` | []string | 空 | `http`/`https` 的访问域名：精确域名、`*.通配`，或留空后由服务端 `subdomain_host` 拼出 `<代理名>.<该值>`。留空时客户端只给出警告，因为该设置属于服务端 |
 | `subdomain` | string | 空 | 子域名托管：客户端只声明一个 DNS 标签（小写字母/数字/连字符，1–63 字符），服务端把它拼成 `<标签>.<subdomain_host>` 并按该域名路由。声明了 `subdomain` 的代理，代理名不再参与域名拼接。服务端没有 `subdomain_host` 时拒绝注册 |
+| `http_user` / `http_password` | string | 空 | 仅 `http`/`https`：服务器在转发之前检查访问者的 Authorization 头，不匹配回 401 并带 `WWW-Authenticate: Basic` 挑战；两者任一非空即启用。二者都填空才是不设防的主机名 |
+| `multiplexer` | string | 空 | 仅 `tcpmux`，目前唯一取值 `"httpconnect"`：访问者对该隧道发 `CONNECT`，以主机名选中 |
 | `secret_key` | string | 空 | 私有类型必填，也是访客侧的凭据 |
 | `auth_method` | string | `secret` | `secret` 直接比对；`nizk` 用 Schnorr 证明，secret 不出现在线上；`snark` 用 Groth16 的 zk-SNARK 证明（电路与可信设置说明见 `pkg/snarkauth`），secret 不出现在线上且证明绑定本次挑战 |
 | `group` | string | 空 | 填入同一名字的多个客户端组成代理池 |
@@ -125,7 +128,7 @@ SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` �
 指出是服务端策略拒绝的。
 
 描述客户端自身服务的键（`local_ip`、`local_port`、`group`、`multipath`、`secret_key`、
-`auth_method`、`allow_targets`、`domains`、`subdomain`、`bandwidth`、`proxy_protocol`、`remote_ports`、
+`auth_method`、`allow_targets`、`domains`、`subdomain`、`http_user`、`http_password`、`multiplexer`、`bandwidth`、`proxy_protocol`、`remote_ports`、
 `plugin`、`health_check`）在服务端配置里会加载成功但不生效，`--check` 会逐条
 输出警告。因此同一份 `[[proxies]]` 列表可以放在两种角色的配置里，只是含义不同。
 
