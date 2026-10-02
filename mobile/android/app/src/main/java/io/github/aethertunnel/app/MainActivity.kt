@@ -19,8 +19,8 @@ import io.github.aethertunnel.mobile.Mobile
 // the layer-3 interface to the same client through TunnelVpnService. Everything
 // else — the reconnect loop, the visitors, the tunnel itself — is the Go code in
 // pkg/clientlib behind the Mobile binding; the app adds nothing but a UI around
-// it. Logs go to the screen here and to logcat (gomobile routes the Go logger's
-// stderr there); the VPN service logs under the "AetherTunnel" tag.
+// it. Logs go to the screen here and to logcat (pkg/mobile wires the Go
+// logger's stderr to the GoLog tag); the VPN service logs under "AetherTunnel".
 class MainActivity : Activity() {
 
     private lateinit var logView: TextView

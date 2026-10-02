@@ -11,8 +11,9 @@
 | `android/` | 最小 Android 工程（Kotlin，无 androidx 依赖）：配置输入框、Start/Stop/VPN 三个按钮、一块日志区，以及 `TunnelVpnService`——VpnService 壳 |
 
 App 本身刻意保持最小：它只做 UI 与线程，隧道的一切都在 `pkg/clientlib` 里——同一个
-客户端命令行在跑的东西，App 里跑的就是它。Go 的日志输出被 gomobile 路由到 logcat，
-屏幕上的日志区显示启动、停止与错误；VPN 服务的日志在 "AetherTunnel" 标签下。
+客户端命令行在跑的东西，App 里跑的就是它。`pkg/mobile` 在 android 上把 Go 的 stderr
+接到 logcat（`GoLog` 标签），屏幕上的日志区显示启动、停止与错误；VPN 服务的日志在
+"AetherTunnel" 标签下。
 
 ## 构建
 

@@ -257,11 +257,17 @@ jobs:
           "$adb" shell am start -n io.github.aethertunnel.app/.MainActivity --ez start_vpn true
           ok=0
           for i in $(seq 1 60); do
-            if "$adb" logcat -d | grep -q 'tunnel interface'; then ok=1; break; fi
+            if grep -q 'connected as' /tmp/server.log || "$adb" logcat -d | grep -q 'tunnel interface'; then ok=1; break; fi
             sleep 5
           done
-          [ "$ok" = 1 ] || { echo "the tunnel session never came up"; "$adb" logcat -d | tail -80; tail -40 /tmp/server.log; exit 1; }
-          "$adb" logcat -d | grep -o 'tunnel interface[^,]*' | tail -1
+          [ "$ok" = 1 ] || {
+            echo "the tunnel session never came up"
+            "$adb" shell dumpsys activity services io.github.aethertunnel.app | head -30
+            "$adb" logcat -d | grep -iE 'GoLog|aethertunnel' | tail -60
+            tail -40 /tmp/server.log
+            exit 1
+          }
+          "$adb" logcat -d | grep -o 'tunnel interface[^,]*' | tail -1 || true
 
       - name: the packet path crosses the tunnel and comes back
         run: |
