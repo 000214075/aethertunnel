@@ -83,11 +83,12 @@ prefix, subnet)`，壳用 `VpnService.Builder` 建接口（`addAddress(address, 
 模式**路由 `0.0.0.0/0` 与 `::/0`、并把解析器指向经隧道可达的地址——全模式的安全性正是
 protect 钩子存在的意义。
 
-Go 侧有单元测试（fd 设备、protect 钩子、`RunVPN` 的配置约束），Kotlin 侧由 CI 的 APK
-构建验证编译；CI 还在 KVM 加速的无头模拟器上装 APK、启动界面、核实 Go 运行时加载
-（onCreate 的绑定预热会让损坏的绑定当场崩溃，logcat 干净即通过）。**真机上的逐包路径
-仍未核实**——授权 VpnService 与应用流量穿隧道需要一台 arm64 设备。iOS 的对应路径
-是 NetworkExtension 的 packet flow，接口形状一致，Swift 壳需要 Xcode 工程与真机。
+Go 侧有单元测试（fd 设备、protect 钩子、`RunVPN` 的配置约束、会话结束关闭壳描述符），
+Kotlin 侧由 CI 的 APK 构建验证编译；CI 还在 KVM 加速的无头模拟器上装 APK、启动界面、
+核实 Go 运行时加载，并以运行器上的真实服务端验证**逐包路径**：appops 预授权 VPN、
+`TunnelVpnService` 建立隧道、从设备 ping 服务端的隧道地址——3 发 3 中，0% 丢包。
+**物理设备仍未触碰**（仓库没有 arm64 手机）。iOS 的对应路径是 NetworkExtension 的
+packet flow，接口形状一致，Swift 壳需要 Xcode 工程与真机。
 
 ## iOS
 

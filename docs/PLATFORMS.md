@@ -889,7 +889,15 @@ x86_64 库），`am start -W` 启动并等 `Status: ok`，随后进程存活、`
 （无害的 `Mobile.stop()`，强制 libgojni 加载）——所以这一步实际证明的是：**Go 运行时
 在 Android 内核上完成 dlopen 与 JNI 挂接**，绑定类加载不炸。
 
-**没有证明的，如实写**：真机上的端到端行为——授权 VpnService、逐包进 tun、应用流量
-穿过隧道——模拟器装得了 APK、跑得起来 Go 运行时，但 VpnService 建立真实隧道的逐包
-路径仍未在任何 Android 运行时上验证过；那一步需要一台 arm64 的 Android 手机，谁来跑
-都行。模拟器能证明的（安装、启动、Go 运行时加载）已逐次证明。
+**模拟器上的逐包路径（ubuntu-latest，同一 e2e 作业，逐次验证）**：真实服务端以 root
+跑在运行器上（`[vpn] address = "10.7.0.1/24"`，tun 由 /dev/net/tun 创建）；模拟器经
+`appops set ... ACTIVATE_VPN allow` 预授权 VPN 后，由 Activity 启动 `TunnelVpnService`
+（服务未导出，shell 无法直接启动；配置经 run-as 放入应用自己的 files 目录，服务启动时
+没有 intent 配置就读它）。会话建立以服务端 `client %s connected as %s` 日志为准；随后
+从设备 `ping 10.7.0.1`：**3 发 3 中，0% 丢包**——包从 VpnService 的 tun 进入、经
+`NewFromFD` 交给 Go 客户端、穿过隧道、由服务端内核应答、原路返回。第一次 `establish`
+被系统拒绝后由重连循环自动恢复，也算真实行为的一部分。客户端日志经 GoLog 进 logcat。
+
+**没有证明的，如实写**：物理设备——仓库没有 arm64 手机。模拟器是一台 x86_64 的
+Android 运行时，它证明了 VpnService→fd→隧道→内核的完整逐包路径在 Android 上成立；
+触摸屏交互、真实蜂窝网络与厂商定制的 VPN 策略仍未被触碰。

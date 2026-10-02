@@ -36,10 +36,11 @@ debug APK**（Kotlin、无 androidx：一个 TOML 配置框、Start/Stop 按钮�
 protect、全模式下的解析器）。
 Go 侧有单元测试（fd 设备的读写与约束、protect 钩子在服务器套接字上触发、`RunVPN` 的
 配置约束），Kotlin 侧由 CI 的 APK 构建证明可编译；CI 还会起一台 KVM 加速的无头模拟器
-（x86_64，APK 因此带双 ABI 库），装上 APK、启动界面并核实 Go 运行时真的完成加载
-（logcat 无 `FATAL EXCEPTION` / `UnsatisfiedLinkError`）——**仍未核实的只剩真机上的
-逐包路径**：授权 VpnService、应用流量穿过隧道，这需要一台 arm64 的 Android 手机，
-是本功能留下的最后空白。
+（x86_64，APK 因此带双 ABI 库），装上 APK、启动界面并核实 Go 运行时完成加载，然后
+更进一步：运行器上跑真实服务端、经 appops 预授权 VPN、启动隧道服务，从设备
+`ping` 服务端的隧道地址——**3 发 3 中，0% 丢包**，VpnService→fd→隧道→内核的逐包
+路径在 Android 运行时上成立。**仍未核实的是物理设备本身**：仓库没有 arm64 手机，
+触摸屏与蜂窝网络下的行为未被触碰，这是最后的空白。
 
 在此之上，**有意不做**的只剩一件：
 
@@ -86,5 +87,5 @@ v3.1.0 that were never implemented) is recorded at the top of [`CHANGELOG.md`](.
 
 | Out of scope (by design) | The design decision | What to use instead |
 | --- | --- | --- |
-| mobile: a first-party store app, and real-device verification of the on-device VPN | the embeddable client (`pkg/clientlib`, `pkg/mobile`) ships with the Android VpnService shell in `mobile/android`; the Go side of the shell handoff is unit-tested and the APK builds in CI, but this repository has no real device or emulator to verify the packet path end to end — and signing, review and developer accounts cannot be replaced by code | sideload the debug APK onto your own arm64 device, or call `Mobile.runVPN(config, shell)` / `Mobile.stop()` from your own app; on an unmodified phone, publish a `socks5` exit (`remote_port` + `allow_targets`) and point any phone SOCKS5 client at it, or use `http`/`https` proxies through the system proxy settings |
+| mobile: a first-party store app, and a physical device | the embeddable client (`pkg/clientlib`, `pkg/mobile`) ships with the Android VpnService shell in `mobile/android`; CI runs the full story on an emulator: a real server on the runner, VPN consent granted via appops, the tunnel service started from the activity, and ICMP packets carried from the device through the VpnService fd across the tunnel to the server's kernel and back (0% packet loss) — what no code can replace is store signing, review and developer accounts, and a physical arm64 phone's touchscreen and cellular quirks | sideload the debug APK onto your own arm64 device, or call `Mobile.runVPN(config, shell)` / `Mobile.stop()` from your own app; on an unmodified phone, publish a `socks5` exit (`remote_port` + `allow_targets`) and point any phone SOCKS5 client at it, or use `http`/`https` proxies through the system proxy settings |
 | blockchain, tokens, incentives | the ledger is a signed hash chain by design: no consensus, no currency, no miners | `--verify-ledger` and `--ledger-proof` give auditability without a distributed ledger |
