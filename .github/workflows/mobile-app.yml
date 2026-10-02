@@ -263,4 +263,4 @@ jobs:
       - name: the packet path crosses the tunnel and comes back
         run: |
           adb="$ANDROID_HOME/platform-tools/adb"
-          adb shell ping -c 3 -W 10 10.7.0.1 | tee /dev/stderr | grep -q '0% packet loss'
+          "$adb" shell ping -c 3 -W 10 10.7.0.1 | tee /dev/stderr | grep -q '0% packet loss'
