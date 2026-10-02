@@ -254,7 +254,9 @@ jobs:
           "$adb" shell appops set io.github.aethertunnel.app ACTIVATE_VPN allow
           # The service is not exported, so the shell cannot start it; the
           # activity starts it, and with appops set the consent dialog is gone.
-          "$adb" shell am start -n io.github.aethertunnel.app/.MainActivity --ez start_vpn true
+          # -S force-stops the instance from the earlier launch step so this
+          # launch really runs onCreate with the start_vpn extra.
+          "$adb" shell am start -S -n io.github.aethertunnel.app/.MainActivity --ez start_vpn true
           ok=0
           for i in $(seq 1 60); do
             if grep -q 'connected as' /tmp/server.log || "$adb" logcat -d | grep -q 'tunnel interface'; then ok=1; break; fi
