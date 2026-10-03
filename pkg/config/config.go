@@ -108,6 +108,39 @@ type ServerConfig struct {
 	P2PPort int `toml:"p2p_port"`
 }
 
+// OIDCConfig is the [oidc] section. A server fills the issuer side (issuer,
+// audience, jwks); a client fills the token-endpoint side and fetches its
+// access token with the client-credentials grant. audience is shared: the
+// client asks the provider for it, the server checks the claim.
+type OIDCConfig struct {
+	// Issuer is the identity provider the server verifies tokens with; its
+	// discovery document names the key set, and its value must match the
+	// token's iss claim. Server only.
+	Issuer string `toml:"issuer"`
+	// Audience is the audience the token must carry. Empty skips the audience
+	// check, the way frp's auth.oidc does.
+	Audience string `toml:"audience"`
+	// JWKSURL overrides the discovery document's jwks_uri, for issuers that
+	// publish no well-known document. Server only.
+	JWKSURL string `toml:"jwks_url"`
+	// SkipExpiryCheck and SkipIssuerCheck mirror frp's auth.oidc switches for
+	// issuers whose claims do not line up. Server only.
+	SkipExpiryCheck bool `toml:"skip_expiry_check"`
+	SkipIssuerCheck bool `toml:"skip_issuer_check"`
+	// TimeoutSecs bounds the discovery and key-set fetches; 0 selects 10
+	// seconds. Server only.
+	TimeoutSecs int `toml:"timeout_secs"`
+	// TokenEndpointURL is where the client exchanges its client credentials
+	// for an access token. Client only.
+	TokenEndpointURL string `toml:"token_endpoint_url"`
+	// ClientID and ClientSecret authenticate the token request. Client only,
+	// both required.
+	ClientID     string `toml:"client_id"`
+	ClientSecret string `toml:"client_secret"`
+	// Scope asks the provider for; optional.
+	Scope string `toml:"scope"`
+}
+
 // HTTPPluginConfig is one [[http_plugins]] webhook: the server POSTs a JSON
 // envelope for every operation the plugin declares and refuses the session,
 // the registration or the visitor connection when the answer says reject.
@@ -614,6 +647,11 @@ type VPNConfig struct {
 
 // Config is the whole file.
 type Config struct {
+	// OIDC, when present, lets a server accept an OIDC access token in place
+	// of the static auth token, and lets a client fetch that token from its
+	// identity provider with the client-credentials grant. Server only on the
+	// issuer side, client only on the token-endpoint side.
+	OIDC *OIDCConfig `toml:"oidc"`
 	// HTTPPlugins names webhook endpoints a server calls on session login,
 	// proxy registration and every visitor connection, so an operator can gate
 	// and observe the server with its own HTTP service. Server only.
@@ -1191,6 +1229,17 @@ func (c *Config) Validate(role string) error {
 		if c.Server.HTTPSPassthroughPort > 0 && c.Server.HTTPSPassthroughPort == c.Server.HTTPSPort {
 			problems = append(problems, "server.https_passthrough_port and server.https_port must differ: one relays TLS and the other terminates it")
 		}
+		if o := c.OIDC; o != nil {
+			if o.Issuer == "" && o.JWKSURL == "" {
+				problems = append(problems, "oidc.issuer is required when the [oidc] section is present: the server needs an identity provider to verify tokens with")
+			}
+			if o.TimeoutSecs < 0 {
+				problems = append(problems, "oidc.timeout_secs cannot be negative")
+			}
+			if o.TokenEndpointURL != "" || o.ClientID != "" || o.ClientSecret != "" {
+				c.Warnings = append(c.Warnings, "oidc.token_endpoint_url and oidc.client_id/client_secret have no effect in a server configuration: the token request runs in a client")
+			}
+		}
 		for i := range c.HTTPPlugins {
 			plugin := &c.HTTPPlugins[i]
 			if plugin.Name == "" {
@@ -1266,6 +1315,22 @@ func (c *Config) Validate(role string) error {
 		}
 		if len(c.HTTPPlugins) > 0 {
 			c.Warnings = append(c.Warnings, "http_plugins has no effect in a client configuration: the webhooks run on a server")
+		}
+		if o := c.OIDC; o != nil {
+			clientSide := o.TokenEndpointURL != "" || o.ClientID != "" || o.ClientSecret != "" || o.Scope != ""
+			if clientSide {
+				if o.TokenEndpointURL == "" {
+					problems = append(problems, "oidc.token_endpoint_url is required for an oidc client")
+				}
+				if (o.ClientID == "") != (o.ClientSecret == "") {
+					problems = append(problems, "oidc.client_id and oidc.client_secret must be set together: the token request authenticates with both")
+				}
+				if o.ClientID == "" {
+					problems = append(problems, "oidc.client_id is required for an oidc client")
+				}
+			} else if o.Issuer != "" || o.JWKSURL != "" {
+				c.Warnings = append(c.Warnings, "oidc.issuer and oidc.jwks_url have no effect in a client configuration: the verification runs on a server")
+			}
 		}
 	}
 

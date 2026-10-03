@@ -112,6 +112,11 @@ type client struct {
 	pluginTLSMu sync.Mutex
 	pluginTLS   map[string]*tls.Config
 
+	// oidcMu guards the cached access token of an [oidc] client.
+	oidcMu     sync.Mutex
+	oidcToken  string
+	oidcExpiry time.Time
+
 	// pluginPolicies caches the allow_targets matcher per proxy name.
 	pluginPolicies map[string]*socks.TargetPolicy
 
@@ -522,9 +527,20 @@ func (c *client) runSession(ctx context.Context) error {
 
 	framer := protocol.NewFramerWithOptions(conn, c.cipher, c.framerOptions())
 
+	// [oidc] replaces the static token with an access token fetched from the
+	// identity provider; a server that verifies [oidc] accepts either.
+	token := c.cfg.Client.AuthToken
+	if c.cfg.OIDC != nil && c.cfg.OIDC.TokenEndpointURL != "" {
+		access, err := c.oidcAccessToken(ctx)
+		if err != nil {
+			return err
+		}
+		token = access
+	}
+
 	_ = conn.SetDeadline(time.Now().Add(dialTimeout))
 	request := protocol.AuthRequest{
-		Token:         c.cfg.Client.AuthToken,
+		Token:         token,
 		ClientVersion: Version,
 		Protocol:      protocol.ProtocolVersion,
 		Encryption:    c.cipher.Algorithm(),

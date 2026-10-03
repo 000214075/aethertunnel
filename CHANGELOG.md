@@ -160,6 +160,15 @@
   `Set` 请求头与应答头（`tls_passthrough` 不解析 HTTP，忽略之）。客户端 `[client.metas]`
   随认证请求上报键值对，服务端记入日志并原样交给 webhook。会话、注册与访客拒绝均记入
   既有审计与指标序列。
+- **对标 frp 第九轮：OIDC 认证（`[oidc]`）**。配置了 `[oidc]` 的服务器在静态令牌之外
+  再接受一把凭据：客户端送来的 OIDC 访问令牌（JWT）由 `pkg/oidc` 的新验证器核对——发行
+  方发现文档取 JWKS（5 分钟缓存，未知 kid 触发重取）、按 kid 验签（RS256/384/512、
+  PS256/384/512、ES256/384/512 自实现，无 go-oidc 依赖）、核对 `iss`/`aud`/`exp`/`nbf`
+  （含 30 秒时钟偏差容忍），签名算法白名单拒绝 `none`。配置了 `[oidc]` 的客户端以
+  client-credentials 授权从令牌端点取访问令牌（HTTP Basic 携带 client_id/client_secret，
+  可带 audience/scope），有过期时间则缓存至临期前 30 秒、无过期时间则每次连接重取（与
+  frp 的非缓存 token source 同行为），每次（重）连接把令牌放进认证请求。静态令牌在
+  配置了 `[oidc]` 的服务器上仍然有效——加一把门，不是换一把门。
 - **`transport = "webrtc"`：私有代理的访客数据路径可以走 WebRTC DataChannel**。信令就是
   已经完成认证的控制连接（一次 offer 帧、一次 answer 帧，ICE 候选非渐进收集），数据本身是
   DTLS 加密、ICE 选路的 UDP 字节流——直连被墙的网络环境下数据路径的另一种形态。访客配置

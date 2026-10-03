@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,7 @@ import (
 	"github.com/aethertunnel/aethertunnel/pkg/crypto"
 	flynet "github.com/aethertunnel/aethertunnel/pkg/net"
 	"github.com/aethertunnel/aethertunnel/pkg/obfs"
+	"github.com/aethertunnel/aethertunnel/pkg/oidc"
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
 )
 
@@ -67,6 +69,7 @@ type Server struct {
 	tcpmux      *tcpmuxSet
 	sni         *sniSet
 	httpPlugins *httpPluginManager
+	oidc        *oidc.Verifier
 	p2p         *p2pRendezvous
 	directory   *directory
 	vpn         *vpnService
@@ -96,6 +99,32 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	cipher, err := cfg.Cipher(config.RoleServer)
 	if err != nil {
 		return nil, err
+	}
+
+	// [oidc] is wired at startup: discovery needs the issuer reachable, and a
+	// verifier that cannot come up should stop the server now instead of
+	// refusing every oidc login later.
+	var oidcVerifier *oidc.Verifier
+	if cfg.OIDC != nil {
+		timeout := time.Duration(cfg.OIDC.TimeoutSecs) * time.Second
+		if timeout <= 0 {
+			timeout = 10 * time.Second
+		}
+		options := []oidc.Option{oidc.WithClient(&http.Client{Timeout: timeout})}
+		if cfg.OIDC.JWKSURL != "" {
+			options = append(options, oidc.WithJWKSURL(cfg.OIDC.JWKSURL))
+		}
+		if cfg.OIDC.SkipIssuerCheck {
+			options = append(options, oidc.WithSkipIssuer())
+		}
+		if cfg.OIDC.SkipExpiryCheck {
+			options = append(options, oidc.WithSkipExpiry())
+		}
+		verifier, err := oidc.NewVerifier(context.Background(), cfg.OIDC.Issuer, cfg.OIDC.Audience, options...)
+		if err != nil {
+			return nil, err
+		}
+		oidcVerifier = verifier
 	}
 	acl, err := NewAccessControl(cfg.Server.AllowCIDRs, cfg.Server.DenyCIDRs,
 		cfg.Server.RateLimitPerSecond, cfg.Server.RateLimitBurst)
@@ -179,6 +208,7 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	s.tunnels.sni = s.sni
 	s.httpPlugins = newHTTPPluginManager(cfg, logger)
 	s.tunnels.httpPlugins = s.httpPlugins
+	s.oidc = oidcVerifier
 	if cfg.Server.P2PPort > 0 {
 		s.p2p = newP2PRendezvous(logger)
 		s.tunnels.p2p = s.p2p
@@ -706,8 +736,16 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 	}
 
 	// Constant-time comparison so the token cannot be recovered byte by byte from
-	// response timing, and never log the offered token.
-	if !crypto.EqualTokens(req.Token, s.cfg.Server.AuthToken) {
+	// response timing, and never log the offered token. An [oidc] server also
+	// accepts a verified access token in the token's place.
+	tokenAccepted := crypto.EqualTokens(req.Token, s.cfg.Server.AuthToken)
+	if !tokenAccepted && s.oidc != nil {
+		if err := s.oidc.Verify(req.Token); err == nil {
+			tokenAccepted = true
+			s.logger.Printf("session from %s accepted with an oidc token", conn.RemoteAddr())
+		}
+	}
+	if !tokenAccepted {
 		s.metrics.authFailures.Add(1)
 		s.metrics.controlRejected.Add(1)
 		s.auditor.Record(AuditEvent{

@@ -92,6 +92,27 @@ http_user），服务器按改写后的值继续注册。
 | `timeout_secs` | int | 5 | 每次调用的时限，0 取默认，负数被拒 |
 | `tls_verify` | bool | false | https 插件端点是否校验证书 |
 
+## `[oidc]`（两端；服务端填 issuer 侧，客户端填 token 端点侧）
+
+frp `auth.oidc` 的对应物。配置了 `[oidc]` 的**服务器**在静态令牌之外再接受一把凭据：
+客户端送来的 OIDC 访问令牌（JWT），服务器经发行方的发现文档取 JWKS、按 kid 验签
+（RS256/384/512、PS256/384/512、ES256/384/512），并核对 `iss`、`aud`、`exp`/`nbf` 声明。
+配置了 `[oidc]` 的**客户端**在每次（重）连接时用 client-credentials 授权向令牌端点换取
+访问令牌，放进认证请求的令牌字段——有过期时间的令牌缓存到临期前 30 秒，没有过期时间的
+每次连接都重新取（与 frp 的非缓存 token source 同行为）。服务端需与客户端同步升级：
+旧服务器把 JWT 当静态令牌比对，必然失配。
+
+| 键 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `issuer` | string | 空 | 服务端：令牌的发行方 URL；发现文档取自 `<issuer>/.well-known/openid-configuration`，其值必须与令牌的 `iss` 声明一致 |
+| `audience` | string | 空 | 两端共用：客户端向提供方申请的 aud，服务端核对 `aud` 声明；留空跳过 aud 核对（与 frp 相同） |
+| `jwks_url` | string | 空 | 服务端：覆盖发现文档给出的 JWKS 地址，给不发 well-known 文档的发行方用 |
+| `skip_expiry_check` / `skip_issuer_check` | bool | false | 服务端：为声明不合规矩的发行方关闭对应检查（与 frp 的 skipExpiryCheck/skipIssuerCheck 相同） |
+| `timeout_secs` | int | 10 | 服务端：发现与密钥集取数的时限；发现失败会让服务器拒绝启动 |
+| `token_endpoint_url` | string | 空 | 客户端：以 client-credentials 换取访问令牌的端点 |
+| `client_id` / `client_secret` | string | 空 | 客户端：令牌请求的凭据，必须成对出现（HTTP Basic 认证头） |
+| `scope` | string | 空 | 客户端：令牌请求附带的作用域 |
+
 ## `[client]`（客户端）
 
 | 键 | 类型 | 默认 | 说明 |

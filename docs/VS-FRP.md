@@ -37,6 +37,7 @@ executable checks in this repository, not at marketing.
 | 服务端 httpPlugins webhook | ✅ | ✅ | `[[http_plugins]]`：login / newProxy / newUserConn 三个操作，JSON 信封与应答契约与 frp 的 webhook 兼容；newProxy 的应答可改写可发布字段；信封刻意不含令牌与私有代理的 secret |
 | 代理 HTTP 头注入 | ✅ requestHeaders/responseHeaders | ✅ `request_headers`/`response_headers` | 服务端终结 HTTP 的路径按代理注入请求头与应答头 |
 | 客户端 metas | ✅ | ✅ `[client.metas]` | 随认证请求上报，服务端交给 webhook 并记入日志 |
+| OIDC 认证 | ✅ auth.oidc | ✅ `[oidc]` | 服务端经发现文档取 JWKS 并验签（RS/PS/ES 系列）、查 iss/aud/exp；客户端以 client-credentials 取 token。差异：本项目的 `[oidc]` 是**加一把**凭据——静态令牌在配置了 `[oidc]` 的服务器上仍然有效；JWS 自实现（无 go-oidc 依赖） |
 | 传输层 websocket | ✅ transport.protocol | ✅ `transport.protocol = "websocket"` | 到服务器的每条连接包进 RFC 6455 二进制帧；服务端同一端口按连接嗅探升级，无需配置；TLS 仍在外侧（wss 分层） |
 | 客户端插件：socks5 | ✅ | ✅ | 访客对公共端口说 SOCKS5，客户端从自己的网络拨目标；`allow_targets` 必填（比 frp 多一层圈界），`plugin_user`/`plugin_password` 可选认证 |
 | 客户端插件：https2https / tls2raw | ✅ | ✅ | 终结访客 TLS 后分别转本地 HTTPS（两腿加密）与本地 TCP 明文 |
@@ -134,7 +135,7 @@ executable checks in this repository, not at marketing.
 
 ### 尚未复现 · Not reproduced yet
 
-- OIDC 认证（`auth_method` 的零知识/签名方案覆盖同场景）。
+- （认证差距已闭合：OIDC 见对照表；`auth_method` 的零知识/签名方案仍在。）
 - frp 的 kcp/quic 传输层（本项目走 TCP + 自有加密帧；websocket 形态已实现）。
 - frp 的管理端 Web UI 形态（本项目面板另有实现）。
 - frp xtcp 访客的 fallback_to 回退（本项目的 xtcp 打洞失败本就走服务器中继）。
