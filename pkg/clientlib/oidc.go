@@ -45,7 +45,9 @@ func (c *client) oidcAccessToken(ctx context.Context) (string, error) {
 	}
 	request.SetBasicAuth(options.ClientID, options.ClientSecret)
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response, err := http.DefaultClient.Do(request)
+	// A hung token endpoint fails in ten seconds instead of holding the
+	// reconnect loop open indefinitely.
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
 	if err != nil {
 		return "", fmt.Errorf("oidc: the token request failed: %w", err)
 	}

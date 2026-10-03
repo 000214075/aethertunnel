@@ -189,7 +189,7 @@ func TestHTTP2HTTPSPluginWrapsTheLocalLeg(t *testing.T) {
 	pluginServer := httptest.NewServer(c.http2HTTPSHandler(proxy))
 	defer pluginServer.Close()
 
-	response, err := http.Get(pluginServer.URL + "/")
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(pluginServer.URL + "/")
 	if err != nil {
 		t.Fatalf("plain http to the plugin: %v", err)
 	}
