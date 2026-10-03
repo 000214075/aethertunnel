@@ -491,6 +491,15 @@ type ProxySpec struct {
 	// on the server, next to any custom domains. The server composes and validates
 	// the full name at registration.
 	Subdomain string `json:"subdomain,omitempty"`
+	// Locations are path prefixes (each starting with a slash) this http/https
+	// proxy serves on its hostnames: several proxies may share one hostname and
+	// split it by path, the longest matching prefix winning. Only the
+	// terminating virtual-host path parses paths; a tls_passthrough relay
+	// ignores them. Older servers ignore the field.
+	Locations []string `json:"locations,omitempty"`
+	// HostHeaderRewrite replaces the Host header the terminating virtual-host
+	// path forwards to the local service.
+	HostHeaderRewrite string `json:"host_header_rewrite,omitempty"`
 	// HTTPUser and HTTPPassword guard an http/https hostname with HTTP basic
 	// auth: the server checks the visitor's Authorization header before any
 	// byte is relayed and answers a mismatch with 401. Older servers ignore

@@ -222,6 +222,23 @@ func (c *Config) validateProxyExtras(p ProxyConfig) []string {
 			"proxy %q: request_headers and response_headers apply to the terminating http/https path; a %s tunnel never parses HTTP and ignores them",
 			p.Name, p.Type))
 	}
+	for _, location := range p.Locations {
+		if !strings.HasPrefix(location, "/") {
+			problems = append(problems, fmt.Sprintf(
+				"proxy %q: location %q must start with a slash: locations are path prefixes",
+				p.Name, location))
+		}
+	}
+	if len(p.Locations) > 0 && p.Type != ProxyTypeHTTP && p.Type != ProxyTypeHTTPS {
+		c.Warnings = append(c.Warnings, fmt.Sprintf(
+			"proxy %q: locations split a hostname's paths on the terminating http/https listeners; a %s tunnel never parses HTTP and ignores them",
+			p.Name, p.Type))
+	}
+	if len(p.Locations) > 0 && p.Type == ProxyTypeHTTPS && p.TLSPassthrough {
+		c.Warnings = append(c.Warnings, fmt.Sprintf(
+			"proxy %q: locations are ignored with tls_passthrough: the server relays the TLS session without reading the HTTP path",
+			p.Name))
+	}
 	switch p.Plugin {
 	case "":
 	case PluginStaticFile, PluginUnixSocket:

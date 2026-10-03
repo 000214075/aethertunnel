@@ -157,6 +157,7 @@ frp `auth.oidc` 的对应物。配置了 `[oidc]` 的**服务器**在静态令�
 | `multiplexer` | string | 空 | 仅 `tcpmux`，目前唯一取值 `"httpconnect"`：访问者对该隧道发 `CONNECT`，以主机名选中 |
 | `use_compression` | bool | false | 字节流在客户端与服务器之间用 snappy 流式压缩（加在加密层外侧，先压缩后加密）。服务器在每条 DataRequest 里回声确认，旧服务端不回声就自动退化为不压缩，混合部署不会坏流。对数据报隧道无效果（给出警告），打洞成功的 xtcp 直连路径不经过它 |
 | `request_headers` / `response_headers` | 表 | 空 | 仅 `http`/`https`（终结形态）：服务端在转发的 HTTP 请求上 `Set` 这些请求头、在回答上 `Set` 这些应答头。`tls_passthrough` 的透传不解析 HTTP，忽略这两项 |
+| `locations` | []string | 空 | 仅 `http`/`https`（终结形态）：按路径前缀拆分主机名——多个代理可共用一个域名，各自声明如 `["/api", "/v2"]`，服务器把每个请求交给**最长匹配前缀**的代理，没有声明 locations 的代理兜底该主机名其余的路径。前缀按字节匹配（`/api` 也匹配 `/apiv2`，与 frp 相同）。`tls_passthrough` 不解析路径，忽略此项 |
 | `tls_passthrough` | bool | false | 仅 `https`：隧道改骑 `[server].https_passthrough_port` 的透传监听——服务器按 ClientHello 的 SNI 选中隧道后把访客的 TLS 会话原样中继过来，访客看到的是客户端自己的证书（每个域名各归各家）。本地服务必须自己说 TLS，或配 `https2http` 插件替它终结。默认 false：https 在共享监听上由服务器统一终结 TLS |
 | `secret_key` | string | 空 | 私有类型必填，也是访客侧的凭据 |
 | `auth_method` | string | `secret` | `secret` 直接比对；`nizk` 用 Schnorr 证明，secret 不出现在线上；`snark` 用 Groth16 的 zk-SNARK 证明（电路与可信设置说明见 `pkg/snarkauth`），secret 不出现在线上且证明绑定本次挑战 |

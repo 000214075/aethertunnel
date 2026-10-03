@@ -32,8 +32,8 @@ type vhostRouter struct {
 	metrics *Metrics
 
 	mu        sync.RWMutex
-	exact     map[string]*ProxyGroup
-	wildcard  map[string]*ProxyGroup // key is the suffix including the leading dot
+	exact     map[string][]*ProxyGroup
+	wildcard  map[string][]*ProxyGroup // key is the suffix including the leading dot
 	subdomain string
 
 	listener net.Listener
@@ -130,8 +130,8 @@ func newVhostRouter(kind string, cfg *config.Config, logger *log.Logger, metrics
 		cfg:       cfg,
 		logger:    logger,
 		metrics:   metrics,
-		exact:     make(map[string]*ProxyGroup),
-		wildcard:  make(map[string]*ProxyGroup),
+		exact:     make(map[string][]*ProxyGroup),
+		wildcard:  make(map[string][]*ProxyGroup),
 		subdomain: strings.ToLower(cfg.Server.SubdomainHost),
 	}
 }
@@ -159,13 +159,13 @@ func (b *vhostBinding) extend(domains []string) error {
 
 	for _, raw := range domains {
 		domain := strings.ToLower(strings.TrimSuffix(raw, "."))
-		if err := b.router.checkFreeLocked(domain, b.group); err != nil {
+		if err := b.router.checkFreeLocked(domain, b.group.routeLocation(), b.group); err != nil {
 			return err
 		}
 		if strings.HasPrefix(domain, "*.") {
-			b.router.wildcard[domain[1:]] = b.group
+			b.router.wildcard[domain[1:]] = append(b.router.wildcard[domain[1:]], b.group)
 		} else {
-			b.router.exact[domain] = b.group
+			b.router.exact[domain] = append(b.router.exact[domain], b.group)
 		}
 		b.domains = append(b.domains, domain)
 	}
@@ -184,23 +184,23 @@ func (v *vhostRouter) add(group *ProxyGroup) (*vhostBinding, error) {
 	rollback := func() {
 		for _, domain := range registered {
 			if strings.HasPrefix(domain, "*.") {
-				delete(v.wildcard, domain[1:])
+				v.wildcard[domain[1:]] = dropGroup(v.wildcard[domain[1:]], group)
 			} else {
-				delete(v.exact, domain)
+				v.exact[domain] = dropGroup(v.exact[domain], group)
 			}
 		}
 	}
 
 	for _, raw := range group.Domains {
 		domain := strings.ToLower(strings.TrimSuffix(raw, "."))
-		if err := v.checkFreeLocked(domain, group); err != nil {
+		if err := v.checkFreeLocked(domain, group.routeLocation(), group); err != nil {
 			rollback()
 			return nil, err
 		}
 		if strings.HasPrefix(domain, "*.") {
-			v.wildcard[domain[1:]] = group
+			v.wildcard[domain[1:]] = append(v.wildcard[domain[1:]], group)
 		} else {
-			v.exact[domain] = group
+			v.exact[domain] = append(v.exact[domain], group)
 		}
 		registered = append(registered, domain)
 	}
@@ -210,10 +210,10 @@ func (v *vhostRouter) add(group *ProxyGroup) (*vhostBinding, error) {
 			rollback()
 			return nil, fmt.Errorf("proxy %q has no domains and server.subdomain_host is not set", group.Name)
 		}
-		if _, taken := v.exact[group.Name]; taken {
-			return nil, fmt.Errorf("the subdomain %q is already published by another proxy", group.Name)
+		if err := v.checkFreeLocked(group.Name, group.routeLocation(), group); err != nil {
+			return nil, err
 		}
-		v.exact[group.Name] = group
+		v.exact[group.Name] = append(v.exact[group.Name], group)
 		registered = append(registered, group.Name)
 	}
 
@@ -221,17 +221,62 @@ func (v *vhostRouter) add(group *ProxyGroup) (*vhostBinding, error) {
 	return binding, nil
 }
 
-func (v *vhostRouter) checkFreeLocked(domain string, group *ProxyGroup) error {
+// checkFreeLocked refuses a (domain, location) pair another proxy already
+// claims. Same domain with different locations is the point of locations: the
+// longest matching prefix on one hostname routes to different proxies.
+func (v *vhostRouter) checkFreeLocked(domain, location string, group *ProxyGroup) error {
+	var bucket map[string][]*ProxyGroup
 	if strings.HasPrefix(domain, "*.") {
-		if existing, ok := v.wildcard[domain[1:]]; ok && existing != group {
-			return fmt.Errorf("the domain %q is already published by proxy %q", domain, existing.Name)
-		}
-		return nil
+		bucket = v.wildcard
+		domain = domain[1:]
+	} else {
+		bucket = v.exact
 	}
-	if existing, ok := v.exact[domain]; ok && existing != group {
-		return fmt.Errorf("the domain %q is already published by proxy %q", domain, existing.Name)
+	for _, existing := range bucket[domain] {
+		if existing != group && existing.routeLocation() == location {
+			return fmt.Errorf("the domain %q at location %q is already published by proxy %q",
+				domain, locationDisplay(location), existing.Name)
+		}
 	}
 	return nil
+}
+
+// routeLocation is the path prefix a proxy claims on its hostnames: empty when
+// it publishes the whole host.
+func (g *ProxyGroup) routeLocation() string {
+	if len(g.Locations) == 1 {
+		return g.Locations[0]
+	}
+	return ""
+}
+
+func locationDisplay(location string) string {
+	if location == "" {
+		return "/"
+	}
+	return location
+}
+
+// selectByPath picks one proxy from the host's candidates the way frp's router
+// does: the longest declared location prefix that matches the request path
+// wins, and a proxy with no locations catches whatever is left.
+func selectByPath(candidates []*ProxyGroup, path string) *ProxyGroup {
+	best := (*ProxyGroup)(nil)
+	bestLen := -1
+	for _, group := range candidates {
+		if len(group.Locations) == 0 {
+			if bestLen < 0 {
+				best, bestLen = group, 0
+			}
+			continue
+		}
+		for _, location := range group.Locations {
+			if strings.HasPrefix(path, location) && len(location) > bestLen {
+				best, bestLen = group, len(location)
+			}
+		}
+	}
+	return best
 }
 
 func (v *vhostRouter) remove(binding *vhostBinding) {
@@ -239,15 +284,26 @@ func (v *vhostRouter) remove(binding *vhostBinding) {
 	defer v.mu.Unlock()
 	for _, domain := range binding.domains {
 		if strings.HasPrefix(domain, "*.") {
-			if current, ok := v.wildcard[domain[1:]]; ok && current == binding.group {
-				delete(v.wildcard, domain[1:])
-			}
+			v.wildcard[domain[1:]] = dropGroup(v.wildcard[domain[1:]], binding.group)
 			continue
 		}
-		if current, ok := v.exact[domain]; ok && current == binding.group {
-			delete(v.exact, domain)
+		v.exact[domain] = dropGroup(v.exact[domain], binding.group)
+	}
+}
+
+// dropGroup removes one proxy from a hostname's list, deleting the entry when
+// the list empties.
+func dropGroup(groups []*ProxyGroup, group *ProxyGroup) []*ProxyGroup {
+	out := groups[:0]
+	for _, candidate := range groups {
+		if candidate != group {
+			out = append(out, candidate)
 		}
 	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // Domains lists the hostnames currently published, sorted.
@@ -265,26 +321,26 @@ func (v *vhostRouter) Domains() []string {
 	return out
 }
 
-// lookup finds the proxy that owns a hostname: an exact match first, then the
-// longest matching wildcard, then the subdomain-host convention.
-func (v *vhostRouter) lookup(host string) *ProxyGroup {
+// lookup lists the proxies a hostname can reach: the exact name first, then
+// the longest matching wildcard, then the subdomain-host convention.
+func (v *vhostRouter) lookup(host string) []*ProxyGroup {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 
-	if group, ok := v.exact[host]; ok {
-		return group
+	if groups, ok := v.exact[host]; ok {
+		return groups
 	}
 
 	best := ""
-	var match *ProxyGroup
-	for suffix, group := range v.wildcard {
+	var match []*ProxyGroup
+	for suffix, groups := range v.wildcard {
 		if len(host) <= len(suffix) || !strings.HasSuffix(host, suffix) {
 			continue
 		}
 		if len(suffix) > len(best) {
-			best, match = suffix, group
+			best, match = suffix, groups
 		}
 	}
 	if match != nil {
@@ -293,8 +349,8 @@ func (v *vhostRouter) lookup(host string) *ProxyGroup {
 
 	if v.subdomain != "" && strings.HasSuffix(host, "."+v.subdomain) {
 		name := strings.TrimSuffix(host, "."+v.subdomain)
-		if group, ok := v.exact[name]; ok {
-			return group
+		if groups, ok := v.exact[name]; ok {
+			return groups
 		}
 	}
 	return nil
@@ -307,9 +363,10 @@ func (v *vhostRouter) handler(w http.ResponseWriter, r *http.Request) {
 		host = h
 	}
 
-	group := v.lookup(host)
+	candidates := v.lookup(host)
+	group := selectByPath(candidates, r.URL.Path)
 	if group == nil {
-		v.logger.Printf("%s: no proxy is registered for host %q", v.kind, host)
+		v.logger.Printf("%s: no proxy is registered for host %q at %q", v.kind, host, r.URL.Path)
 		v.serveNotFound(w, host)
 		return
 	}

@@ -169,6 +169,13 @@
   可带 audience/scope），有过期时间则缓存至临期前 30 秒、无过期时间则每次连接重取（与
   frp 的非缓存 token source 同行为），每次（重）连接把令牌放进认证请求。静态令牌在
   配置了 `[oidc]` 的服务器上仍然有效——加一把门，不是换一把门。
+- **对标 frp 第十轮：vhost 按路径分流（locations）与 http 代理的 Host 改写**。
+  `[[proxies]]` 新增 `locations`：一个主机名可以被多个 http/https 代理按路径前缀拆分
+  （如 `["/api"]` 与无 locations 的兜底代理），服务端的虚拟主机路由表改为每域名一组
+  候选、按**最长匹配前缀**选择（frp 的 router 语义；`/api` 同时匹配 `/apiv2`，同 frp）。
+  同域名同前缀的重复注册仍被拒绝，同域名不同前缀合法。`host_header_rewrite` 的用途
+  从插件扩展到 http/https 终结代理：转发给本地服务的 Host 改写为指定值，访客侧的
+  Host 不变。`tls_passthrough` 不解析路径，locations 与其并用给出警告。
 - **`transport = "webrtc"`：私有代理的访客数据路径可以走 WebRTC DataChannel**。信令就是
   已经完成认证的控制连接（一次 offer 帧、一次 answer 帧，ICE 候选非渐进收集），数据本身是
   DTLS 加密、ICE 选路的 UDP 字节流——直连被墙的网络环境下数据路径的另一种形态。访客配置

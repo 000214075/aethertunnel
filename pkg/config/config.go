@@ -260,9 +260,10 @@ type ProxyConfig struct {
 	// plugin terminates the visitor's TLS with.
 	PluginCertFile string `toml:"plugin_cert_file"`
 	PluginKeyFile  string `toml:"plugin_key_file"`
-	// HostHeaderRewrite replaces the Host header the http2https plugin sends
-	// to the local service; the original host still names the TLS SNI unless
-	// this rewrites it.
+	// HostHeaderRewrite replaces the Host header the local service sees: the
+	// http2https plugin sends it to its local service, and the server's
+	// terminating virtual-host path forwards it on http/https proxies. Empty
+	// keeps the visitor's Host.
 	HostHeaderRewrite string `toml:"host_header_rewrite"`
 	// TLSPassthrough moves an https tunnel to the server's passthrough
 	// listener: the visitor's TLS session is relayed untouched and the
@@ -281,6 +282,12 @@ type ProxyConfig struct {
 	// the shared listener; a tls_passthrough relay never parses HTTP.
 	RequestHeaders  map[string]string `toml:"request_headers"`
 	ResponseHeaders map[string]string `toml:"response_headers"`
+	// Locations are the path prefixes this http/https proxy serves on its
+	// hostnames, so several proxies can share one hostname and split it by
+	// path: the server routes each request to the proxy whose prefix is the
+	// longest match. A proxy without locations catches whatever is left on the
+	// hostname.
+	Locations []string `toml:"locations"`
 	// ProxyProtocol asks the server to prepend a PROXY protocol v1 header with
 	// the visitor's addresses to the stream the local service receives, so the
 	// service can log and filter on the real visitor. "v1" or empty.

@@ -37,21 +37,23 @@ type ProxyGroup struct {
 	Type    string
 	Private bool
 
-	Domains         []string
-	Subdomain       string
-	HTTPUser        string
-	HTTPPassword    string
-	TLSPassthrough  bool
-	RequestHeaders  map[string]string
-	ResponseHeaders map[string]string
-	tcpmux          *tcpmuxBinding
-	sni             *sniBinding
-	SecretKey       string
-	AuthMethod      string
-	SecretPublicKey []byte
-	RemotePort      int
-	Group           string
-	Multipath       int
+	Domains           []string
+	Locations         []string
+	Subdomain         string
+	HostHeaderRewrite string
+	HTTPUser          string
+	HTTPPassword      string
+	TLSPassthrough    bool
+	RequestHeaders    map[string]string
+	ResponseHeaders   map[string]string
+	tcpmux            *tcpmuxBinding
+	sni               *sniBinding
+	SecretKey         string
+	AuthMethod        string
+	SecretPublicKey   []byte
+	RemotePort        int
+	Group             string
+	Multipath         int
 
 	manager     *TunnelManager
 	logger      *log.Logger
@@ -200,33 +202,35 @@ func (a *atomicFloat64) Load() float64 { return math.Float64frombits(a.bits.Load
 func newProxyGroup(spec protocol.ProxySpec, manager *TunnelManager) *ProxyGroup {
 	policyAllow, policyDeny := manager.policies.visitorRules(spec.Name)
 	return &ProxyGroup{
-		Name:            spec.Name,
-		Type:            spec.Type,
-		Private:         config.IsPrivateProxyType(spec.Type),
-		Domains:         append([]string(nil), spec.Domains...),
-		Subdomain:       spec.Subdomain,
-		HTTPUser:        spec.HTTPUser,
-		HTTPPassword:    spec.HTTPPassword,
-		TLSPassthrough:  spec.TLSPassthrough,
-		SecretKey:       spec.SecretKey,
-		AuthMethod:      spec.AuthMethod,
-		RequestHeaders:  spec.RequestHeaders,
-		ResponseHeaders: spec.ResponseHeaders,
-		RemotePort:      spec.RemotePort,
-		Group:           spec.Group,
-		Multipath:       spec.Multipath,
-		allowVisitor:    compileCIDRs(spec.AllowCIDRs),
-		denyVisitor:     compileCIDRs(spec.DenyCIDRs),
-		policyAllow:     policyAllow,
-		policyDeny:      policyDeny,
-		manager:         manager,
-		logger:          manager.logger,
-		cipher:          manager.cipher,
-		metrics:         manager.metrics,
-		idleTimeout:     time.Duration(manager.cfg.Server.ReadTimeoutSecs) * time.Second,
-		dialTimeout:     time.Duration(manager.cfg.Server.DialTimeoutSecs) * time.Second,
-		strategy:        manager.cfg.Server.LoadBalance,
-		done:            make(chan struct{}),
+		Name:              spec.Name,
+		Type:              spec.Type,
+		Private:           config.IsPrivateProxyType(spec.Type),
+		Domains:           append([]string(nil), spec.Domains...),
+		Locations:         append([]string(nil), spec.Locations...),
+		Subdomain:         spec.Subdomain,
+		HostHeaderRewrite: spec.HostHeaderRewrite,
+		HTTPUser:          spec.HTTPUser,
+		HTTPPassword:      spec.HTTPPassword,
+		TLSPassthrough:    spec.TLSPassthrough,
+		SecretKey:         spec.SecretKey,
+		AuthMethod:        spec.AuthMethod,
+		RequestHeaders:    spec.RequestHeaders,
+		ResponseHeaders:   spec.ResponseHeaders,
+		RemotePort:        spec.RemotePort,
+		Group:             spec.Group,
+		Multipath:         spec.Multipath,
+		allowVisitor:      compileCIDRs(spec.AllowCIDRs),
+		denyVisitor:       compileCIDRs(spec.DenyCIDRs),
+		policyAllow:       policyAllow,
+		policyDeny:        policyDeny,
+		manager:           manager,
+		logger:            manager.logger,
+		cipher:            manager.cipher,
+		metrics:           manager.metrics,
+		idleTimeout:       time.Duration(manager.cfg.Server.ReadTimeoutSecs) * time.Second,
+		dialTimeout:       time.Duration(manager.cfg.Server.DialTimeoutSecs) * time.Second,
+		strategy:          manager.cfg.Server.LoadBalance,
+		done:              make(chan struct{}),
 	}
 }
 
@@ -1477,6 +1481,11 @@ func (g *ProxyGroup) buildHTTPProxy() *httputil.ReverseProxy {
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
 			pr.Out.Host = pr.In.Host
+			if g.HostHeaderRewrite != "" {
+				// The operator named the Host the local service should see;
+				// virtual hosts and locations stop at the server.
+				pr.Out.Host = g.HostHeaderRewrite
+			}
 			pr.SetXForwarded()
 			for name, value := range g.RequestHeaders {
 				pr.Out.Header.Set(name, value)
