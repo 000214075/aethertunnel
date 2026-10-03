@@ -408,15 +408,24 @@ function Invoke-Binary {
 
 # Windows reserves ranges of ports for Hyper-V and WinNAT, and those ports refuse
 # both binds with "access permissions". A port is only usable here when both a TCP
-# listener and a UDP socket can be created on it.
+# listener and a UDP socket can be created on it. When the OS-assigned ephemeral
+# window overlaps a reservation, every picked port fails the same way, so after a
+# handful of tries the helper scatters over the whole usable space instead.
 function Get-FreePort {
     $last = ''
-    for ($attempt = 0; $attempt -lt 50; $attempt++) {
-        $probe = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
-        $probe.Start()
-        $port = $probe.LocalEndpoint.Port
-        $probe.Stop()
+    $rng = [System.Random]::new()
+    for ($attempt = 0; $attempt -lt 200; $attempt++) {
+        $port = 0
+        if ($attempt -lt 50) {
+            $probe = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
+            $probe.Start()
+            $port = $probe.LocalEndpoint.Port
+            $probe.Stop()
+        } else {
+            $port = 10000 + $rng.Next(50000)
+        }
 
+        $tcp = $null
         try {
             $tcp = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $port)
             $tcp.Start()
