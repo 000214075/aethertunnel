@@ -404,6 +404,9 @@ type AuthRequest struct {
 	// VPN asks the server for an address on its layer-3 tunnel subnet. The server
 	// answers with VPNAddress when it can provide one.
 	VPN bool `json:"vpn,omitempty"`
+	// Metas carries the client's [metas] key-value pairs for the server to show
+	// and to hand to its [[http_plugins]] webhooks. Older servers ignore them.
+	Metas map[string]string `json:"metas,omitempty"`
 }
 
 // AuthResponse reports whether the session was accepted.
@@ -502,6 +505,13 @@ type ProxySpec struct {
 	// DataRequest, so an old server — which ignores the field and never echoes —
 	// leaves the stream uncompressed instead of breaking it.
 	UseCompression bool `json:"use_compression,omitempty"`
+	// RequestHeaders and ResponseHeaders are set on the HTTP requests the
+	// terminating virtual-host path relays (request side) and on the answers it
+	// sends back (response side). They apply to http proxies and to https
+	// proxies that terminate on the shared listener; a tls_passthrough relay
+	// never parses HTTP, so it ignores them.
+	RequestHeaders  map[string]string `json:"request_headers,omitempty"`
+	ResponseHeaders map[string]string `json:"response_headers,omitempty"`
 	// TLSPassthrough moves an https proxy to the server's TLS passthrough
 	// listener: the visitor's ClientHello names the hostname, the server
 	// routes by it, and the TLS session is relayed untouched. Old servers

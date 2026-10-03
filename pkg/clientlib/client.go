@@ -529,6 +529,7 @@ func (c *client) runSession(ctx context.Context) error {
 		Protocol:      protocol.ProtocolVersion,
 		Encryption:    c.cipher.Algorithm(),
 		VPN:           c.cfg.VPN.Enabled,
+		Metas:         c.cfg.Client.Metas,
 	}
 
 	var kexState []byte
@@ -763,25 +764,27 @@ func (c *client) startVPN(ctx context.Context, framer *protocol.Framer, response
 // than of the server's configuration.
 func proxySpec(proxy config.ProxyConfig) protocol.ProxySpec {
 	return protocol.ProxySpec{
-		Name:           proxy.Name,
-		Type:           proxy.Type,
-		LocalAddr:      proxy.LocalAddr(),
-		RemotePort:     proxy.RemotePort,
-		Domains:        proxy.Domains,
-		ProxyProtocol:  proxy.ProxyProtocol,
-		Subdomain:      proxy.Subdomain,
-		HTTPUser:       proxy.HTTPUser,
-		HTTPPassword:   proxy.HTTPPassword,
-		Multiplexer:    proxy.Multiplexer,
-		UseCompression: proxy.UseCompression,
-		TLSPassthrough: proxy.TLSPassthrough,
-		SecretKey:      proxy.SecretKey,
-		AuthMethod:     proxy.AuthMethod,
-		Group:          proxy.Group,
-		Multipath:      proxy.Multipath,
-		AllowCIDRs:     proxy.AllowCIDRs,
-		DenyCIDRs:      proxy.DenyCIDRs,
-		AllowTargets:   proxy.AllowTargets,
+		Name:            proxy.Name,
+		Type:            proxy.Type,
+		LocalAddr:       proxy.LocalAddr(),
+		RemotePort:      proxy.RemotePort,
+		Domains:         proxy.Domains,
+		ProxyProtocol:   proxy.ProxyProtocol,
+		Subdomain:       proxy.Subdomain,
+		HTTPUser:        proxy.HTTPUser,
+		HTTPPassword:    proxy.HTTPPassword,
+		Multiplexer:     proxy.Multiplexer,
+		UseCompression:  proxy.UseCompression,
+		RequestHeaders:  proxy.RequestHeaders,
+		ResponseHeaders: proxy.ResponseHeaders,
+		TLSPassthrough:  proxy.TLSPassthrough,
+		SecretKey:       proxy.SecretKey,
+		AuthMethod:      proxy.AuthMethod,
+		Group:           proxy.Group,
+		Multipath:       proxy.Multipath,
+		AllowCIDRs:      proxy.AllowCIDRs,
+		DenyCIDRs:       proxy.DenyCIDRs,
+		AllowTargets:    proxy.AllowTargets,
 	}
 }
 

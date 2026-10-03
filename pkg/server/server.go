@@ -56,19 +56,20 @@ type Server struct {
 
 	startedAt time.Time
 
-	sessions  *SessionManager
-	tunnels   *TunnelManager
-	metrics   *Metrics
-	acl       *AccessControl
-	bans      *banList
-	auditor   *Auditor
-	ledger    *ledgerStore
-	vhost     *vhostSet
-	tcpmux    *tcpmuxSet
-	sni       *sniSet
-	p2p       *p2pRendezvous
-	directory *directory
-	vpn       *vpnService
+	sessions    *SessionManager
+	tunnels     *TunnelManager
+	metrics     *Metrics
+	acl         *AccessControl
+	bans        *banList
+	auditor     *Auditor
+	ledger      *ledgerStore
+	vhost       *vhostSet
+	tcpmux      *tcpmuxSet
+	sni         *sniSet
+	httpPlugins *httpPluginManager
+	p2p         *p2pRendezvous
+	directory   *directory
+	vpn         *vpnService
 
 	tlsConfig  *tls.Config
 	identities []ed25519.PublicKey
@@ -176,6 +177,8 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	s.tunnels.tcpmux = s.tcpmux
 	s.sni = newSNISet(cfg, logger)
 	s.tunnels.sni = s.sni
+	s.httpPlugins = newHTTPPluginManager(cfg, logger)
+	s.tunnels.httpPlugins = s.httpPlugins
 	if cfg.Server.P2PPort > 0 {
 		s.p2p = newP2PRendezvous(logger)
 		s.tunnels.p2p = s.p2p
@@ -782,6 +785,23 @@ func (s *Server) handleControl(conn net.Conn, framer *protocol.Framer, msg *prot
 
 	session := newSession(conn, framer, &req, sessionCipher.Enabled(), s.cfg.Server.HeartbeatSeconds)
 	session.streamKey = sessionKey
+
+	// The [[http_plugins]] webhooks see the login before the session is
+	// registered: a reject answers the auth response with the plugin's reason,
+	// the same treatment a built-in check gets.
+	if reason := s.httpPlugins.runLogin(session, &req); reason != "" {
+		s.metrics.controlRejected.Add(1)
+		s.auditor.Record(AuditEvent{
+			Event: EventControlRejected, ClientID: session.ID, Remote: session.RemoteAddr,
+			Outcome: "denied", Detail: "rejected by http plugin: " + reason,
+		})
+		// The refusal answer goes out before the session's teardown closes
+		// the connection.
+		reject(reason, false)
+		session.Close("rejected by http plugin")
+		return
+	}
+
 	if err := s.sessions.Add(session); err != nil {
 		s.metrics.controlRejected.Add(1)
 		s.auditor.Record(AuditEvent{

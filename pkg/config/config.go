@@ -108,6 +108,26 @@ type ServerConfig struct {
 	P2PPort int `toml:"p2p_port"`
 }
 
+// HTTPPluginConfig is one [[http_plugins]] webhook: the server POSTs a JSON
+// envelope for every operation the plugin declares and refuses the session,
+// the registration or the visitor connection when the answer says reject.
+type HTTPPluginConfig struct {
+	Name string `toml:"name"`
+	// Addr is the plugin's base URL, "http://host:port" or "https://host:port";
+	// a bare host:port is taken as http.
+	Addr string `toml:"addr"`
+	// Path is appended to Addr; it must start with a slash.
+	Path string `toml:"path"`
+	// Ops lists the operations this plugin wants: "login", "newProxy" or
+	// "newUserConn".
+	Ops []string `toml:"ops"`
+	// TimeoutSecs bounds each call; 0 selects 5 seconds. A plugin that cannot
+	// be reached rejects the operation.
+	TimeoutSecs int `toml:"timeout_secs"`
+	// TLSVerify turns certificate verification on for an https plugin address.
+	TLSVerify bool `toml:"tls_verify"`
+}
+
 // ClientConfig is the [client] section.
 type ClientConfig struct {
 	ServerAddr string `toml:"server_addr"`
@@ -128,6 +148,10 @@ type ClientConfig struct {
 	// mirroring frp's client webServer: /healthz, /api/status and
 	// /api/reload. See AdminConfig.
 	Admin *AdminConfig `toml:"admin"`
+	// Metas carries operator-chosen key-value pairs that ride the auth
+	// request, so the server can show them and hand them to its
+	// [[http_plugins]] webhooks.
+	Metas map[string]string `toml:"metas"`
 }
 
 // AdminConfig is the [client.admin] section. It serves the client's
@@ -218,6 +242,12 @@ type ProxyConfig struct {
 	// combined, in decimal bytes per second: "1MB", "500KB". Empty means no
 	// limit.
 	Bandwidth string `toml:"bandwidth"`
+	// RequestHeaders and ResponseHeaders are set on the HTTP requests the
+	// server's terminating virtual-host path relays and on the answers it sends
+	// back. They apply to http proxies and to https proxies that terminate on
+	// the shared listener; a tls_passthrough relay never parses HTTP.
+	RequestHeaders  map[string]string `toml:"request_headers"`
+	ResponseHeaders map[string]string `toml:"response_headers"`
 	// ProxyProtocol asks the server to prepend a PROXY protocol v1 header with
 	// the visitor's addresses to the stream the local service receives, so the
 	// service can log and filter on the real visitor. "v1" or empty.
@@ -584,20 +614,24 @@ type VPNConfig struct {
 
 // Config is the whole file.
 type Config struct {
-	Server      ServerConfig      `toml:"server"`
-	Client      ClientConfig      `toml:"client"`
-	Dashboard   DashboardConfig   `toml:"dashboard"`
-	Encryption  EncryptionConfig  `toml:"encryption"`
-	Transport   TransportConfig   `toml:"transport"`
-	Identity    IdentityConfig    `toml:"identity"`
-	Obfuscation ObfuscationConfig `toml:"obfuscation"`
-	Metrics     MetricsConfig     `toml:"metrics"`
-	Audit       AuditConfig       `toml:"audit"`
-	Ledger      LedgerConfig      `toml:"ledger"`
-	DHT         DHTConfig         `toml:"dht"`
-	VPN         VPNConfig         `toml:"vpn"`
-	Proxies     []ProxyConfig     `toml:"proxies"`
-	Visitors    []VisitorConfig   `toml:"visitors"`
+	// HTTPPlugins names webhook endpoints a server calls on session login,
+	// proxy registration and every visitor connection, so an operator can gate
+	// and observe the server with its own HTTP service. Server only.
+	HTTPPlugins []HTTPPluginConfig `toml:"http_plugins"`
+	Server      ServerConfig       `toml:"server"`
+	Client      ClientConfig       `toml:"client"`
+	Dashboard   DashboardConfig    `toml:"dashboard"`
+	Encryption  EncryptionConfig   `toml:"encryption"`
+	Transport   TransportConfig    `toml:"transport"`
+	Identity    IdentityConfig     `toml:"identity"`
+	Obfuscation ObfuscationConfig  `toml:"obfuscation"`
+	Metrics     MetricsConfig      `toml:"metrics"`
+	Audit       AuditConfig        `toml:"audit"`
+	Ledger      LedgerConfig       `toml:"ledger"`
+	DHT         DHTConfig          `toml:"dht"`
+	VPN         VPNConfig          `toml:"vpn"`
+	Proxies     []ProxyConfig      `toml:"proxies"`
+	Visitors    []VisitorConfig    `toml:"visitors"`
 
 	// SourceFile is the path the configuration was read from, set by Load. A
 	// client whose configuration names a file re-reads it on SIGHUP; a
@@ -628,6 +662,16 @@ const (
 	RoleServer = "server"
 	RoleClient = "client"
 )
+
+// HTTP plugin operations: what a [[http_plugins]] webhook can be asked about.
+const (
+	HTTPPluginOpLogin       = "login"
+	HTTPPluginOpNewProxy    = "newProxy"
+	HTTPPluginOpNewUserConn = "newUserConn"
+)
+
+// HTTPPluginOps lists the accepted [[http_plugins]] ops values.
+var HTTPPluginOps = []string{HTTPPluginOpLogin, HTTPPluginOpNewProxy, HTTPPluginOpNewUserConn}
 
 // defaults fills in the values that make a minimal config usable.
 func (c *Config) applyDefaults() {
@@ -1147,6 +1191,38 @@ func (c *Config) Validate(role string) error {
 		if c.Server.HTTPSPassthroughPort > 0 && c.Server.HTTPSPassthroughPort == c.Server.HTTPSPort {
 			problems = append(problems, "server.https_passthrough_port and server.https_port must differ: one relays TLS and the other terminates it")
 		}
+		for i := range c.HTTPPlugins {
+			plugin := &c.HTTPPlugins[i]
+			if plugin.Name == "" {
+				problems = append(problems, fmt.Sprintf("http_plugins[%d]: name is required", i))
+			}
+			if plugin.Addr == "" {
+				problems = append(problems, fmt.Sprintf("http_plugins[%d] %q: addr is required", i, plugin.Name))
+			}
+			if plugin.Path != "" && !strings.HasPrefix(plugin.Path, "/") {
+				problems = append(problems, fmt.Sprintf("http_plugins[%d] %q: path must start with a slash", i, plugin.Name))
+			}
+			if plugin.TimeoutSecs < 0 {
+				problems = append(problems, fmt.Sprintf("http_plugins[%d] %q: timeout_secs cannot be negative", i, plugin.Name))
+			}
+			if len(plugin.Ops) == 0 {
+				problems = append(problems, fmt.Sprintf("http_plugins[%d] %q: ops is empty; name at least one of %s",
+					i, plugin.Name, strings.Join(HTTPPluginOps, ", ")))
+			}
+			for _, op := range plugin.Ops {
+				known := false
+				for _, knownOp := range HTTPPluginOps {
+					if op == knownOp {
+						known = true
+						break
+					}
+				}
+				if !known {
+					problems = append(problems, fmt.Sprintf("http_plugins[%d] %q: op %q is not one of %s",
+						i, plugin.Name, op, strings.Join(HTTPPluginOps, ", ")))
+				}
+			}
+		}
 		if c.Server.AuthToken == "" {
 			problems = append(problems, "server.auth_token is required")
 		} else if isWeakToken(c.Server.AuthToken) {
@@ -1187,6 +1263,9 @@ func (c *Config) Validate(role string) error {
 			}
 		} else if a := c.Client.Admin; a != nil && (a.Port != 0 || a.BindAddr != "" || a.User != "" || a.Password != "") {
 			c.Warnings = append(c.Warnings, "client.admin is configured but client.admin.enabled is false: the management API stays off")
+		}
+		if len(c.HTTPPlugins) > 0 {
+			c.Warnings = append(c.Warnings, "http_plugins has no effect in a client configuration: the webhooks run on a server")
 		}
 	}
 
@@ -1806,6 +1885,8 @@ func (c *Config) validateProxyPolicy(p ProxyConfig) []string {
 		{"multiplexer", p.Multiplexer != ""},
 		{"use_compression", p.UseCompression},
 		{"tls_passthrough", p.TLSPassthrough},
+		{"request_headers", len(p.RequestHeaders) > 0},
+		{"response_headers", len(p.ResponseHeaders) > 0},
 		{"bandwidth", p.Bandwidth != ""},
 		{"proxy_protocol", p.ProxyProtocol != ""},
 		{"remote_ports", p.RemotePorts != ""},

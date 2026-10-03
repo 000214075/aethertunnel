@@ -69,6 +69,29 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `p2p_port` | int | 0 | `xtcp` 打洞的 UDP 会合端口，0 表示不支持打洞（xtcp 走中继）。与 `dht.listen_addr` 撞在同一个 UDP 地址上时被拒绝 |
 | `load_balance` | string | `round-robin` | 代理池策略：`round-robin` `random` `latency` `failover` `adaptive` `bandit`。只对声明了 `group` 的代理有影响。`bandit` 是**在线学习**的多臂老虎机（UCB1）：每条流按应答速度记奖励（立即回答记 1，越慢越小），据此估计各成员的平均奖励并加一个探索项来选择成员；没有离线训练、没有模型文件，学习只来自这个池子实际服务过的流。每第 20 次选择会去测观测最少的成员，因此曾经很慢的成员在恢复后仍会被重新测量 |
 
+## `[[http_plugins]]`（服务端，可重复）
+
+frp 服务端 httpPlugins webhook 的对应物：服务器在**会话登录**、**代理注册**与**每个访客
+连接**时，把一个 JSON 信封 POST 到插件端点并读取 JSON 应答。应答 `reject = true`（或
+省略 `reject_reason` 时的默认理由）会以与内置检查完全相同的方式拒绝：登录被拒的客户端
+拿到认证应答里的理由，注册被拒的代理拿到注册拒绝，访客连接被直接关掉。**插件够不着时
+同样拒绝**——把门禁接到服务器前面的人，不希望它宕机时门被绕开。
+
+信封与 frp 的插件契约同形（`{version, op, content}` 进、`{reject, reject_reason,
+unchange, content}` 出），已有的 frp webhook 可以直接应答。内容刻意比 frp 收窄：认证
+令牌与私有代理的 secret 永远不出服务器。`newProxy` 应答的 `unchange = false` 携带改写
+后的可发布字段（name、type、remote_port、domains、subdomain、group、multipath、
+http_user），服务器按改写后的值继续注册。
+
+| 键 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `name` | string | 必填 | 插件名，日志与拒绝理由里用它 |
+| `addr` | string | 必填 | 插件端点：`http://host:port` 或 `https://host:port`；裸 `host:port` 按 http 处理 |
+| `path` | string | 空 | 追加到 `addr` 后；非空必须以 `/` 开头 |
+| `ops` | []string | 必填 | 本插件关心哪些操作：`login`、`newProxy`、`newUserConn` |
+| `timeout_secs` | int | 5 | 每次调用的时限，0 取默认，负数被拒 |
+| `tls_verify` | bool | false | https 插件端点是否校验证书 |
+
 ## `[client]`（客户端）
 
 | 键 | 类型 | 默认 | 说明 |
@@ -81,6 +104,7 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `dial_timeout_seconds` | int | 10 | 连接服务端、等待 `DataOpenAck`、连接本地服务的超时。负数被拒绝（此前负值等于"立即超时"，客户端永远连不上） |
 | `idle_timeout_seconds` | int | 300 | 单条隧道流的空闲上限：超过这段时间没有字节流动就断开。适用于服务端转发的流、访客的本地监听连接，以及打洞后的直连路径。负数被拒绝 |
 | `dial_via` | string | 空 | 经一个中转代理连接服务器：`socks5://user:pass@10.0.0.2:1080`、`socks5h://proxy.lan`、`http://proxy.lan:3128`、`https://…`。直连被封或计费时用它；隧道自身的 TLS 与加密全部加在中转之上，中转只看到不透明的 TLS 形状流量。留空直连 |
+| `metas` | 表 | 空 | 操作者自选的键值对（`[client.metas]` 下），随认证请求上报：服务端在日志里记录，并原样交给 `[[http_plugins]]` 的 webhook |
 
 ## `[client.admin]`（客户端管理 API）
 
@@ -111,6 +135,7 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `http_user` / `http_password` | string | 空 | 仅 `http`/`https`：服务器在转发之前检查访问者的 Authorization 头，不匹配回 401 并带 `WWW-Authenticate: Basic` 挑战；两者任一非空即启用。二者都填空才是不设防的主机名 |
 | `multiplexer` | string | 空 | 仅 `tcpmux`，目前唯一取值 `"httpconnect"`：访问者对该隧道发 `CONNECT`，以主机名选中 |
 | `use_compression` | bool | false | 字节流在客户端与服务器之间用 snappy 流式压缩（加在加密层外侧，先压缩后加密）。服务器在每条 DataRequest 里回声确认，旧服务端不回声就自动退化为不压缩，混合部署不会坏流。对数据报隧道无效果（给出警告），打洞成功的 xtcp 直连路径不经过它 |
+| `request_headers` / `response_headers` | 表 | 空 | 仅 `http`/`https`（终结形态）：服务端在转发的 HTTP 请求上 `Set` 这些请求头、在回答上 `Set` 这些应答头。`tls_passthrough` 的透传不解析 HTTP，忽略这两项 |
 | `tls_passthrough` | bool | false | 仅 `https`：隧道改骑 `[server].https_passthrough_port` 的透传监听——服务器按 ClientHello 的 SNI 选中隧道后把访客的 TLS 会话原样中继过来，访客看到的是客户端自己的证书（每个域名各归各家）。本地服务必须自己说 TLS，或配 `https2http` 插件替它终结。默认 false：https 在共享监听上由服务器统一终结 TLS |
 | `secret_key` | string | 空 | 私有类型必填，也是访客侧的凭据 |
 | `auth_method` | string | `secret` | `secret` 直接比对；`nizk` 用 Schnorr 证明，secret 不出现在线上；`snark` 用 Groth16 的 zk-SNARK 证明（电路与可信设置说明见 `pkg/snarkauth`），secret 不出现在线上且证明绑定本次挑战 |

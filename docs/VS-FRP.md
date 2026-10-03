@@ -34,6 +34,9 @@ executable checks in this repository, not at marketing.
 | https2http 插件 | ✅ | ✅ | 客户端用自己的证书终结访客的 TLS，明文转发给 local_port 的 HTTP 服务；可走专用 tcp 端口，也可叠加 `tls_passthrough` 骑在共享透传端口上 |
 | https SNI 透传 | ✅ | ✅ | `tls_passthrough = true` + `[server].https_passthrough_port`：按 ClientHello 的 SNI 分流，访客的 TLS 会话原样中继到客户端，证书由客户端逐域名提供 |
 | 客户端管理 API | ✅ webServer | ✅ `[client.admin]` | `/healthz` 免认证，`/api/status`、`/api/reload` 可选 basic auth |
+| 服务端 httpPlugins webhook | ✅ | ✅ | `[[http_plugins]]`：login / newProxy / newUserConn 三个操作，JSON 信封与应答契约与 frp 的 webhook 兼容；newProxy 的应答可改写可发布字段；信封刻意不含令牌与私有代理的 secret |
+| 代理 HTTP 头注入 | ✅ requestHeaders/responseHeaders | ✅ `request_headers`/`response_headers` | 服务端终结 HTTP 的路径按代理注入请求头与应答头 |
+| 客户端 metas | ✅ | ✅ `[client.metas]` | 随认证请求上报，服务端交给 webhook 并记入日志 |
 | 传输层 websocket | ✅ transport.protocol | ✅ `transport.protocol = "websocket"` | 到服务器的每条连接包进 RFC 6455 二进制帧；服务端同一端口按连接嗅探升级，无需配置；TLS 仍在外侧（wss 分层） |
 | 客户端插件：socks5 | ✅ | ✅ | 访客对公共端口说 SOCKS5，客户端从自己的网络拨目标；`allow_targets` 必填（比 frp 多一层圈界），`plugin_user`/`plugin_password` 可选认证 |
 | 客户端插件：https2https / tls2raw | ✅ | ✅ | 终结访客 TLS 后分别转本地 HTTPS（两腿加密）与本地 TCP 明文 |
@@ -127,13 +130,14 @@ executable checks in this repository, not at marketing.
 | 仪表盘/指标 | ✅ | `pkg/server/metrics*.go`、面板 API、Android App |
 | 日志/审计 | ✅ 且更进一步 | `pkg/server/audit*.go`（结构化审计事件） |
 | 管理 API 的 reload | ✅ | `pkg/clientlib/reload.go`（SIGHUP 同路径）、`pkg/clientlib/admin.go`（客户端 `POST /api/reload`） |
+| httpPlugins webhook | ✅（信封更省：不带令牌与 secret） | `pkg/server/httpplugin.go`（login 在注册会话前、newProxy 在注册入口且可改写、newUserConn 在每个访客连接） |
 
 ### 尚未复现 · Not reproduced yet
 
 - OIDC 认证（`auth_method` 的零知识/签名方案覆盖同场景）。
 - frp 的 kcp/quic 传输层（本项目走 TCP + 自有加密帧；websocket 形态已实现）。
 - frp 的管理端 Web UI 形态（本项目面板另有实现）。
-- frp 服务端的 httpPlugins webhook 扩展与 xtcp 访客的 fallback_to 回退。
+- frp xtcp 访客的 fallback_to 回退（本项目的 xtcp 打洞失败本就走服务器中继）。
 
 ## 一句话 · In one sentence
 

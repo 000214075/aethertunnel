@@ -30,6 +30,8 @@ type Session struct {
 	RemoteAddr       string
 	ConnectedAt      time.Time
 	HeartbeatSeconds int
+	// Metas carries the client's [metas] pairs; empty when it sent none.
+	Metas map[string]string
 
 	conn net.Conn
 	// framer is replaced when a post-quantum key agreement completes, and tunnel
@@ -98,6 +100,7 @@ func newSession(conn net.Conn, framer *protocol.Framer, req *protocol.AuthReques
 	s := &Session{
 		ID:               newID(8),
 		ClientVersion:    req.ClientVersion,
+		Metas:            req.Metas,
 		Protocol:         req.Protocol,
 		Encrypted:        encrypted,
 		RemoteAddr:       conn.RemoteAddr().String(),

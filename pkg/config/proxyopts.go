@@ -216,6 +216,12 @@ func (c *Config) validateProxyExtras(p ProxyConfig) []string {
 			"proxy %q: use_compression compresses byte streams; a %s tunnel moves datagrams and gains nothing from it",
 			p.Name, p.Type))
 	}
+	if (len(p.RequestHeaders) > 0 || len(p.ResponseHeaders) > 0) &&
+		p.Type != ProxyTypeHTTP && p.Type != ProxyTypeHTTPS {
+		c.Warnings = append(c.Warnings, fmt.Sprintf(
+			"proxy %q: request_headers and response_headers apply to the terminating http/https path; a %s tunnel never parses HTTP and ignores them",
+			p.Name, p.Type))
+	}
 	switch p.Plugin {
 	case "":
 	case PluginStaticFile, PluginUnixSocket:

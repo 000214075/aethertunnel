@@ -150,6 +150,16 @@
   被本轮端到端测试暴露的隐患：包装连接（websocket、SNI 透传的重放连接）把 `*net.TCPConn`
   藏在 `net.Conn` 接口后面，半关闭会退化成整条关闭、切断"见到请求结束才回复"的服务——
   现在显式转发 `CloseWrite`，并有回归测试钉住该契约。
+- **对标 frp 第八轮：服务端 httpPlugins webhook、代理 HTTP 头注入与客户端 metas**。
+  `[[http_plugins]]` 让服务器在会话登录、代理注册与每个访客连接时把 JSON 信封 POST 给
+  操作者自己的 webhook（`pkg/server/httpplugin.go`）：应答 `reject` 即按内置检查同款方式
+  拒绝，插件够不着同样拒绝（门禁宕机不绕行）；信封与 frp 的插件契约同形，已有的 frp
+  webhook 可直接应答，内容刻意收窄——认证令牌与私有代理的 secret 永不出服务器；
+  `newProxy` 的应答可改写可发布字段（端口、域名、分组等）并由服务器按改写值继续注册。
+  `[[proxies]]` 新增 `request_headers`/`response_headers`：服务端终结 HTTP 的路径按代理
+  `Set` 请求头与应答头（`tls_passthrough` 不解析 HTTP，忽略之）。客户端 `[client.metas]`
+  随认证请求上报键值对，服务端记入日志并原样交给 webhook。会话、注册与访客拒绝均记入
+  既有审计与指标序列。
 - **`transport = "webrtc"`：私有代理的访客数据路径可以走 WebRTC DataChannel**。信令就是
   已经完成认证的控制连接（一次 offer 帧、一次 answer 帧，ICE 候选非渐进收集），数据本身是
   DTLS 加密、ICE 选路的 UDP 字节流——直连被墙的网络环境下数据路径的另一种形态。访客配置

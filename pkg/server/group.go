@@ -42,6 +42,8 @@ type ProxyGroup struct {
 	HTTPUser        string
 	HTTPPassword    string
 	TLSPassthrough  bool
+	RequestHeaders  map[string]string
+	ResponseHeaders map[string]string
 	tcpmux          *tcpmuxBinding
 	sni             *sniBinding
 	SecretKey       string
@@ -198,31 +200,33 @@ func (a *atomicFloat64) Load() float64 { return math.Float64frombits(a.bits.Load
 func newProxyGroup(spec protocol.ProxySpec, manager *TunnelManager) *ProxyGroup {
 	policyAllow, policyDeny := manager.policies.visitorRules(spec.Name)
 	return &ProxyGroup{
-		Name:           spec.Name,
-		Type:           spec.Type,
-		Private:        config.IsPrivateProxyType(spec.Type),
-		Domains:        append([]string(nil), spec.Domains...),
-		Subdomain:      spec.Subdomain,
-		HTTPUser:       spec.HTTPUser,
-		HTTPPassword:   spec.HTTPPassword,
-		TLSPassthrough: spec.TLSPassthrough,
-		SecretKey:      spec.SecretKey,
-		AuthMethod:     spec.AuthMethod,
-		RemotePort:     spec.RemotePort,
-		Group:          spec.Group,
-		Multipath:      spec.Multipath,
-		allowVisitor:   compileCIDRs(spec.AllowCIDRs),
-		denyVisitor:    compileCIDRs(spec.DenyCIDRs),
-		policyAllow:    policyAllow,
-		policyDeny:     policyDeny,
-		manager:        manager,
-		logger:         manager.logger,
-		cipher:         manager.cipher,
-		metrics:        manager.metrics,
-		idleTimeout:    time.Duration(manager.cfg.Server.ReadTimeoutSecs) * time.Second,
-		dialTimeout:    time.Duration(manager.cfg.Server.DialTimeoutSecs) * time.Second,
-		strategy:       manager.cfg.Server.LoadBalance,
-		done:           make(chan struct{}),
+		Name:            spec.Name,
+		Type:            spec.Type,
+		Private:         config.IsPrivateProxyType(spec.Type),
+		Domains:         append([]string(nil), spec.Domains...),
+		Subdomain:       spec.Subdomain,
+		HTTPUser:        spec.HTTPUser,
+		HTTPPassword:    spec.HTTPPassword,
+		TLSPassthrough:  spec.TLSPassthrough,
+		SecretKey:       spec.SecretKey,
+		AuthMethod:      spec.AuthMethod,
+		RequestHeaders:  spec.RequestHeaders,
+		ResponseHeaders: spec.ResponseHeaders,
+		RemotePort:      spec.RemotePort,
+		Group:           spec.Group,
+		Multipath:       spec.Multipath,
+		allowVisitor:    compileCIDRs(spec.AllowCIDRs),
+		denyVisitor:     compileCIDRs(spec.DenyCIDRs),
+		policyAllow:     policyAllow,
+		policyDeny:      policyDeny,
+		manager:         manager,
+		logger:          manager.logger,
+		cipher:          manager.cipher,
+		metrics:         manager.metrics,
+		idleTimeout:     time.Duration(manager.cfg.Server.ReadTimeoutSecs) * time.Second,
+		dialTimeout:     time.Duration(manager.cfg.Server.DialTimeoutSecs) * time.Second,
+		strategy:        manager.cfg.Server.LoadBalance,
+		done:            make(chan struct{}),
 	}
 }
 
@@ -303,6 +307,19 @@ func (g *ProxyGroup) memberCount() int {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return len(g.members)
+}
+
+// ownerSession names the session that registered this group, for the
+// [[http_plugins]] newUserConn webhooks: the webhook is asked about the proxy's
+// owner, whichever member will carry this particular stream. Nil when no member
+// is up — the visitor then fails on the normal path anyway.
+func (g *ProxyGroup) ownerSession() *Session {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	for _, member := range g.members {
+		return member.Session
+	}
+	return nil
 }
 
 // add registers a member, binding the group's public endpoint the first time.
@@ -957,6 +974,15 @@ func (g *ProxyGroup) serveVisit(public net.Conn) {
 		}
 	}()
 
+	// The [[http_plugins]] newUserConn webhooks see every visitor connection
+	// before it is served: a reject turns it away with the plugin's reason.
+	if owner := g.ownerSession(); owner != nil {
+		if reason := g.manager.httpPlugins.runNewUserConn(owner, g, public.RemoteAddr().String()); reason != "" {
+			g.refuseVisitor(public.RemoteAddr(), reason)
+			return
+		}
+	}
+
 	if g.Type != protocol.ProxyTypeSOCKS {
 		g.serveStream(public)
 		return
@@ -1452,6 +1478,15 @@ func (g *ProxyGroup) buildHTTPProxy() *httputil.ReverseProxy {
 			pr.SetURL(target)
 			pr.Out.Host = pr.In.Host
 			pr.SetXForwarded()
+			for name, value := range g.RequestHeaders {
+				pr.Out.Header.Set(name, value)
+			}
+		},
+		ModifyResponse: func(answer *http.Response) error {
+			for name, value := range g.ResponseHeaders {
+				answer.Header.Set(name, value)
+			}
+			return nil
 		},
 		Transport: transport,
 		ErrorLog:  log.New(&prefixWriter{logger: g.logger, prefix: "http " + g.Name + ": "}, "", 0),

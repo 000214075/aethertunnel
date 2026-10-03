@@ -378,11 +378,12 @@ type TunnelManager struct {
 	// [[proxies]] list of the server configuration.
 	policies *proxyPolicies
 
-	vhost     *vhostSet
-	tcpmux    *tcpmuxSet
-	sni       *sniSet
-	p2p       *p2pRendezvous
-	directory *directory
+	vhost       *vhostSet
+	tcpmux      *tcpmuxSet
+	sni         *sniSet
+	p2p         *p2pRendezvous
+	directory   *directory
+	httpPlugins *httpPluginManager
 }
 
 func newTunnelManager(cfg *config.Config, logger *log.Logger, cipher *crypto.Cipher, sessions *SessionManager, metrics *Metrics, auditor *Auditor) *TunnelManager {
@@ -409,6 +410,11 @@ var (
 func (m *TunnelManager) Register(session *Session, spec protocol.ProxySpec) (*Tunnel, error) {
 	if spec.Name == "" {
 		return nil, errors.New("proxy name is required")
+	}
+	// The webhooks see the registration first: a reject is the refusal the
+	// client is told, and a rewrite becomes the spec this call proceeds with.
+	if err := m.httpPlugins.runNewProxy(session, &spec); err != nil {
+		return nil, err
 	}
 	if spec.Type == "" {
 		spec.Type = protocol.ProxyTypeTCP
