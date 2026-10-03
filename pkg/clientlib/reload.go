@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"reflect"
+	"sync"
 	"syscall"
 
 	"github.com/aethertunnel/aethertunnel/pkg/config"
@@ -37,23 +38,62 @@ func (c *client) visitorList() []config.VisitorConfig {
 // the signal re-reads it and applies the difference to the running client. A
 // configuration that arrived as a string — the mobile binding's path — has no
 // file to re-read and gets no watcher.
+//
+// The signal channel is registered once per process and never stopped, with
+// the watchers hanging off a registry instead: a Notify/Stop pair per client
+// instance churns the signal machinery on every test and every reconnect, and
+// that churn is what trips os/signal's signal_recv into its inconsistent
+// state crash on some platforms.
 func (c *client) startReloadWatcher() {
 	if c.cfg.SourceFile == "" {
 		return
 	}
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGHUP)
+	reloadMu.Lock()
+	if reloadWatchers == nil {
+		reloadWatchers = make(map[*client]chan struct{})
+	}
+	done := make(chan struct{})
+	reloadWatchers[c] = done
+	if reloadSignals == nil {
+		reloadSignals = make(chan os.Signal, 1)
+		signal.Notify(reloadSignals, syscall.SIGHUP)
+		go distributeReloadSignals(reloadSignals)
+	}
+	reloadMu.Unlock()
+
 	go func() {
-		defer signal.Stop(signals)
-		for {
-			select {
-			case <-c.baseCtx.Done():
-				return
-			case <-signals:
-				c.reloadFromFile(c.cfg.SourceFile)
-			}
-		}
+		<-c.baseCtx.Done()
+		reloadMu.Lock()
+		delete(reloadWatchers, c)
+		reloadMu.Unlock()
+		// The watcher's own lifetime ends here; the distributor drops it the
+		// next time a SIGHUP arrives, and a client whose session is over has
+		// nothing left to reload.
+		close(done)
 	}()
+}
+
+var (
+	reloadMu       sync.Mutex
+	reloadWatchers map[*client]chan struct{}
+	reloadSignals  chan os.Signal
+)
+
+// distributeReloadSignals is the process's single SIGHUP consumer: every
+// client that asked for a reload gets its own goroutine, so one slow reload
+// never holds the others back.
+func distributeReloadSignals(signals chan os.Signal) {
+	for range signals {
+		reloadMu.Lock()
+		watchers := make([]*client, 0, len(reloadWatchers))
+		for client := range reloadWatchers {
+			watchers = append(watchers, client)
+		}
+		reloadMu.Unlock()
+		for _, c := range watchers {
+			go c.reloadFromFile(c.cfg.SourceFile)
+		}
+	}
 }
 
 // reloadFromFile re-reads and validates the configuration file. A file that
