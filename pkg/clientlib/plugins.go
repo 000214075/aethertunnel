@@ -320,12 +320,14 @@ func (c *client) serveHTTPS2HTTPS(server net.Conn, proxy config.ProxyConfig) {
 		sni = proxy.LocalAddr()
 	}
 	localTLS := tls.Client(local, &tls.Config{InsecureSkipVerify: true, ServerName: sni})
+	_ = local.SetDeadline(time.Now().Add(dialTimeout))
 	if err := localTLS.Handshake(); err != nil {
 		c.logger.Printf("plugin %s for %q: the local TLS handshake failed: %v", proxy.Plugin, proxy.Name, err)
 		_ = tlsConn.Close()
 		_ = local.Close()
 		return
 	}
+	_ = local.SetDeadline(time.Time{})
 	flynet.Pipe(localTLS, tlsConn, time.Duration(c.cfg.Client.IdleTimeoutSecs)*time.Second)
 }
 
