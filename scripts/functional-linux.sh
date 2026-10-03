@@ -605,7 +605,7 @@ fi
 published=""
 for _ in $(seq 1 120); do
     published="$(api_field /api/proxies 'len(d["proxies"])' 2>/dev/null || echo 0)"
-    [ "$published" = "12" ] && break
+    [ "$published" = "19" ] && break
     sleep 0.25
 done
 check "$published" "19" "the owner published all nineteen proxies"
