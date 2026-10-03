@@ -113,6 +113,18 @@
   （12 字节签名、v2/PROXY 命令块、TCP4 家族、地址与端口大端序），非 IPv4 访客回退
   UNKNOWN 形式；单测逐字节核对头部，功能套件的 pproto 场景加了一个真正解析二进制的
   后端，总数到 **312 项**（无浏览器 169 项）。
+- **对标 frp 第五轮：max_ports_per_client、includes、http_proxy 与 http2https 插件**。
+  `server.max_ports_per_client` 限制单个客户端会话能注册的公共端口数（private 代理不占
+  名额），超出按名拒绝并告知客户端。客户端配置根级新增 `includes`：通配引入片段 TOML，
+  片段的代理与访客按文件名顺序并入、名字全局唯一、嵌套 include 与空通配拒绝，合并后再
+  整体校验（decode 与 validate 在这一步拆开）。插件家族新增两个：`http_proxy` 让访客用
+  HTTP 代理协议（绝对地址请求与 CONNECT）从客户端网络出网——`allow_targets` 圈定可拨
+  范围（比 frp 的无限制多一层），`plugin_http_user`/`plugin_http_password` 可选保护；
+  `http2https` 明文进、以 TLS 出到 `local_port` 的本地 HTTPS 服务（SNI 取请求主机名，
+  `host_header_rewrite` 可替换 Host），证书不校验以适配自签名的家用服务。修一个测试
+  自身的错误：代理插件的凭据头是 Proxy-Authorization 而非 Authorization
+  （`r.BasicAuth` 只读后者，改为手写解析）。功能套件新增一节，总数到 **318 项**
+  （无浏览器 175 项）。
 - **`transport = "webrtc"`：私有代理的访客数据路径可以走 WebRTC DataChannel**。信令就是
   已经完成认证的控制连接（一次 offer 帧、一次 answer 帧，ICE 候选非渐进收集），数据本身是
   DTLS 加密、ICE 选路的 UDP 字节流——直连被墙的网络环境下数据路径的另一种形态。访客配置

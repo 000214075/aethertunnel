@@ -28,6 +28,13 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 检查只在启用时执行：要能解析的地址与密钥，以及**两个值之间的关系**——`republish_seconds` 必须短于
 `announce_ttl_seconds`，而段未启用时 `republish_seconds = 0` 表示"按 TTL 推导"，此时无从比较。
 
+## 顶层 `includes`（客户端配置拆分）
+
+客户端配置可以在**根级**写 `includes = ["fragments/*.toml"]`（相对主文件目录，支持通配），
+每个片段里的 `[[proxies]]` 与 `[[visitors]]` 会按文件名顺序追加进主配置：名字必须全局唯一，
+嵌套的 `includes` 与匹配不到文件的通配都会被拒绝。拆开写的好处是每类隧道一个文件、
+改动互不干扰；SIGHUP 热重载会连同片段一起重读。
+
 ## `[server]`（服务端）
 
 | 键 | 类型 | 默认 | 说明 |
@@ -56,6 +63,7 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `https_key_file` | string | 空 | 共享 HTTPS 监听的私钥 |
 | `subdomain_host` | string | 空 | 子域名托管的域名后缀。设置后，没有显式 `domains` 的 `http`/`https` 代理以 `<代理名>.<该值>` 注册；客户端用 `subdomain` 声明标签时以 `<标签>.<该值>` 注册；为空时这类代理在注册阶段被服务端拒绝 |
 | `tcpmux_port` | int | 0 | `tcpmux` 代理的共享监听端口，0 表示不启用。访问者发一条 `CONNECT 主机名:端口`，服务器按主机名选中隧道并回 200，之后的字节都属于这条隧道；一个端口就能发布任意多条 TCP 服务 |
+| `max_ports_per_client` | int | 0 | 一个客户端会话最多能注册的公共端口数，超出按名拒绝；0 表示不限制。private 代理不占名额 |
 | `p2p_port` | int | 0 | `xtcp` 打洞的 UDP 会合端口，0 表示不支持打洞（xtcp 走中继）。与 `dht.listen_addr` 撞在同一个 UDP 地址上时被拒绝 |
 | `load_balance` | string | `round-robin` | 代理池策略：`round-robin` `random` `latency` `failover` `adaptive` `bandit`。只对声明了 `group` 的代理有影响。`bandit` 是**在线学习**的多臂老虎机（UCB1）：每条流按应答速度记奖励（立即回答记 1，越慢越小），据此估计各成员的平均奖励并加一个探索项来选择成员；没有离线训练、没有模型文件，学习只来自这个池子实际服务过的流。每第 20 次选择会去测观测最少的成员，因此曾经很慢的成员在恢复后仍会被重新测量 |
 
@@ -96,9 +104,10 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `bandwidth` | string | 空 | 本代理在客户端侧的限速，双向合计，十进制字节每秒：`1MB`、`500KB`；留空不限速 |
 | `proxy_protocol` | string | 空 | `v1` 或 `v2`：服务器把带访客真实地址的 PROXY protocol 头插到本地服务收到的流最前面——`v1` 是文本行，`v2` 是二进制头（含签名与命令块）；留空不插。旧版服务端会忽略该设置（只是不发头） |
 | `remote_ports` | string | 空 | 端口段展开：`"6000-6002"` 生成 `remote_port` 6000/6001/6002 的三个代理，名字分别为 `名-6000`、`名-6001`、`名-6002`；条目的其余设置对每个副本生效。最多 256 个端口 |
-| `plugin` | string | 空 | 用客户端自带的组件代替本地服务：`static_file`（把 `plugin_local_path` 目录以 HTTP 发布）、`unix_domain_socket`（拨 `plugin_local_path` 的套接字）、`https2http`（用 `plugin_cert_file`/`plugin_key_file` 在客户端终结访客的 TLS，把明文转发给 `local_port` 的 HTTP 服务——配一条 `tcp` 代理即可在专用端口发布 HTTPS） |
+| `plugin` | string | 空 | 用客户端自带的组件代替本地服务：`static_file`（把 `plugin_local_path` 目录以 HTTP 发布）、`unix_domain_socket`（拨 `plugin_local_path` 的套接字）、`https2http`（用 `plugin_cert_file`/`plugin_key_file` 在客户端终结访客的 TLS，把明文转发给 `local_port` 的 HTTP 服务——配一条 `tcp` 代理即可在专用端口发布 HTTPS）、`http_proxy`（客户端运行 HTTP 正向代理：访客用绝对地址请求与 CONNECT 出客户端网络，`allow_targets` 圈定可拨范围，`plugin_http_user`/`plugin_http_password` 可选保护）、`http2https`（明文进、以 TLS 出到 `local_port` 的本地 HTTPS 服务，SNI 取请求主机名） |
 | `plugin_local_path` | string | 空 | `static_file` 与 `unix_domain_socket` 用的本地路径 |
 | `plugin_cert_file` / `plugin_key_file` | string | 空 | `https2http` 插件终结 TLS 用的证书与私钥；证书按代理名缓存，连接不再读文件 |
+| `host_header_rewrite` | string | 空 | `http2https` 插件发往本地服务时替换 Host 头；原始主机名仍用于本地 TLS 的 SNI |
 | `plugin_http_user` / `plugin_http_password` | string | 空 | `static_file` 的 HTTP basic auth；两者任一非空即启用 |
 | `health_check` | 表 | 空 | 本地服务健康检查：`type = "tcp"` 或 `"http"`，`interval_s`（默认 10）、`timeout_s`（默认 3）、`max_failed`（默认 3）、`path`（仅 http，默认 `/`）。连续失败达到 `max_failed` 后，客户端向服务端注销该代理（协议消息 `ProxyWithdraw`），公开端点随之关闭；探活恢复后自动重新注册。旧版服务端不认识注销消息，客户端回退为拒绝拨号、代理保持注册，见 `docs/VS-FRP.md` |
 

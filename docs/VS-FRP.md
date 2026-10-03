@@ -54,12 +54,11 @@ executable checks in this repository, not at marketing.
 
 ## 有意不抄的地方 · Deliberate differences
 
-- **frp 的 http2https 插件**（访客明文进来、客户端加密转发给本地 HTTPS 服务）：尚未
-  实现；`https2http`（方向相反的那一个）已落地。
 - **frp 的 https 代理是 TLS 透传**（证书挂在客户端、按 SNI 分流），本项目的 https 代理
   由服务端共享监听统一终结 TLS；`https2http` 插件因此走专用 tcp 端口而不是共享端口。
 - **frp 的 OIDC 认证**：未实现；`auth_method` 的三种零知识/签名方案覆盖了 frp 用
   token+sk 覆盖的场景。
+- **frp 的 kcp/quic 传输层**：未实现；本项目走 TCP 加自有加密帧。
 
 ## 功能对照清单 · Feature-by-feature audit
 
@@ -93,6 +92,10 @@ executable checks in this repository, not at marketing.
 | subdomain / customDomains | ✅ | `pkg/server/vhost.go`、`pkg/server/server.go` 注册处理 |
 | plugin static_file / unix_domain_socket | ✅ | `pkg/clientlib/plugins.go` |
 | plugin https2http | ✅（专用 tcp 端口形态） | `pkg/clientlib/plugins.go` serveHTTPS2HTTP |
+| plugin http_proxy | ✅（且多一层 allow_targets 圈定可拨范围） | `pkg/clientlib/plugins.go` httpProxyHandler |
+| plugin http2https | ✅ | `pkg/clientlib/plugins.go` http2HTTPSHandler |
+| maxPortsPerClient | ✅ | `pkg/config` MaxPortsPerClient、`pkg/server/tunnel.go` Register |
+| includes 配置拆分 | ✅ | `pkg/config/config.go` mergeIncludes |
 
 ### 客户端 · Client
 

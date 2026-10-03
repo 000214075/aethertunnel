@@ -3940,6 +3940,200 @@ done
 check "$https_ok" "1" "the https2http plugin terminates the visitor's TLS with the client's certificate"
 
 
+echo
+# ── frp parity, round five: max_ports_per_client, includes, http_proxy, http2https.
+
+F5_DIR="$WORK/features5"
+mkdir -p "$F5_DIR"
+F5_CONTROL_PORT="$(free_port)"
+F5_CAP_CONTROL_PORT="$(free_port)"
+F5_TLS_ORIGIN_PORT="$(free_port)"
+F5_PROXY_PUBLIC_PORT="$(free_port)"
+F5_TLS_PUBLIC_PORT="$(free_port)"
+
+# A self-signed certificate for the local HTTPS origin the http2https plugin
+# dials; the plugin skips verification, so any valid pair works.
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$F5_DIR/origin.key" \
+    -out "$F5_DIR/origin.crt" -days 2 -subj "/CN=127.0.0.1" > /dev/null 2>&1
+
+cat > "$F5_DIR/origin.py" <<PY
+import http.server, ssl, sys
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"tls-origin-service\n")
+    def log_message(self, *args):
+        pass
+srv = http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), Handler)
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain("$F5_DIR/origin.crt", "$F5_DIR/origin.key")
+srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+srv.serve_forever()
+PY
+
+cat > "$F5_DIR/server.toml" <<EOF
+[server]
+bind_addr = "127.0.0.1"
+bind_port = $F5_CONTROL_PORT
+auth_token = "$TOKEN"
+EOF
+
+# The cap server: one public port per client session.
+cat > "$F5_DIR/capped-server.toml" <<EOF
+[server]
+bind_addr = "127.0.0.1"
+bind_port = $F5_CAP_CONTROL_PORT
+auth_token = "$TOKEN"
+max_ports_per_client = 1
+EOF
+
+# The capped client asks for two public ports: the second is refused by name.
+cat > "$F5_DIR/capped-client.toml" <<EOF
+[client]
+server_addr = "127.0.0.1:$F5_CAP_CONTROL_PORT"
+auth_token = "$TOKEN"
+
+[[proxies]]
+name = "capped-one"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = $F5_TLS_ORIGIN_PORT
+remote_port = $(free_port)
+
+[[proxies]]
+name = "capped-two"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = $TCP_ECHO_PORT
+remote_port = $(free_port)
+EOF
+
+# The plugin client's proxies live in fragments the main file includes.
+cat > "$F5_DIR/plugin-client.toml" <<EOF
+includes = ["fragments/*.toml"]
+
+[client]
+server_addr = "127.0.0.1:$F5_CONTROL_PORT"
+auth_token = "$TOKEN"
+EOF
+mkdir -p "$F5_DIR/fragments"
+cat > "$F5_DIR/fragments/http-proxy.toml" <<EOF
+[[proxies]]
+name = "http-exit"
+type = "tcp"
+local_port = $HTTP_ECHO_PORT
+remote_port = $F5_PROXY_PUBLIC_PORT
+plugin = "http_proxy"
+allow_targets = ["127.0.0.0/8"]
+plugin_http_user = "ops"
+plugin_http_password = "s3cret"
+EOF
+cat > "$F5_DIR/fragments/tls-bridge.toml" <<EOF
+[[proxies]]
+name = "tls-bridge"
+type = "tcp"
+local_port = $F5_TLS_ORIGIN_PORT
+remote_port = $F5_TLS_PUBLIC_PORT
+plugin = "http2https"
+host_header_rewrite = "rewritten.example"
+EOF
+
+# The local TLS origin the http2https plugin dials.
+python3 "$F5_DIR/origin.py" "$F5_TLS_ORIGIN_PORT" > /dev/null 2>&1 &
+PIDS+=($!)
+"$SERVER" --config "$F5_DIR/server.toml" > "$F5_DIR/server.log" 2>&1 &
+PIDS+=($!)
+"$SERVER" --config "$F5_DIR/capped-server.toml" > "$F5_DIR/capped-server.log" 2>&1 &
+PIDS+=($!)
+"$CLIENT" --config "$F5_DIR/capped-client.toml" > "$F5_DIR/capped-client.log" 2>&1 &
+PIDS+=($!)
+"$CLIENT" --config "$F5_DIR/plugin-client.toml" > "$F5_DIR/plugin-client.log" 2>&1 &
+PIDS+=($!)
+
+ok_awaited=0
+for _ in $(seq 1 120); do
+    if grep -q 'exceed' "$F5_DIR/capped-client.log" 2>/dev/null \
+        && grep -q 'http-exit' "$F5_DIR/plugin-client.log" 2>/dev/null \
+        && grep -q 'tls-bridge' "$F5_DIR/plugin-client.log" 2>/dev/null; then
+        ok_awaited=1
+        break
+    fi
+    sleep 0.5
+done
+check "$ok_awaited" "1" "the round-five clients are up: the cap refused, both plugins registered"
+
+cap_refused=0
+for _ in $(seq 1 20); do
+    if grep -q 'max_ports_per_client' "$F5_DIR/capped-client.log" 2>/dev/null; then
+        cap_refused=1
+        break
+    fi
+    sleep 0.5
+done
+check "$cap_refused" "1" "a registration past max_ports_per_client is refused and the client is told"
+
+proxy_407="$(python3 - "$F5_PROXY_PUBLIC_PORT" <<'PY'
+import sys, urllib.request, urllib.error
+opener = urllib.request.build_opener(urllib.request.ProxyHandler(
+    {"http": "http://127.0.0.1:%s" % sys.argv[1]}))
+try:
+    resp = opener.open("http://127.0.0.1:%s/" % sys.argv[1], timeout=15)
+    print("answered %d" % resp.status)
+except urllib.error.HTTPError as exc:
+    print("407" if exc.code == 407 else "status %d" % exc.code)
+except Exception as exc:
+    print("no answer: %s" % exc)
+PY
+)"
+check "$proxy_407" "407" "the http_proxy plugin demands credentials when none are given"
+
+proxy_ok="$(python3 - "$F5_PROXY_PUBLIC_PORT" "$HTTP_ECHO_PORT" <<'PY'
+import base64, socket, sys
+try:
+    s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=15)
+except OSError as exc:
+    print("no connection: %s" % exc)
+else:
+    s.settimeout(15)
+    token = base64.b64encode(b"ops:s3cret").decode()
+    target = "http://127.0.0.1:%s/" % sys.argv[2]
+    s.sendall(("GET %s HTTP/1.1\r\nHost: 127.0.0.1:%s\r\nProxy-Authorization: Basic %s\r\nConnection: close\r\n\r\n"
+               % (target, sys.argv[2], token)).encode())
+    body = b""
+    while True:
+        chunk = s.recv(65536)
+        if not chunk:
+            break
+        body += chunk
+    print("ok" if b"smoketest-http" in body else "got %r" % body[:200])
+PY
+)"
+check "$proxy_ok" "ok" "credentials let the http_proxy plugin fetch through the client's network"
+
+tls_ok=0
+for _ in $(seq 1 30); do
+    answer="$(python3 - "$F5_TLS_PUBLIC_PORT" <<'PY'
+import sys, urllib.request
+try:
+    resp = urllib.request.urlopen("http://127.0.0.1:%s/" % sys.argv[1], timeout=15)
+    body = resp.read().decode()
+except Exception as exc:
+    print("no answer: %s" % exc)
+else:
+    print("ok" if "tls-origin-service" in body else "got %r" % body[:200])
+PY
+)"
+    if [ "$answer" = "ok" ]; then
+        tls_ok=1
+        break
+    fi
+    sleep 0.5
+done
+check "$tls_ok" "1" "the http2https plugin answers plain HTTP with its local TLS service: $answer"
+
+
 echo "checks passed: $PASSES"
 echo "checks failed: $FAILURES"
 [ "$FAILURES" -eq 0 ] || exit 1

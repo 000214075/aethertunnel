@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/aethertunnel/aethertunnel/pkg/socks"
 )
 
 // ParseBandwidth parses a decimal bytes-per-second rate: "500" is 500 B/s,
@@ -144,10 +146,19 @@ const (
 	// service named by local_port, so a server without a certificate of its
 	// own can still publish HTTPS on a dedicated tcp port.
 	PluginHTTPS2HTTP = "https2http"
+	// PluginHTTPProxy runs an HTTP forward proxy on this client: the visitor
+	// speaks the HTTP proxy protocol (absolute-form requests and CONNECT) to
+	// the public port, and this client dials the named targets. allow_targets
+	// bounds what it may dial.
+	PluginHTTPProxy = "http_proxy"
+	// PluginHTTP2HTTPS answers plain HTTP on the public port and forwards to
+	// the local HTTPS service named by local_port, wrapping the local leg in
+	// TLS with the request's Host as SNI.
+	PluginHTTP2HTTPS = "http2https"
 )
 
 // ProxyPlugins lists the accepted [[proxies]].plugin values.
-var ProxyPlugins = []string{PluginStaticFile, PluginUnixSocket, PluginHTTPS2HTTP}
+var ProxyPlugins = []string{PluginStaticFile, PluginUnixSocket, PluginHTTPS2HTTP, PluginHTTPProxy, PluginHTTP2HTTPS}
 
 // validateProxyExtras holds the checks every client-side proxy pays for,
 // beyond the type and port rules the caller already applies. It returns the
@@ -200,6 +211,40 @@ func (c *Config) validateProxyExtras(p ProxyConfig) []string {
 		if p.PluginCertFile == "" || p.PluginKeyFile == "" {
 			problems = append(problems, fmt.Sprintf(
 				"proxy %q: plugin %q needs plugin_cert_file and plugin_key_file",
+				p.Name, p.Plugin))
+		}
+		if p.PluginLocalPath != "" {
+			c.Warnings = append(c.Warnings, fmt.Sprintf(
+				"proxy %q: plugin %q has no use for plugin_local_path", p.Name, p.Plugin))
+		}
+	case PluginHTTPProxy:
+		// The plugin dials whatever the visitor asks for from this client's
+		// network, so an empty target list would make it an exit for
+		// everything the client can reach — the same rule a socks5 tunnel
+		// answers to.
+		if len(p.AllowTargets) == 0 {
+			problems = append(problems, fmt.Sprintf(
+				"proxy %q: plugin %q needs allow_targets: without a list it is an exit for everything the client can reach",
+				p.Name, p.Plugin))
+		}
+		for _, cidr := range p.AllowTargets {
+			if _, err := socks.NewTargetPolicy([]string{cidr}); err != nil {
+				problems = append(problems, fmt.Sprintf("proxy %q: allow_targets entry %q: %v", p.Name, cidr, err))
+			}
+		}
+		if p.LocalPort != 0 || p.LocalIP != "" {
+			c.Warnings = append(c.Warnings, fmt.Sprintf(
+				"proxy %q: plugin %q dials the targets the visitor names, so local_ip and local_port are ignored",
+				p.Name, p.Plugin))
+		}
+		if p.PluginLocalPath != "" {
+			c.Warnings = append(c.Warnings, fmt.Sprintf(
+				"proxy %q: plugin %q has no use for plugin_local_path", p.Name, p.Plugin))
+		}
+	case PluginHTTP2HTTPS:
+		if p.LocalPort == 0 {
+			problems = append(problems, fmt.Sprintf(
+				"proxy %q: plugin %q forwards to the local HTTPS service named by local_port",
 				p.Name, p.Plugin))
 		}
 		if p.PluginLocalPath != "" {

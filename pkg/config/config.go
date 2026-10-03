@@ -16,6 +16,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -82,6 +83,10 @@ type ServerConfig struct {
 	// HTTP CONNECT whose authority names the hostname, and the server routes by
 	// it. 0 disables the multiplexer.
 	TCPMuxPort int `toml:"tcpmux_port"`
+	// MaxPortsPerClient caps how many public ports one client session may
+	// register; a registration past the cap is refused by name. 0 means
+	// unlimited.
+	MaxPortsPerClient int `toml:"max_ports_per_client"`
 
 	// SubdomainHost, when set, lets an http proxy without explicit domains be
 	// reached at <proxy-name>.<subdomain_host>.
@@ -168,6 +173,10 @@ type ProxyConfig struct {
 	// plugin terminates the visitor's TLS with.
 	PluginCertFile string `toml:"plugin_cert_file"`
 	PluginKeyFile  string `toml:"plugin_key_file"`
+	// HostHeaderRewrite replaces the Host header the http2https plugin sends
+	// to the local service; the original host still names the TLS SNI unless
+	// this rewrites it.
+	HostHeaderRewrite string `toml:"host_header_rewrite"`
 	// Bandwidth caps this proxy's data rate on the client, both directions
 	// combined, in decimal bytes per second: "1MB", "500KB". Empty means no
 	// limit.
@@ -545,6 +554,12 @@ type Config struct {
 	// client whose configuration names a file re-reads it on SIGHUP; a
 	// configuration built from a string has none to reload from.
 	SourceFile string `toml:"-"`
+
+	// Includes lists glob patterns of extra TOML fragments whose [[proxies]]
+	// and [[visitors]] are appended to this configuration, relative to the
+	// main file's directory. Resolved by Load; a configuration built from a
+	// string has nothing to resolve them against.
+	Includes []string `toml:"includes"`
 
 	// Warnings collects non-fatal problems found while loading (unknown keys,
 	// settings that will be ignored). Callers are expected to log them.
@@ -1063,6 +1078,9 @@ func (c *Config) Validate(role string) error {
 		}
 		if c.Server.BindPort < 1 || c.Server.BindPort > 65535 {
 			problems = append(problems, fmt.Sprintf("server.bind_port must be 1-65535, got %d", c.Server.BindPort))
+		}
+		if c.Server.MaxPortsPerClient < 0 {
+			problems = append(problems, fmt.Sprintf("server.max_ports_per_client cannot be negative, got %d", c.Server.MaxPortsPerClient))
 		}
 		if c.Server.AuthToken == "" {
 			problems = append(problems, "server.auth_token is required")
@@ -1689,6 +1707,7 @@ func (c *Config) validateProxyPolicy(p ProxyConfig) []string {
 		{"subdomain", p.Subdomain != ""},
 		{"http_user", p.HTTPUser != ""},
 		{"http_password", p.HTTPPassword != ""},
+		{"host_header_rewrite", p.HostHeaderRewrite != ""},
 		{"multiplexer", p.Multiplexer != ""},
 		{"use_compression", p.UseCompression},
 		{"bandwidth", p.Bandwidth != ""},
@@ -1785,17 +1804,99 @@ func Load(filename string, opts ValidateOptions) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", filename, err)
 	}
-	cfg, err := LoadString(string(data), filename, opts)
+	cfg, err := decodeConfig(string(data), filename, opts)
 	if cfg != nil {
 		cfg.SourceFile = filename
+		if err == nil {
+			if mergeErr := cfg.mergeIncludes(filepath.Dir(filename), opts); mergeErr != nil {
+				return cfg, mergeErr
+			}
+		}
 	}
-	return cfg, err
+	if err != nil {
+		return cfg, err
+	}
+	if err := cfg.Validate(opts.Role); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// mergeIncludes appends the [[proxies]] and [[visitors]] of every fragment the
+// includes patterns match, relative to the main file's directory. One level
+// only: a fragment that names its own includes is refused rather than
+// silently ignored, and names must stay unique across the whole set.
+func (c *Config) mergeIncludes(base string, opts ValidateOptions) error {
+	if len(c.Includes) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, proxy := range c.Proxies {
+		seen["proxy:"+proxy.Name] = true
+	}
+	for _, visitor := range c.Visitors {
+		seen["visitor:"+visitor.Name] = true
+	}
+	for _, pattern := range c.Includes {
+		if !filepath.IsAbs(pattern) {
+			pattern = filepath.Join(base, pattern)
+		}
+		files, err := filepath.Glob(pattern)
+		if err != nil {
+			return fmt.Errorf("includes pattern %q: %w", pattern, err)
+		}
+		if len(files) == 0 {
+			return fmt.Errorf("includes pattern %q matched no files", pattern)
+		}
+		for _, file := range files {
+			data, readErr := os.ReadFile(file)
+			if readErr != nil {
+				return fmt.Errorf("read include %s: %w", file, readErr)
+			}
+			fragment, fragErr := decodeConfig(string(data), file, opts)
+			if fragErr != nil {
+				return fmt.Errorf("include %s: %w", file, fragErr)
+			}
+			if len(fragment.Includes) > 0 {
+				return fmt.Errorf("include %s: nested includes are not supported", file)
+			}
+			for _, proxy := range fragment.Proxies {
+				if seen["proxy:"+proxy.Name] {
+					return fmt.Errorf("include %s: proxy %q is named twice", file, proxy.Name)
+				}
+				seen["proxy:"+proxy.Name] = true
+				c.Proxies = append(c.Proxies, proxy)
+			}
+			for _, visitor := range fragment.Visitors {
+				if seen["visitor:"+visitor.Name] {
+					return fmt.Errorf("include %s: visitor %q is named twice", file, visitor.Name)
+				}
+				seen["visitor:"+visitor.Name] = true
+				c.Visitors = append(c.Visitors, visitor)
+			}
+		}
+	}
+	return nil
 }
 
 // LoadString parses and validates a configuration held in a string. It behaves
 // like Load on the contents of a configuration file; name stands in for the file
 // name in the messages it returns and attaches as warnings.
 func LoadString(data, name string, opts ValidateOptions) (*Config, error) {
+	cfg, err := decodeConfig(data, name, opts)
+	if err != nil {
+		return cfg, err
+	}
+	if err := cfg.Validate(opts.Role); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// decodeConfig parses and completes one configuration file without validating
+// it: the includes mechanism needs every fragment parsed and merged before
+// the whole set can be judged as one.
+func decodeConfig(data, name string, opts ValidateOptions) (*Config, error) {
 	var cfg Config
 	md, err := toml.Decode(data, &cfg)
 	if err != nil {
@@ -1832,13 +1933,6 @@ func LoadString(data, name string, opts ValidateOptions) (*Config, error) {
 			fmt.Sprintf("%s overrode the configuration file", strings.Join(applied, ", ")))
 	}
 
-	if err := cfg.Validate(opts.Role); err != nil {
-		// Returned with the error, not instead of it: warnings collected above are
-		// only reachable through this value, and dropping them would make an operator
-		// fix the validation failures before learning about the typos that are
-		// usually the same edit.
-		return &cfg, err
-	}
 	return &cfg, nil
 }
 

@@ -444,6 +444,15 @@ func (m *TunnelManager) Register(session *Session, spec protocol.ProxySpec) (*Tu
 			return nil, fmt.Errorf("visitor CIDR %q is not valid: %w", cidr, err)
 		}
 	}
+	if m.cfg.Server.MaxPortsPerClient > 0 && spec.RemotePort > 0 {
+		// The cap counts what this session already holds, so a client that
+		// registers and closes stays well under it; one that keeps every
+		// port it opens hits the refusal by name.
+		if used := m.portsForSession(session); used+1 > m.cfg.Server.MaxPortsPerClient {
+			return nil, fmt.Errorf("proxy %q: registering another public port would exceed the server's max_ports_per_client (%d)",
+				spec.Name, m.cfg.Server.MaxPortsPerClient)
+		}
+	}
 	// The server's own rule for this name comes before the type-specific checks: a
 	// registration the operator's policy refuses should not be told about anything
 	// else, and the refusal names what the server expects.
@@ -511,6 +520,22 @@ func joinTypes(types []string) string {
 
 // Unregister removes the given session's registration of a proxy. Other members
 // of the same pool keep the endpoint published.
+// portsForSession counts the public ports one session holds, for the
+// max_ports_per_client limit.
+func (m *TunnelManager) portsForSession(session *Session) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ports := 0
+	for _, group := range m.groups {
+		for _, member := range group.Members() {
+			if member.Session == session && member.Spec.RemotePort > 0 {
+				ports++
+			}
+		}
+	}
+	return ports
+}
+
 func (m *TunnelManager) Unregister(name string, session *Session, reason string) {
 	m.mu.RLock()
 	group, ok := m.groups[name]

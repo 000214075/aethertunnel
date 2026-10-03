@@ -267,3 +267,87 @@ func TestHTTPS2HTTPPluginValidation(t *testing.T) {
 		t.Fatal("an unknown plugin produced no problem")
 	}
 }
+
+func TestIncludesMerge(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "client.toml")
+	if err := os.WriteFile(main, []byte(
+		"includes = [\"fragments/*.toml\"]\n\n[client]\nserver_addr = \"127.0.0.1:1\"\nauth_token = \"token\"\n"), 0o600); err != nil {
+		t.Fatalf("write main: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "fragments"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "fragments", "a.toml"), []byte(
+		"[[proxies]]\nname = \"from-a\"\ntype = \"tcp\"\nlocal_port = 8001\nremote_port = 7001\n"), 0o600); err != nil {
+		t.Fatalf("write a: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "fragments", "b.toml"), []byte(
+		"[[proxies]]\nname = \"from-b\"\ntype = \"tcp\"\nlocal_port = 8002\nremote_port = 7002\n"), 0o600); err != nil {
+		t.Fatalf("write b: %v", err)
+	}
+
+	cfg, err := Load(main, ValidateOptions{Role: RoleClient})
+	if err != nil {
+		t.Fatalf("load with includes: %v", err)
+	}
+	if len(cfg.Proxies) != 2 {
+		t.Fatalf("the merged configuration holds %d proxies, want 2", len(cfg.Proxies))
+	}
+	if cfg.Proxies[0].Name != "from-a" || cfg.Proxies[1].Name != "from-b" {
+		t.Fatalf("the merged proxies are %q and %q", cfg.Proxies[0].Name, cfg.Proxies[1].Name)
+	}
+
+	dup := filepath.Join(dir, "fragments", "c.toml")
+	if err := os.WriteFile(dup, []byte(
+		"[[proxies]]\nname = \"from-a\"\ntype = \"tcp\"\nlocal_port = 8003\nremote_port = 7003\n"), 0o600); err != nil {
+		t.Fatalf("write c: %v", err)
+	}
+	if _, err := Load(main, ValidateOptions{Role: RoleClient}); err == nil || !strings.Contains(err.Error(), "twice") {
+		t.Fatalf("a duplicate name across fragments passed: %v", err)
+	}
+	if err := os.Remove(dup); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+
+	nested := filepath.Join(dir, "fragments", "nested.toml")
+	if err := os.WriteFile(nested, []byte(
+		"includes = [\"other/*.toml\"]\n"), 0o600); err != nil {
+		t.Fatalf("write nested: %v", err)
+	}
+	if _, err := Load(main, ValidateOptions{Role: RoleClient}); err == nil || !strings.Contains(err.Error(), "nested") {
+		t.Fatalf("nested includes passed: %v", err)
+	}
+	if err := os.Remove(nested); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+
+	if err := os.WriteFile(main, []byte(
+		"includes = [\"nowhere/*.toml\"]\n\n[client]\nserver_addr = \"127.0.0.1:1\"\nauth_token = \"token\"\n"), 0o600); err != nil {
+		t.Fatalf("rewrite main: %v", err)
+	}
+	if _, err := Load(main, ValidateOptions{Role: RoleClient}); err == nil || !strings.Contains(err.Error(), "matched no files") {
+		t.Fatalf("an empty glob passed: %v", err)
+	}
+}
+
+func TestHTTPProxyPluginValidation(t *testing.T) {
+	c := &Config{}
+	if problems := c.validateProxyExtras(ProxyConfig{
+		Name: "exit", Type: ProxyTypeTCP, Plugin: PluginHTTPProxy,
+	}); len(problems) == 0 {
+		t.Fatal("an http_proxy plugin without allow_targets produced no problem")
+	} else if !strings.Contains(strings.Join(problems, "\n"), "allow_targets") {
+		t.Fatalf("the problem does not name allow_targets: %v", problems)
+	}
+	if problems := c.validateProxyExtras(ProxyConfig{
+		Name: "exit", Type: ProxyTypeTCP, Plugin: PluginHTTPProxy, AllowTargets: []string{"127.0.0.0/8"},
+	}); len(problems) != 0 {
+		t.Fatalf("a bounded http_proxy plugin produced problems: %v", problems)
+	}
+	if problems := c.validateProxyExtras(ProxyConfig{
+		Name: "tls-origin", Type: ProxyTypeTCP, Plugin: PluginHTTP2HTTPS,
+	}); len(problems) == 0 {
+		t.Fatal("an http2https plugin without local_port produced no problem")
+	}
+}

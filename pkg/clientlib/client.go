@@ -112,6 +112,9 @@ type client struct {
 	pluginTLSMu sync.Mutex
 	pluginTLS   map[string]*tls.Config
 
+	// pluginPolicies caches the allow_targets matcher per proxy name.
+	pluginPolicies map[string]*socks.TargetPolicy
+
 	// vpnShellOpen and vpnShellProtect are set by RunWithShell for a platform that
 	// supplies the layer-3 device itself. vpnShellOpen is called at the moment the
 	// session is up and the server's address assignment is known; vpnProtect runs
