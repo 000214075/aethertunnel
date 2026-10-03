@@ -185,6 +185,16 @@ func (c *Config) validateProxyExtras(p ProxyConfig) []string {
 			"proxy %q: http_user and http_password guard http and https hostnames, not %s",
 			p.Name, p.Type))
 	}
+	if p.TLSPassthrough && p.Type != ProxyTypeHTTPS {
+		problems = append(problems, fmt.Sprintf(
+			"proxy %q: tls_passthrough routes an https tunnel by its ClientHello, not a %s tunnel",
+			p.Name, p.Type))
+	}
+	if p.TLSPassthrough && p.Plugin != "" && p.Plugin != PluginHTTPS2HTTP {
+		problems = append(problems, fmt.Sprintf(
+			"proxy %q: plugin %q does not terminate the visitor's TLS; with tls_passthrough the raw session reaches this client",
+			p.Name, p.Plugin))
+	}
 	if p.UseCompression && IsDatagramProxyType(p.Type) {
 		c.Warnings = append(c.Warnings, fmt.Sprintf(
 			"proxy %q: use_compression compresses byte streams; a %s tunnel moves datagrams and gains nothing from it",

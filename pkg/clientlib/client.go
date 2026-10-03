@@ -261,6 +261,9 @@ func runWithShell(ctx context.Context, cfg *config.Config, logger *log.Logger,
 	c.visitors = cfg.Visitors
 	c.startReloadWatcher()
 	c.startHealthChecks(ctx)
+	if err := c.startAdminServer(); err != nil {
+		return err
+	}
 
 	if cfg.Identity.Enabled {
 		identity, err := crypto.LoadIdentity(cfg.Identity.KeyFile)
@@ -755,6 +758,7 @@ func proxySpec(proxy config.ProxyConfig) protocol.ProxySpec {
 		HTTPPassword:   proxy.HTTPPassword,
 		Multiplexer:    proxy.Multiplexer,
 		UseCompression: proxy.UseCompression,
+		TLSPassthrough: proxy.TLSPassthrough,
 		SecretKey:      proxy.SecretKey,
 		AuthMethod:     proxy.AuthMethod,
 		Group:          proxy.Group,

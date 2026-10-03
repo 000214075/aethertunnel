@@ -65,6 +65,7 @@ type Server struct {
 	ledger    *ledgerStore
 	vhost     *vhostSet
 	tcpmux    *tcpmuxSet
+	sni       *sniSet
 	p2p       *p2pRendezvous
 	directory *directory
 	vpn       *vpnService
@@ -173,6 +174,8 @@ func New(cfg *config.Config, opts Options) (*Server, error) {
 	s.tunnels.vhost = s.vhost
 	s.tcpmux = newTCPMuxSet(cfg, logger)
 	s.tunnels.tcpmux = s.tcpmux
+	s.sni = newSNISet(cfg, logger)
+	s.tunnels.sni = s.sni
 	if cfg.Server.P2PPort > 0 {
 		s.p2p = newP2PRendezvous(logger)
 		s.tunnels.p2p = s.p2p
@@ -287,6 +290,11 @@ func (s *Server) Run(ctx context.Context) error {
 
 	if s.tcpmux != nil {
 		if err := s.tcpmux.start(); err != nil {
+			return err
+		}
+	}
+	if s.sni != nil {
+		if err := s.sni.start(); err != nil {
 			return err
 		}
 	}

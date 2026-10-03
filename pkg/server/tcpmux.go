@@ -75,7 +75,7 @@ func (m *tcpmuxSet) add(group *ProxyGroup) (*tcpmuxBinding, error) {
 			continue
 		}
 		if strings.HasPrefix(domain, "*.") {
-			base := domain[1:]
+			base := strings.TrimPrefix(domain, "*.")
 			if owner, taken := m.wildcard[base]; taken && owner != group {
 				return nil, fmt.Errorf("proxy %q: wildcard %q is already published by proxy %q",
 					group.Name, domain, owner.Name)
@@ -98,8 +98,8 @@ func (m *tcpmuxSet) removeBinding(b *tcpmuxBinding) {
 	defer m.mu.Unlock()
 	for _, domain := range b.domains {
 		if strings.HasPrefix(domain, "*.") {
-			if m.wildcard[domain[1:]] == b.group {
-				delete(m.wildcard, domain[1:])
+			if m.wildcard[strings.TrimPrefix(domain, "*.")] == b.group {
+				delete(m.wildcard, strings.TrimPrefix(domain, "*."))
 			}
 		} else if m.exact[domain] == b.group {
 			delete(m.exact, domain)
@@ -223,10 +223,18 @@ func (m *tcpmuxSet) handle(conn net.Conn) {
 func (m *tcpmuxSet) lookup(host string) *ProxyGroup {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if group, ok := m.exact[host]; ok {
+	return lookupHostname(m.exact, m.wildcard, host)
+}
+
+// lookupHostname matches a lowercased host against the exact names and the
+// wildcards of a hostname table: a wildcard "*.example" owns the base domain
+// itself and every subdomain of it, which is what a certificate for
+// "*.example" covers. Shared by the tcpmux and SNI passthrough tables.
+func lookupHostname(exact, wildcard map[string]*ProxyGroup, host string) *ProxyGroup {
+	if group, ok := exact[host]; ok {
 		return group
 	}
-	for base, group := range m.wildcard {
+	for base, group := range wildcard {
 		if host == base || strings.HasSuffix(host, "."+base) {
 			return group
 		}

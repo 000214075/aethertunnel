@@ -380,6 +380,7 @@ type TunnelManager struct {
 
 	vhost     *vhostSet
 	tcpmux    *tcpmuxSet
+	sni       *sniSet
 	p2p       *p2pRendezvous
 	directory *directory
 }

@@ -502,6 +502,11 @@ type ProxySpec struct {
 	// DataRequest, so an old server — which ignores the field and never echoes —
 	// leaves the stream uncompressed instead of breaking it.
 	UseCompression bool `json:"use_compression,omitempty"`
+	// TLSPassthrough moves an https proxy to the server's TLS passthrough
+	// listener: the visitor's ClientHello names the hostname, the server
+	// routes by it, and the TLS session is relayed untouched. Old servers
+	// ignore the field and keep terminating.
+	TLSPassthrough bool `json:"tls_passthrough,omitempty"`
 	// ProxyProtocol asks the server to prepend a PROXY protocol v1 header with
 	// the visitor's addresses to the stream the local service receives. "v1" or
 	// empty. Older servers ignore the field and simply send no header.

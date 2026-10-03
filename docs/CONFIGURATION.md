@@ -63,6 +63,7 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `https_key_file` | string | 空 | 共享 HTTPS 监听的私钥 |
 | `subdomain_host` | string | 空 | 子域名托管的域名后缀。设置后，没有显式 `domains` 的 `http`/`https` 代理以 `<代理名>.<该值>` 注册；客户端用 `subdomain` 声明标签时以 `<标签>.<该值>` 注册；为空时这类代理在注册阶段被服务端拒绝 |
 | `tcpmux_port` | int | 0 | `tcpmux` 代理的共享监听端口，0 表示不启用。访问者发一条 `CONNECT 主机名:端口`，服务器按主机名选中隧道并回 200，之后的字节都属于这条隧道；一个端口就能发布任意多条 TCP 服务 |
+| `https_passthrough_port` | int | 0 | https 代理的 TLS **透传**监听端口，0 表示不启用。声明了 `tls_passthrough = true` 的 https 代理骑在这上面：服务器只嗅探 ClientHello 的 SNI 选中隧道，访客的 TLS 会话原样中继到客户端，证书由客户端逐域名提供。与 `https_port` 配成同一个端口会被拒绝：一个中继 TLS、一个终结 TLS，绑在一起必有一个失效 |
 | `max_ports_per_client` | int | 0 | 一个客户端会话最多能注册的公共端口数，超出按名拒绝；0 表示不限制。private 代理不占名额 |
 | `p2p_port` | int | 0 | `xtcp` 打洞的 UDP 会合端口，0 表示不支持打洞（xtcp 走中继）。与 `dht.listen_addr` 撞在同一个 UDP 地址上时被拒绝 |
 | `load_balance` | string | `round-robin` | 代理池策略：`round-robin` `random` `latency` `failover` `adaptive` `bandit`。只对声明了 `group` 的代理有影响。`bandit` 是**在线学习**的多臂老虎机（UCB1）：每条流按应答速度记奖励（立即回答记 1，越慢越小），据此估计各成员的平均奖励并加一个探索项来选择成员；没有离线训练、没有模型文件，学习只来自这个池子实际服务过的流。每第 20 次选择会去测观测最少的成员，因此曾经很慢的成员在恢复后仍会被重新测量 |
@@ -80,6 +81,21 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `idle_timeout_seconds` | int | 300 | 单条隧道流的空闲上限：超过这段时间没有字节流动就断开。适用于服务端转发的流、访客的本地监听连接，以及打洞后的直连路径。负数被拒绝 |
 | `dial_via` | string | 空 | 经一个中转代理连接服务器：`socks5://user:pass@10.0.0.2:1080`、`socks5h://proxy.lan`、`http://proxy.lan:3128`、`https://…`。直连被封或计费时用它；隧道自身的 TLS 与加密全部加在中转之上，中转只看到不透明的 TLS 形状流量。留空直连 |
 
+## `[client.admin]`（客户端管理 API）
+
+对应 frp 客户端的 webServer：一个只给本机操作者用的小 HTTP 端口，回答运行状态并执行
+配置重读。`/healthz` 供进程监管探活，不要求凭据；`/api/status` 返回会话与每个代理的
+配置端口、确认状态（服务器最近一次代理名单里有它）与健康状态；`POST /api/reload`
+（GET 也可以）走与 SIGHUP 完全相同的重读路径，按名增删隧道。没有配置文件可读时
+（客户端从字符串启动，如移动端绑定）reload 回 400 并说明原因。
+
+| 键 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `enabled` | bool | false | 是否启动管理 API |
+| `bind_addr` | string | `127.0.0.1` | 监听地址。默认回环：管理面是给本机操作者的 |
+| `port` | int | 0 | 监听端口；`enabled = true` 时必填（1–65535） |
+| `user` / `password` | string | 空 | basic auth 凭据，必须成对出现；留空表示 `/api/status` 与 `/api/reload` 也不设防——此时把监听开在回环地址之外会给警告。监听失败（端口被占）会让客户端启动失败，因为它是一项被明确要求的配置 |
+
 ## `[[proxies]]`（客户端，可重复）
 
 | 键 | 类型 | 默认 | 说明 |
@@ -94,6 +110,7 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `http_user` / `http_password` | string | 空 | 仅 `http`/`https`：服务器在转发之前检查访问者的 Authorization 头，不匹配回 401 并带 `WWW-Authenticate: Basic` 挑战；两者任一非空即启用。二者都填空才是不设防的主机名 |
 | `multiplexer` | string | 空 | 仅 `tcpmux`，目前唯一取值 `"httpconnect"`：访问者对该隧道发 `CONNECT`，以主机名选中 |
 | `use_compression` | bool | false | 字节流在客户端与服务器之间用 snappy 流式压缩（加在加密层外侧，先压缩后加密）。服务器在每条 DataRequest 里回声确认，旧服务端不回声就自动退化为不压缩，混合部署不会坏流。对数据报隧道无效果（给出警告），打洞成功的 xtcp 直连路径不经过它 |
+| `tls_passthrough` | bool | false | 仅 `https`：隧道改骑 `[server].https_passthrough_port` 的透传监听——服务器按 ClientHello 的 SNI 选中隧道后把访客的 TLS 会话原样中继过来，访客看到的是客户端自己的证书（每个域名各归各家）。本地服务必须自己说 TLS，或配 `https2http` 插件替它终结。默认 false：https 在共享监听上由服务器统一终结 TLS |
 | `secret_key` | string | 空 | 私有类型必填，也是访客侧的凭据 |
 | `auth_method` | string | `secret` | `secret` 直接比对；`nizk` 用 Schnorr 证明，secret 不出现在线上；`snark` 用 Groth16 的 zk-SNARK 证明（电路与可信设置说明见 `pkg/snarkauth`），secret 不出现在线上且证明绑定本次挑战 |
 | `group` | string | 空 | 填入同一名字的多个客户端组成代理池 |
@@ -104,7 +121,7 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `bandwidth` | string | 空 | 本代理在客户端侧的限速，双向合计，十进制字节每秒：`1MB`、`500KB`；留空不限速 |
 | `proxy_protocol` | string | 空 | `v1` 或 `v2`：服务器把带访客真实地址的 PROXY protocol 头插到本地服务收到的流最前面——`v1` 是文本行，`v2` 是二进制头（含签名与命令块）；留空不插。旧版服务端会忽略该设置（只是不发头） |
 | `remote_ports` | string | 空 | 端口段展开：`"6000-6002"` 生成 `remote_port` 6000/6001/6002 的三个代理，名字分别为 `名-6000`、`名-6001`、`名-6002`；条目的其余设置对每个副本生效。最多 256 个端口 |
-| `plugin` | string | 空 | 用客户端自带的组件代替本地服务：`static_file`（把 `plugin_local_path` 目录以 HTTP 发布）、`unix_domain_socket`（拨 `plugin_local_path` 的套接字）、`https2http`（用 `plugin_cert_file`/`plugin_key_file` 在客户端终结访客的 TLS，把明文转发给 `local_port` 的 HTTP 服务——配一条 `tcp` 代理即可在专用端口发布 HTTPS）、`http_proxy`（客户端运行 HTTP 正向代理：访客用绝对地址请求与 CONNECT 出客户端网络，`allow_targets` 圈定可拨范围，`plugin_http_user`/`plugin_http_password` 可选保护）、`http2https`（明文进、以 TLS 出到 `local_port` 的本地 HTTPS 服务，SNI 取请求主机名） |
+| `plugin` | string | 空 | 用客户端自带的组件代替本地服务：`static_file`（把 `plugin_local_path` 目录以 HTTP 发布）、`unix_domain_socket`（拨 `plugin_local_path` 的套接字）、`https2http`（用 `plugin_cert_file`/`plugin_key_file` 在客户端终结访客的 TLS，把明文转发给 `local_port` 的 HTTP 服务——配一条 `tcp` 代理即可在专用端口发布 HTTPS，或声明 `type = "https"` 加 `tls_passthrough = true` 骑在透传端口上）、`http_proxy`（客户端运行 HTTP 正向代理：访客用绝对地址请求与 CONNECT 出客户端网络，`allow_targets` 圈定可拨范围，`plugin_http_user`/`plugin_http_password` 可选保护）、`http2https`（明文进、以 TLS 出到 `local_port` 的本地 HTTPS 服务，SNI 取请求主机名） |
 | `plugin_local_path` | string | 空 | `static_file` 与 `unix_domain_socket` 用的本地路径 |
 | `plugin_cert_file` / `plugin_key_file` | string | 空 | `https2http` 插件终结 TLS 用的证书与私钥；证书按代理名缓存，连接不再读文件 |
 | `host_header_rewrite` | string | 空 | `http2https` 插件发往本地服务时替换 Host 头；原始主机名仍用于本地 TLS 的 SNI |
@@ -139,8 +156,8 @@ SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` �
 指出是服务端策略拒绝的。
 
 描述客户端自身服务的键（`local_ip`、`local_port`、`group`、`multipath`、`secret_key`、
-`auth_method`、`allow_targets`、`domains`、`subdomain`、`http_user`、`http_password`、`multiplexer`、`use_compression`、`bandwidth`、`proxy_protocol`、`remote_ports`、
-`plugin`、`health_check`）在服务端配置里会加载成功但不生效，`--check` 会逐条
+`auth_method`、`allow_targets`、`domains`、`subdomain`、`http_user`、`http_password`、`multiplexer`、`use_compression`、`tls_passthrough`、`bandwidth`、`proxy_protocol`、`remote_ports`、
+`plugin`、`host_header_rewrite`、`health_check`）在服务端配置里会加载成功但不生效，`--check` 会逐条
 输出警告。因此同一份 `[[proxies]]` 列表可以放在两种角色的配置里，只是含义不同。
 
 ## `[[visitors]]`（客户端，可重复）

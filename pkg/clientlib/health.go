@@ -112,6 +112,14 @@ func (c *client) setHealthState(name string, state *healthState) {
 	c.health[name] = state
 }
 
+// healthStateFor returns one proxy's health state, nil when the proxy has no
+// check.
+func (c *client) healthStateFor(name string) *healthState {
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
+	return c.health[name]
+}
+
 // proxyHealthy reports whether the proxy's local service passed its health
 // check. A proxy without a check, or one whose check has not started, is
 // healthy by definition.

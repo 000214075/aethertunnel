@@ -1693,3 +1693,105 @@ func TestLoadStringNamesTheSourceInItsErrors(t *testing.T) {
 		t.Fatalf("error is %v, want a parse failure naming the embedded source", err)
 	}
 }
+
+func TestAdminSectionValidation(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		wantErr  string
+		wantWarn string
+	}{
+		{
+			name: "enabled without a port is refused",
+			body: `
+[client]
+server_addr = "127.0.0.1:7000"
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[client.admin]
+enabled = true
+`,
+			wantErr: "client.admin.port",
+		},
+		{
+			name: "credentials are all or nothing",
+			body: `
+[client]
+server_addr = "127.0.0.1:7000"
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[client.admin]
+enabled = true
+port = 7400
+user = "ops"
+`,
+			wantErr: "must be set together",
+		},
+		{
+			name: "configured but disabled draws a warning",
+			body: `
+[client]
+server_addr = "127.0.0.1:7000"
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[client.admin]
+port = 7400
+`,
+			wantWarn: "client.admin is configured but client.admin.enabled is false",
+		},
+		{
+			name: "an open non-loopback listener draws a warning",
+			body: `
+[client]
+server_addr = "127.0.0.1:7000"
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[client.admin]
+enabled = true
+bind_addr = "0.0.0.0"
+port = 7400
+`,
+			wantWarn: "binds 0.0.0.0 without user and password",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeConfig(t, tc.body)
+			cfg, err := LoadClient(path)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected an error containing %q, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadClient: %v", err)
+			}
+			if tc.wantWarn != "" {
+				if !strings.Contains(strings.Join(cfg.Warnings, "\n"), tc.wantWarn) {
+					t.Fatalf("expected a warning containing %q, got %v", tc.wantWarn, cfg.Warnings)
+				}
+			}
+		})
+	}
+}
+
+func TestAdminSectionDefaultsToLoopback(t *testing.T) {
+	path := writeConfig(t, `
+[client]
+server_addr = "127.0.0.1:7000"
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[client.admin]
+enabled = true
+port = 7400
+`)
+	cfg, err := LoadClient(path)
+	if err != nil {
+		t.Fatalf("LoadClient: %v", err)
+	}
+	if cfg.Client.Admin.BindAddr != "127.0.0.1" {
+		t.Fatalf("bind_addr = %q, want the loopback default", cfg.Client.Admin.BindAddr)
+	}
+}

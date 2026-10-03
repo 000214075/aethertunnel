@@ -125,6 +125,17 @@
   自身的错误：代理插件的凭据头是 Proxy-Authorization 而非 Authorization
   （`r.BasicAuth` 只读后者，改为手写解析）。功能套件新增一节，总数到 **318 项**
   （无浏览器 175 项）。
+- **对标 frp 第六轮：https 的 SNI 透传与客户端管理 API**。服务端新增
+  `https_passthrough_port`：声明 `tls_passthrough = true` 的 https 代理骑在这个共享
+  监听上，服务器只嗅探 ClientHello 里的 SNI（`crypto/tls` 消费掉的原始字节经
+  helloRecorder 记录、按 frp `readClientHello` 的思路完整重放）选中隧道，访客的 TLS
+  会话原样中继到客户端——证书由客户端逐域名提供，每个域名各归各家；未知的 SNI 以
+  TLS 握手失败作答（frp 的 vhostFailed 形态），通配域名与 vhost 同规则。配合
+  `https2http` 插件即得到 frp 的经典组合：客户端终结 TLS、明文转发本地 HTTP 服务。
+  客户端新增 `[client.admin]` 管理 API（frp webServer/admin_api 的对应物）：
+  `/healthz` 免认证供进程监管探活，`/api/status` 报告会话与每个代理的确认/健康状态
+  （凭据可选 basic auth，默认绑 127.0.0.1），`POST /api/reload` 走与 SIGHUP 相同的
+  重读路径。功能套件新增一节九项，总数到 **327 项**（无浏览器 184 项）。
 - **`transport = "webrtc"`：私有代理的访客数据路径可以走 WebRTC DataChannel**。信令就是
   已经完成认证的控制连接（一次 offer 帧、一次 answer 帧，ICE 候选非渐进收集），数据本身是
   DTLS 加密、ICE 选路的 UDP 字节流——直连被墙的网络环境下数据路径的另一种形态。访客配置

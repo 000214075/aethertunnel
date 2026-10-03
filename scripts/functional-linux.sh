@@ -4134,6 +4134,231 @@ done
 check "$tls_ok" "1" "the http2https plugin answers plain HTTP with its local TLS service: $answer"
 
 
+# ── frp parity, round six: SNI passthrough and the client admin API.
+
+F6_DIR="$WORK/features6"
+mkdir -p "$F6_DIR"
+F6_CONTROL_PORT="$(free_port)"
+F6_PASSTHROUGH_PORT="$(free_port)"
+F6_ADMIN_PORT="$(free_port)"
+F6_RELOAD_PUBLIC_PORT="$(free_port)"
+
+# The certificate the CLIENT terminates the passthrough visitor's TLS with.
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$F6_DIR/site.key" \
+    -out "$F6_DIR/site.crt" -days 2 -subj "/CN=sni.local.test" > /dev/null 2>&1
+
+cat > "$F6_DIR/server.toml" <<EOF
+[server]
+bind_addr = "127.0.0.1"
+bind_port = $F6_CONTROL_PORT
+auth_token = "$TOKEN"
+https_passthrough_port = $F6_PASSTHROUGH_PORT
+EOF
+
+cat > "$F6_DIR/client.toml" <<EOF
+[client]
+server_addr = "127.0.0.1:$F6_CONTROL_PORT"
+auth_token = "$TOKEN"
+
+[client.admin]
+enabled = true
+port = $F6_ADMIN_PORT
+user = "ops"
+password = "s3cret"
+
+[[proxies]]
+name = "sni-site"
+type = "https"
+domains = ["sni.local.test"]
+tls_passthrough = true
+plugin = "https2http"
+local_ip = "127.0.0.1"
+local_port = $HTTP_ECHO_PORT
+plugin_cert_file = "$F6_DIR/site.crt"
+plugin_key_file = "$F6_DIR/site.key"
+EOF
+
+"$SERVER" --config "$F6_DIR/server.toml" > "$F6_DIR/server.log" 2>&1 &
+PIDS+=($!)
+"$CLIENT" --config "$F6_DIR/client.toml" > "$F6_DIR/client.log" 2>&1 &
+PIDS+=($!)
+
+ok_awaited=0
+for _ in $(seq 1 120); do
+    if grep -q 'sni-site' "$F6_DIR/client.log" 2>/dev/null \
+        && grep -q 'passthrough' "$F6_DIR/server.log" 2>/dev/null; then
+        ok_awaited=1
+        break
+    fi
+    sleep 0.5
+done
+check "$ok_awaited" "1" "the round-six client is up: the https tunnel rides the passthrough listener"
+
+sni_ok=0
+for _ in $(seq 1 30); do
+    answer="$(python3 - "$F6_PASSTHROUGH_PORT" <<'PY'
+import socket, ssl, sys
+try:
+    raw = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=15)
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    tls = ctx.wrap_socket(raw, server_hostname="sni.local.test")
+except Exception as exc:
+    print("no handshake: %s" % exc)
+else:
+    tls.settimeout(15)
+    tls.sendall(b"GET / HTTP/1.1\r\nHost: sni.local.test\r\nConnection: close\r\n\r\n")
+    body = b""
+    while True:
+        chunk = tls.recv(65536)
+        if not chunk:
+            break
+        body += chunk
+    tls.close()
+    print("ok" if b"smoketest-http" in body else "got %r" % body[:200])
+PY
+)"
+    if [ "$answer" = "ok" ]; then
+        sni_ok=1
+        break
+    fi
+    sleep 0.5
+done
+check "$sni_ok" "1" "SNI passthrough relays the visitor's TLS untouched and the client's own certificate answers"
+
+sni_unknown="$(python3 - "$F6_PASSTHROUGH_PORT" <<'PY'
+import socket, ssl, sys
+try:
+    raw = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=15)
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    tls = ctx.wrap_socket(raw, server_hostname="nobody.local.test")
+except Exception:
+    print("refused")
+else:
+    tls.close()
+    print("open")
+PY
+)"
+check "$sni_unknown" "refused" "an SNI nobody published is refused on the passthrough listener"
+
+healthz="$(python3 - "$F6_ADMIN_PORT" <<'PY'
+import sys, urllib.request
+try:
+    resp = urllib.request.urlopen("http://127.0.0.1:%s/healthz" % sys.argv[1], timeout=15)
+    print(resp.read().decode().strip())
+except Exception as exc:
+    print("no answer: %s" % exc)
+PY
+)"
+check "$healthz" "ok" "the client admin /healthz answers without credentials"
+
+status_anon="$(python3 - "$F6_ADMIN_PORT" <<'PY'
+import sys, urllib.error, urllib.request
+try:
+    resp = urllib.request.urlopen("http://127.0.0.1:%s/api/status" % sys.argv[1], timeout=15)
+    print("answered %d" % resp.status)
+except urllib.error.HTTPError as exc:
+    print("401" if exc.code == 401 else "status %d" % exc.code)
+except Exception as exc:
+    print("no answer: %s" % exc)
+PY
+)"
+check "$status_anon" "401" "the admin /api/status demands credentials"
+
+status_confirmed="$(python3 - "$F6_ADMIN_PORT" <<'PY'
+import base64, json, sys, urllib.error, urllib.request
+token = base64.b64encode(b"ops:s3cret").decode()
+request = urllib.request.Request(
+    "http://127.0.0.1:%s/api/status" % sys.argv[1],
+    headers={"Authorization": "Basic " + token})
+try:
+    report = json.loads(urllib.request.urlopen(request, timeout=15).read().decode())
+except Exception as exc:
+    print("no answer: %s" % exc)
+else:
+    confirmed = [p["name"] for p in report.get("proxies", []) if p.get("confirmed")]
+    print("sni-site" if "sni-site" in confirmed else "confirmed=%r" % confirmed)
+PY
+)"
+check "$status_confirmed" "sni-site" "the admin /api/status reports the passthrough tunnel as confirmed"
+
+cat >> "$F6_DIR/client.toml" <<EOF
+
+[[proxies]]
+name = "reloaded-tcp"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = $TCP_ECHO_PORT
+remote_port = $F6_RELOAD_PUBLIC_PORT
+EOF
+
+reload_status="$(python3 - "$F6_ADMIN_PORT" <<'PY'
+import base64, json, sys, urllib.request
+token = base64.b64encode(b"ops:s3cret").decode()
+request = urllib.request.Request(
+    "http://127.0.0.1:%s/api/reload" % sys.argv[1],
+    headers={"Authorization": "Basic " + token}, data=b"")
+try:
+    answer = json.loads(urllib.request.urlopen(request, timeout=15).read().decode())
+except Exception as exc:
+    print("no answer: %s" % exc)
+else:
+    print(answer.get("result", "no result"))
+PY
+)"
+check "$reload_status" "ok" "POST /api/reload re-reads the client's configuration file"
+
+reload_confirmed=0
+for _ in $(seq 1 60); do
+    answer="$(python3 - "$F6_ADMIN_PORT" <<'PY'
+import base64, json, sys, urllib.request
+token = base64.b64encode(b"ops:s3cret").decode()
+request = urllib.request.Request(
+    "http://127.0.0.1:%s/api/status" % sys.argv[1],
+    headers={"Authorization": "Basic " + token})
+try:
+    report = json.loads(urllib.request.urlopen(request, timeout=15).read().decode())
+except Exception as exc:
+    print("no answer: %s" % exc)
+else:
+    confirmed = [p["name"] for p in report.get("proxies", []) if p.get("confirmed")]
+    print("reloaded-tcp" if "reloaded-tcp" in confirmed else "pending")
+PY
+)"
+    if [ "$answer" = "reloaded-tcp" ]; then
+        reload_confirmed=1
+        break
+    fi
+    sleep 0.5
+done
+check "$reload_confirmed" "1" "the tunnel added through /api/reload is confirmed by the server"
+
+reload_roundtrip="$(python3 - "$F6_RELOAD_PUBLIC_PORT" <<'PY'
+import socket, sys
+payload = b"ping-reloaded"
+try:
+    s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=15)
+except OSError as exc:
+    print("no connection: %s" % exc)
+else:
+    s.settimeout(15)
+    s.sendall(payload)
+    echoed = b""
+    while len(echoed) < len(payload):
+        chunk = s.recv(65536)
+        if not chunk:
+            break
+        echoed += chunk
+    s.close()
+    print("ok" if echoed == payload else "echoed %r" % echoed)
+PY
+)"
+check "$reload_roundtrip" "ok" "the reloaded tunnel's public port carries traffic end to end"
+
+
 echo "checks passed: $PASSES"
 echo "checks failed: $FAILURES"
 [ "$FAILURES" -eq 0 ] || exit 1

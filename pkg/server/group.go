@@ -41,7 +41,9 @@ type ProxyGroup struct {
 	Subdomain       string
 	HTTPUser        string
 	HTTPPassword    string
+	TLSPassthrough  bool
 	tcpmux          *tcpmuxBinding
+	sni             *sniBinding
 	SecretKey       string
 	AuthMethod      string
 	SecretPublicKey []byte
@@ -196,30 +198,31 @@ func (a *atomicFloat64) Load() float64 { return math.Float64frombits(a.bits.Load
 func newProxyGroup(spec protocol.ProxySpec, manager *TunnelManager) *ProxyGroup {
 	policyAllow, policyDeny := manager.policies.visitorRules(spec.Name)
 	return &ProxyGroup{
-		Name:         spec.Name,
-		Type:         spec.Type,
-		Private:      config.IsPrivateProxyType(spec.Type),
-		Domains:      append([]string(nil), spec.Domains...),
-		Subdomain:    spec.Subdomain,
-		HTTPUser:     spec.HTTPUser,
-		HTTPPassword: spec.HTTPPassword,
-		SecretKey:    spec.SecretKey,
-		AuthMethod:   spec.AuthMethod,
-		RemotePort:   spec.RemotePort,
-		Group:        spec.Group,
-		Multipath:    spec.Multipath,
-		allowVisitor: compileCIDRs(spec.AllowCIDRs),
-		denyVisitor:  compileCIDRs(spec.DenyCIDRs),
-		policyAllow:  policyAllow,
-		policyDeny:   policyDeny,
-		manager:      manager,
-		logger:       manager.logger,
-		cipher:       manager.cipher,
-		metrics:      manager.metrics,
-		idleTimeout:  time.Duration(manager.cfg.Server.ReadTimeoutSecs) * time.Second,
-		dialTimeout:  time.Duration(manager.cfg.Server.DialTimeoutSecs) * time.Second,
-		strategy:     manager.cfg.Server.LoadBalance,
-		done:         make(chan struct{}),
+		Name:           spec.Name,
+		Type:           spec.Type,
+		Private:        config.IsPrivateProxyType(spec.Type),
+		Domains:        append([]string(nil), spec.Domains...),
+		Subdomain:      spec.Subdomain,
+		HTTPUser:       spec.HTTPUser,
+		HTTPPassword:   spec.HTTPPassword,
+		TLSPassthrough: spec.TLSPassthrough,
+		SecretKey:      spec.SecretKey,
+		AuthMethod:     spec.AuthMethod,
+		RemotePort:     spec.RemotePort,
+		Group:          spec.Group,
+		Multipath:      spec.Multipath,
+		allowVisitor:   compileCIDRs(spec.AllowCIDRs),
+		denyVisitor:    compileCIDRs(spec.DenyCIDRs),
+		policyAllow:    policyAllow,
+		policyDeny:     policyDeny,
+		manager:        manager,
+		logger:         manager.logger,
+		cipher:         manager.cipher,
+		metrics:        manager.metrics,
+		idleTimeout:    time.Duration(manager.cfg.Server.ReadTimeoutSecs) * time.Second,
+		dialTimeout:    time.Duration(manager.cfg.Server.DialTimeoutSecs) * time.Second,
+		strategy:       manager.cfg.Server.LoadBalance,
+		done:           make(chan struct{}),
 	}
 }
 
@@ -433,8 +436,8 @@ func (g *ProxyGroup) close(reason string) {
 		close(g.done)
 
 		g.endpointMu.Lock()
-		listener, packet, pump, binding, mux := g.listener, g.packet, g.pump, g.vhost, g.tcpmux
-		g.listener, g.packet, g.pump, g.vhost, g.tcpmux = nil, nil, nil, nil, nil
+		listener, packet, pump, binding, mux, sni := g.listener, g.packet, g.pump, g.vhost, g.tcpmux, g.sni
+		g.listener, g.packet, g.pump, g.vhost, g.tcpmux, g.sni = nil, nil, nil, nil, nil, nil
 		g.endpointMu.Unlock()
 
 		if listener != nil {
@@ -451,6 +454,9 @@ func (g *ProxyGroup) close(reason string) {
 		}
 		if mux != nil {
 			mux.remove()
+		}
+		if sni != nil {
+			sni.remove()
 		}
 		g.logger.Printf("proxy %q closed (%s)", g.Name, reason)
 	})
@@ -492,6 +498,23 @@ func (g *ProxyGroup) bind() error {
 		g.logger.Printf("proxy %q (udp) published on %s", g.Name, addr)
 
 	case protocol.ProxyTypeHTTP, protocol.ProxyTypeHTTPS:
+		if g.TLSPassthrough {
+			// The visitor's TLS session is relayed untouched, so the
+			// certificate the visitor sees is this client's own.
+			if g.manager.sni == nil {
+				return fmt.Errorf("proxy %q is type %s with tls_passthrough but server.https_passthrough_port is not configured", g.Name, g.Type)
+			}
+			binding, err := g.manager.sni.add(g)
+			if err != nil {
+				return err
+			}
+			g.endpointMu.Lock()
+			g.sni = binding
+			g.endpointMu.Unlock()
+			g.logger.Printf("proxy %q (%s) reachable on the TLS passthrough listener as %s",
+				g.Name, g.Type, strings.Join(g.Domains, ", "))
+			return nil
+		}
 		if g.manager.vhost == nil {
 			return fmt.Errorf("proxy %q is type %s but server.http_port is not configured", g.Name, g.Type)
 		}

@@ -87,6 +87,11 @@ type ServerConfig struct {
 	// register; a registration past the cap is refused by name. 0 means
 	// unlimited.
 	MaxPortsPerClient int `toml:"max_ports_per_client"`
+	// HTTPSPassthroughPort serves https proxies that opted into TLS
+	// passthrough: the server sniffs the ClientHello's server name, routes by
+	// it, and relays the visitor's TLS session untouched, so the certificate
+	// the visitor sees is the one the client's side presents. 0 disables it.
+	HTTPSPassthroughPort int `toml:"https_passthrough_port"`
 
 	// SubdomainHost, when set, lets an http proxy without explicit domains be
 	// reached at <proxy-name>.<subdomain_host>.
@@ -112,6 +117,25 @@ type ClientConfig struct {
 	// SOCKS5 or HTTP CONNECT proxy, for example "socks5://user:pass@10.0.0.2:1080"
 	// or "http://proxy.lan:3128". Empty dials the server directly.
 	DialVia string `toml:"dial_via"`
+
+	// Admin runs the client's management API on a local HTTP listener,
+	// mirroring frp's client webServer: /healthz, /api/status and
+	// /api/reload. See AdminConfig.
+	Admin *AdminConfig `toml:"admin"`
+}
+
+// AdminConfig is the [client.admin] section. It serves the client's
+// management API: GET /healthz answers without credentials, GET /api/status
+// reports the session and every proxy, POST /api/reload re-reads the config
+// file. When user and password are both set the API routes beyond /healthz
+// require HTTP basic auth. The listener binds 127.0.0.1 unless bind_addr says
+// otherwise.
+type AdminConfig struct {
+	Enabled  bool   `toml:"enabled"`
+	BindAddr string `toml:"bind_addr"`
+	Port     int    `toml:"port"`
+	User     string `toml:"user"`
+	Password string `toml:"password"`
 }
 
 // ProxyConfig is one [[proxies]] entry.
@@ -177,6 +201,13 @@ type ProxyConfig struct {
 	// to the local service; the original host still names the TLS SNI unless
 	// this rewrites it.
 	HostHeaderRewrite string `toml:"host_header_rewrite"`
+	// TLSPassthrough moves an https tunnel to the server's passthrough
+	// listener: the visitor's TLS session is relayed untouched and the
+	// certificate the visitor sees is this client's own — the local service
+	// must therefore speak TLS itself (or the https2http plugin terminates
+	// for it). The server's shared listener keeps terminating TLS for https
+	// proxies without this flag.
+	TLSPassthrough bool `toml:"tls_passthrough"`
 	// Bandwidth caps this proxy's data rate on the client, both directions
 	// combined, in decimal bytes per second: "1MB", "500KB". Empty means no
 	// limit.
@@ -622,6 +653,11 @@ func (c *Config) applyDefaults() {
 	if c.Client.IdleTimeoutSecs == 0 {
 		c.Client.IdleTimeoutSecs = 300
 	}
+	if c.Client.Admin != nil && c.Client.Admin.Enabled && c.Client.Admin.BindAddr == "" {
+		// frp's webServer defaults to the loopback interface too: the
+		// management API is for the operator on the same machine.
+		c.Client.Admin.BindAddr = "127.0.0.1"
+	}
 	if c.Dashboard.Port == 0 {
 		c.Dashboard.Port = 7500
 	}
@@ -1028,6 +1064,11 @@ func (c *Config) listeners(role string) []boundListener {
 				key: "server.tcpmux_port", kind: "tcp", host: c.Server.BindAddr, port: c.Server.TCPMuxPort,
 			})
 		}
+		if c.Server.HTTPSPassthroughPort > 0 {
+			listeners = append(listeners, boundListener{
+				key: "server.https_passthrough_port", kind: "tcp", host: c.Server.BindAddr, port: c.Server.HTTPSPassthroughPort,
+			})
+		}
 		if c.DHT.Enabled {
 			if host, port, err := net.SplitHostPort(c.DHT.ListenAddr); err == nil {
 				if number, err := strconv.Atoi(port); err == nil {
@@ -1082,10 +1123,19 @@ func (c *Config) Validate(role string) error {
 		if c.Server.MaxPortsPerClient < 0 {
 			problems = append(problems, fmt.Sprintf("server.max_ports_per_client cannot be negative, got %d", c.Server.MaxPortsPerClient))
 		}
+		if c.Server.HTTPSPassthroughPort < 0 {
+			problems = append(problems, fmt.Sprintf("server.https_passthrough_port cannot be negative, got %d", c.Server.HTTPSPassthroughPort))
+		}
+		if c.Server.HTTPSPassthroughPort > 0 && c.Server.HTTPSPassthroughPort == c.Server.HTTPSPort {
+			problems = append(problems, "server.https_passthrough_port and server.https_port must differ: one relays TLS and the other terminates it")
+		}
 		if c.Server.AuthToken == "" {
 			problems = append(problems, "server.auth_token is required")
 		} else if isWeakToken(c.Server.AuthToken) {
 			c.Warnings = append(c.Warnings, "server.auth_token is short or a well-known placeholder; use at least 16 random characters")
+		}
+		if c.Client.Admin != nil {
+			c.Warnings = append(c.Warnings, "client.admin has no effect in a server configuration: the management API runs in a client")
 		}
 	case RoleClient:
 		if c.Client.ServerAddr == "" && c.DHT.Discover == "" {
@@ -1102,6 +1152,23 @@ func (c *Config) Validate(role string) error {
 			if err := ValidateDialVia(c.Client.DialVia); err != nil {
 				problems = append(problems, fmt.Sprintf("client.dial_via: %v", err))
 			}
+		}
+		if a := c.Client.Admin; a != nil && a.Enabled {
+			if a.Port <= 0 || a.Port > 65535 {
+				problems = append(problems, fmt.Sprintf("client.admin.enabled is true but client.admin.port %d is not a usable port", a.Port))
+			}
+			if (a.User == "") != (a.Password == "") {
+				problems = append(problems, "client.admin.user and client.admin.password must be set together: the API authenticates with both or neither")
+			}
+			if a.User == "" {
+				if ip := net.ParseIP(a.BindAddr); ip != nil && !ip.IsLoopback() {
+					c.Warnings = append(c.Warnings, fmt.Sprintf(
+						"client.admin binds %s without user and password: everyone who reaches the port can read the proxy list and reload the client; bind 127.0.0.1 or set credentials",
+						a.BindAddr))
+				}
+			}
+		} else if a := c.Client.Admin; a != nil && (a.Port != 0 || a.BindAddr != "" || a.User != "" || a.Password != "") {
+			c.Warnings = append(c.Warnings, "client.admin is configured but client.admin.enabled is false: the management API stays off")
 		}
 	}
 
@@ -1710,6 +1777,7 @@ func (c *Config) validateProxyPolicy(p ProxyConfig) []string {
 		{"host_header_rewrite", p.HostHeaderRewrite != ""},
 		{"multiplexer", p.Multiplexer != ""},
 		{"use_compression", p.UseCompression},
+		{"tls_passthrough", p.TLSPassthrough},
 		{"bandwidth", p.Bandwidth != ""},
 		{"proxy_protocol", p.ProxyProtocol != ""},
 		{"remote_ports", p.RemotePorts != ""},

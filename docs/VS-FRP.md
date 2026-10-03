@@ -31,7 +31,9 @@ executable checks in this repository, not at marketing.
 | tcpmux（HTTP CONNECT 多路复用） | ✅ | ✅ | 一个端口按 CONNECT 的主机名分流任意多条 TCP 隧道 |
 | 热重载 | ✅ 管理 API / SIGHUP | ✅ SIGHUP | 重读配置并按名增删代理、重绑访客；会话级设置改动提示重启后生效 |
 | 按代理压缩 | ✅ transport.useCompression | ✅ `use_compression` | snappy 流式压缩加在加密层外侧；服务器在 DataRequest 里回声确认，新旧混跑自动退化为不压缩 |
-| https2http 插件 | ✅ | ✅ | 客户端用自己的证书终结访客的 TLS，明文转发给 local_port 的 HTTP 服务；本项目走专用 tcp 端口 |
+| https2http 插件 | ✅ | ✅ | 客户端用自己的证书终结访客的 TLS，明文转发给 local_port 的 HTTP 服务；可走专用 tcp 端口，也可叠加 `tls_passthrough` 骑在共享透传端口上 |
+| https SNI 透传 | ✅ | ✅ | `tls_passthrough = true` + `[server].https_passthrough_port`：按 ClientHello 的 SNI 分流，访客的 TLS 会话原样中继到客户端，证书由客户端逐域名提供 |
+| 客户端管理 API | ✅ webServer | ✅ `[client.admin]` | `/healthz` 免认证，`/api/status`、`/api/reload` 可选 basic auth |
 | 客户端插件：static_file | ✅ | ✅ | 含 HTTP basic auth |
 | 客户端插件：unix_domain_socket | ✅ | ✅ | |
 | socks5 出口 | ✅ 客户端插件 | ✅ 服务端代理类型 + allow_targets | 语义不同，见下 |
@@ -54,8 +56,9 @@ executable checks in this repository, not at marketing.
 
 ## 有意不抄的地方 · Deliberate differences
 
-- **frp 的 https 代理是 TLS 透传**（证书挂在客户端、按 SNI 分流），本项目的 https 代理
-  由服务端共享监听统一终结 TLS；`https2http` 插件因此走专用 tcp 端口而不是共享端口。
+- **https 的默认形态**：本项目 https 代理默认由服务端共享监听统一终结 TLS（一份证书
+  服务多个域名）；需要"证书挂在客户端、按域名各归各家"的形态时开 `tls_passthrough`，
+  行为与 frp 一致。
 - **frp 的 OIDC 认证**：未实现；`auth_method` 的三种零知识/签名方案覆盖了 frp 用
   token+sk 覆盖的场景。
 - **frp 的 kcp/quic 传输层**：未实现；本项目走 TCP 加自有加密帧。
@@ -76,6 +79,7 @@ executable checks in this repository, not at marketing.
 | xtcp 打洞 | ✅ | `pkg/server/p2p*.go`、`pkg/clientlib/visitor.go`（openVisitorPath） |
 | socks5 出口代理 | ✅（形态不同：入口在服务端） | `pkg/socks`、`pkg/server/group.go`（serveVisit） |
 | tcpmux HTTP CONNECT 多路复用 | ✅ | `pkg/server/tcpmux.go` |
+| https SNI 透传 | ✅ | `pkg/server/sniset.go`（嗅探 ClientHello 的 SNI 路由，原始字节经 helloRecorder 重放后原样中继） |
 
 ### 代理治理 · Proxy governance
 
@@ -102,7 +106,7 @@ executable checks in this repository, not at marketing.
 | frp 能力 | 本项目状态 | 落点 |
 |---|---|---|
 | 重连退避、心跳、空闲断开 | ✅ | `pkg/clientlib/client.go`（run/jitter、idle_timeout） |
-| SIGHUP / 管理 API 热重载 | ✅ SIGHUP | `pkg/clientlib/reload.go` |
+| SIGHUP / 管理 API 热重载 | ✅ | `pkg/clientlib/reload.go`（SIGHUP）、`pkg/clientlib/admin.go`（`[client.admin]`：/healthz、/api/status、/api/reload） |
 | stcp/sudp/xtcp visitor | ✅ | `pkg/clientlib/visitor.go`、`pkg/config` VisitorConfig |
 | token 认证 | ✅ | `pkg/crypto` EqualTokens、control 握手 |
 | 客户端即库 + 移动绑定 | ✅（frp 没有的） | `pkg/clientlib` Run、`pkg/mobile`（gomobile AAR） |
@@ -115,16 +119,15 @@ executable checks in this repository, not at marketing.
 | 虚拟主机端口 http/https/tcpmux | ✅ | `pkg/server/vhost.go`、`pkg/server/tcpmux.go` |
 | 仪表盘/指标 | ✅ | `pkg/server/metrics*.go`、面板 API、Android App |
 | 日志/审计 | ✅ 且更进一步 | `pkg/server/audit*.go`（结构化审计事件） |
-| 管理 API 的 reload | ✅ 等价物是 SIGHUP | `pkg/clientlib/reload.go` |
+| 管理 API 的 reload | ✅ | `pkg/clientlib/reload.go`（SIGHUP 同路径）、`pkg/clientlib/admin.go`（客户端 `POST /api/reload`） |
 
 ### 尚未复现 · Not reproduced yet
 
 - OIDC 认证（`auth_method` 的零知识/签名方案覆盖同场景）。
-- frp 的 `http2https` 插件、`http_proxy`/`socks5` 作为**客户端插件**的形态（本项目的
-  socks5 是服务端入口，出口能力等价）。
+- frp 的 `http_proxy`/`socks5` 作为**客户端插件**的形态（本项目的 socks5 是服务端入口，
+  出口能力等价）。
 - frp 的 kcp/quic 传输层（本项目走 TCP + 自有加密帧）。
-- frp 的 `includes` 配置拆分、`maxPortsPerClient`、管理端 Web UI。
-- frp 的 https 代理 SNI 透传形态（本项目在服务端统一终结 TLS）。
+- frp 的管理端 Web UI 形态（本项目面板另有实现）。
 
 ## 一句话 · In one sentence
 
