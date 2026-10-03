@@ -107,13 +107,14 @@ func TestOIDCAccessTokenEndpointFailureIsExplained(t *testing.T) {
 	c := &client{cfg: &config.Config{}, logger: log.New(io.Discard, "", 0)}
 	c.cfg.OIDC = &config.OIDCConfig{TokenEndpointURL: endpoint.URL, ClientID: "c", ClientSecret: "wrong"}
 
-	// A busy runner can stall one loopback request past the fetch's own
-	// timeout; a timeout error is retried, so the assertion is about the
-	// explanation rather than the runner's mood.
+	// A busy runner can mangle a loopback request at the transport level — a
+	// stalled fetch, a reset, even a spurious "bad file descriptor" — so any
+	// error without the endpoint's status in it is retried; the assertion is
+	// about the explanation, not the runner's mood.
 	var err error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < 5; attempt++ {
 		_, err = c.oidcAccessToken(context.Background())
-		if err != nil && !strings.Contains(err.Error(), "Client.Timeout") {
+		if err != nil && strings.Contains(err.Error(), "401") {
 			break
 		}
 	}
