@@ -214,7 +214,12 @@ func (c *client) http2HTTPSHandler(proxy config.ProxyConfig) http.Handler {
 		// is in: a local service that accepts and then never answers would
 		// otherwise hold the visitor's request open forever. The deadline is
 		// lifted before the body streams.
-		_ = raw.SetDeadline(time.Now().Add(dialTimeout))
+		// The local leg is bounded until the response header is in: a local
+		// service that accepts and then never answers would otherwise hold the
+		// visitor's request open forever. The bound is generous - a loaded
+		// machine's post-quantum TLS handshake can take seconds - and is lifted
+		// before the body streams.
+		_ = raw.SetDeadline(time.Now().Add(localLegBound(dialTimeout)))
 		tlsConn := tls.Client(raw, &tls.Config{InsecureSkipVerify: true, ServerName: sni})
 		if err := tlsConn.HandshakeContext(r.Context()); err != nil {
 			http.Error(w, "the local service's TLS handshake failed: "+err.Error(), http.StatusBadGateway)
@@ -239,6 +244,17 @@ func (c *client) http2HTTPSHandler(proxy config.ProxyConfig) http.Handler {
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.Copy(w, resp.Body)
 	})
+}
+
+// localLegBound is how long a local leg may take from dial to response
+// header: the dial timeout the operator configured, but never under thirty
+// seconds, because a busy machine's post-quantum TLS handshake alone can eat
+// several.
+func localLegBound(dialTimeout time.Duration) time.Duration {
+	if dialTimeout < 30*time.Second {
+		return 30 * time.Second
+	}
+	return dialTimeout
 }
 
 // httpBridgeFor returns the cached listener behind an HTTP-flavoured plugin:
@@ -326,7 +342,7 @@ func (c *client) serveHTTPS2HTTPS(server net.Conn, proxy config.ProxyConfig) {
 		sni = proxy.LocalAddr()
 	}
 	localTLS := tls.Client(local, &tls.Config{InsecureSkipVerify: true, ServerName: sni})
-	_ = local.SetDeadline(time.Now().Add(dialTimeout))
+	_ = local.SetDeadline(time.Now().Add(localLegBound(dialTimeout)))
 	if err := localTLS.Handshake(); err != nil {
 		c.logger.Printf("plugin %s for %q: the local TLS handshake failed: %v", proxy.Plugin, proxy.Name, err)
 		_ = tlsConn.Close()
