@@ -107,14 +107,22 @@ func AcceptOrPass(conn net.Conn, timeout time.Duration) (net.Conn, error) {
 	if timeout > 0 {
 		_ = conn.SetReadDeadline(time.Now().Add(timeout))
 	}
-	head, err := buffered.Peek(len("GET " + UpgradePath))
-	if err != nil {
-		// A raw client that sent nothing at all looks the same as one that
-		// sent less than the prefix; both end in the caller's normal failure
-		// path once the connection is read for real.
+	// Four bytes decide: the upgrade request is the only stream that opens
+	// with "GET " (the tunnel's own frames start with a type byte), and
+	// deciding that early keeps a short first frame — the kind a port scan or
+	// a refused probe sends — on the same fast refusal path it had before the
+	// sniffing existed, instead of waiting for a full request line.
+	head, err := buffered.Peek(len("GET "))
+	if err != nil || string(head) != "GET " {
+		if timeout > 0 {
+			_ = conn.SetReadDeadline(time.Time{})
+		}
 		return &prefixedConn{Conn: conn, reader: buffered}, nil
 	}
-	if string(head) != "GET "+UpgradePath {
+	rest, err := buffered.Peek(len("GET " + UpgradePath))
+	if err != nil || string(rest) != "GET "+UpgradePath {
+		// The rest of the request never arrived, or arrived wrong; the
+		// framer's own refusal is the honest answer for both.
 		if timeout > 0 {
 			_ = conn.SetReadDeadline(time.Time{})
 		}

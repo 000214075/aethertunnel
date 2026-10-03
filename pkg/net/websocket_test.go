@@ -174,6 +174,55 @@ func TestAcceptOrPassReplaysRawBytes(t *testing.T) {
 	}
 }
 
+// TestAcceptOrPassAnswersShortFirstFramesPromptly pins the contract the
+// control-port refusals depend on: a first frame shorter than the sniff
+// prefix must reach the framer at once, so its refusal is as fast as it was
+// before the sniffing existed.
+func TestAcceptOrPassAnswersShortFirstFramesPromptly(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	clientDone := make(chan net.Conn, 1)
+	go func() {
+		conn, err := net.Dial("tcp", listener.Addr().String())
+		if err == nil {
+			clientDone <- conn
+		}
+	}()
+	serverRaw, err := listener.Accept()
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	t.Cleanup(func() { _ = serverRaw.Close() })
+	client := <-clientDone
+	t.Cleanup(func() { _ = client.Close() })
+
+	// Eight bytes: the shape of a first frame that cannot start a connection.
+	raw := []byte{0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02}
+	start := time.Now()
+	go func() {
+		_, _ = client.Write(raw)
+	}()
+	carried, err := AcceptOrPass(serverRaw, 10*time.Second)
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("a short first frame waited %v for the sniff", elapsed)
+	}
+	got := make([]byte, len(raw))
+	_ = carried.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.ReadFull(carried, got); err != nil {
+		t.Fatalf("read the replayed bytes: %v", err)
+	}
+	if string(got) != string(raw) {
+		t.Fatalf("the raw path saw %v, want %v", got, raw)
+	}
+}
+
 func TestWebsocketDialRejectsWrongAcceptKey(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
