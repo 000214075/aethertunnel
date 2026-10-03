@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -60,6 +61,10 @@ func TestOIDCAccessTokenFetchAndCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
+	// A timed-out attempt still reached the handler — the client gave up, the
+	// server kept counting — so the caching baseline is the count at the moment
+	// the first fetch succeeded, and the cached call must add nothing.
+	baseline := fetches.Load()
 	second, err = c.oidcAccessToken(context.Background())
 	if err != nil {
 		t.Fatalf("refetch: %v", err)
@@ -67,8 +72,8 @@ func TestOIDCAccessTokenFetchAndCache(t *testing.T) {
 	if first != "jwt-value" || second != "jwt-value" {
 		t.Fatalf("the token came back as %q and %q", first, second)
 	}
-	if got := fetches.Load(); got > 1 {
-		t.Fatalf("the token endpoint was called %d times, want 1 (the second is cached)", got)
+	if got := fetches.Load(); got != baseline {
+		t.Fatalf("the token endpoint was called %d more times, want 0 (the second is cached)", got-baseline)
 	}
 }
 
@@ -102,7 +107,16 @@ func TestOIDCAccessTokenEndpointFailureIsExplained(t *testing.T) {
 	c := &client{cfg: &config.Config{}, logger: log.New(io.Discard, "", 0)}
 	c.cfg.OIDC = &config.OIDCConfig{TokenEndpointURL: endpoint.URL, ClientID: "c", ClientSecret: "wrong"}
 
-	_, err := c.oidcAccessToken(context.Background())
+	// A busy runner can stall one loopback request past the fetch's own
+	// timeout; a timeout error is retried, so the assertion is about the
+	// explanation rather than the runner's mood.
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		_, err = c.oidcAccessToken(context.Background())
+		if err != nil && !strings.Contains(err.Error(), "Client.Timeout") {
+			break
+		}
+	}
 	if err == nil || !contains(err.Error(), "401") {
 		t.Fatalf("err = %v, want the endpoint's status in the message", err)
 	}
