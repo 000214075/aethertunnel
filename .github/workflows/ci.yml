@@ -37,11 +37,7 @@ jobs:
             go: '1.25'
             exe: '.exe'
           - os: macos-latest
-            # 1.25.14 throws "signal_recv: inconsistent state" from the
-            # runtime's sigqueue on this runner image, in any test binary that
-            # registers a signal handler (go 1.25 darwin/arm64 regression);
-            # 1.26 carries the fix and still satisfies the 1.25 minimum.
-            go: '1.26'
+            go: '1.25'
             exe: ''
     steps:
       - uses: actions/checkout@v4

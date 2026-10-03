@@ -1681,8 +1681,18 @@ Test-Check 'a tampered ledger does not verify' {
     if (-not $publicKey) { throw "the ledger API did not return a public key" }
 
     $tampered = Join-Path $Root 'ledger-tampered.jsonl'
-    $lines = Get-Content (Join-Path $Root 'ledger.jsonl')
-    $entry = $lines[0] | ConvertFrom-Json
+    # The first entry may still be landing when the API already reports the key,
+    # so read past blank lines and wait rather than parsing an empty line.
+    $entry = $null
+    for ($i = 0; $i -lt 5; $i++) {
+        $lines = @(Get-Content (Join-Path $Root 'ledger.jsonl') | Where-Object { $_ })
+        if ($lines.Count -gt 0) {
+            try { $entry = $lines[0] | ConvertFrom-Json } catch { $entry = $null }
+            if ($entry) { break }
+        }
+        Start-Sleep -Seconds 2
+    }
+    if (-not $entry) { throw "the ledger file has no readable entry" }
     $entry.bytes_in = $entry.bytes_in + 1
     ($entry | ConvertTo-Json -Compress) | Set-Content -Path $tampered -Encoding UTF8
 
