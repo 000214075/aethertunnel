@@ -65,6 +65,7 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `tcpmux_port` | int | 0 | `tcpmux` 代理的共享监听端口，0 表示不启用。访问者发一条 `CONNECT 主机名:端口`，服务器按主机名选中隧道并回 200，之后的字节都属于这条隧道；一个端口就能发布任意多条 TCP 服务 |
 | `https_passthrough_port` | int | 0 | https 代理的 TLS **透传**监听端口，0 表示不启用。声明了 `tls_passthrough = true` 的 https 代理骑在这上面：服务器只嗅探 ClientHello 的 SNI 选中隧道，访客的 TLS 会话原样中继到客户端，证书由客户端逐域名提供。与 `https_port` 配成同一个端口会被拒绝：一个中继 TLS、一个终结 TLS，绑在一起必有一个失效 |
 | `custom_404_page` | string | 空 | 一个文件的路径：http 共享监听上没有人发布的域名来访时，用它回答 404，代替内置的一句话。按请求时读取，改了文件无需重启；文件读不到时回退内置回答 |
+| `vhost_http_timeout` | int | 0 | 走终结路径的 http/https 代理等待本地服务回**响应头**的上限（秒），超时回 502 并在日志记录原因；0 表示不设这条界，沿用拨号超时。对应 frp 服务端的 `vhost_http_timeout`（frp 默认 60，机制相同：反代 Transport 的响应头超时）——本地服务卡住时，先于访客一侧的超时给出明确答复 |
 | `max_ports_per_client` | int | 0 | 一个客户端会话最多能注册的公共端口数，超出按名拒绝；0 表示不限制。private 代理不占名额 |
 | `p2p_port` | int | 0 | `xtcp` 打洞的 UDP 会合端口，0 表示不支持打洞（xtcp 走中继）。与 `dht.listen_addr` 撞在同一个 UDP 地址上时被拒绝 |
 | `load_balance` | string | `round-robin` | 代理池策略：`round-robin` `random` `latency` `failover` `adaptive` `bandit`。只对声明了 `group` 的代理有影响。`bandit` 是**在线学习**的多臂老虎机（UCB1）：每条流按应答速度记奖励（立即回答记 1，越慢越小），据此估计各成员的平均奖励并加一个探索项来选择成员；没有离线训练、没有模型文件，学习只来自这个池子实际服务过的流。每第 20 次选择会去测观测最少的成员，因此曾经很慢的成员在恢复后仍会被重新测量 |
@@ -126,6 +127,7 @@ frp `auth.oidc` 的对应物。配置了 `[oidc]` 的**服务器**在静态令�
 | `idle_timeout_seconds` | int | 300 | 单条隧道流的空闲上限：超过这段时间没有字节流动就断开。适用于服务端转发的流、访客的本地监听连接，以及打洞后的直连路径。负数被拒绝 |
 | `dial_via` | string | 空 | 经一个中转代理连接服务器：`socks5://user:pass@10.0.0.2:1080`、`socks5h://proxy.lan`、`http://proxy.lan:3128`、`https://…`。直连被封或计费时用它；隧道自身的 TLS 与加密全部加在中转之上，中转只看到不透明的 TLS 形状流量。留空直连 |
 | `metas` | 表 | 空 | 操作者自选的键值对（`[client.metas]` 下），随认证请求上报：服务端在日志里记录，并原样交给 `[[http_plugins]]` 的 webhook |
+| `login_fail_exit` | bool | false | 设为 true 时，**第一次**登录就被拒绝（token 不对、被拉黑、端口名额用尽）的客户端直接退出并在日志里给出原因，不再无限重试；已经成功登录过一次的会话掉线后照常重连。对应 frp 客户端的 `loginFailExit`——frp 默认 true，本客户端默认 false 保持旧行为 |
 
 ## `[client.admin]`（客户端管理 API）
 

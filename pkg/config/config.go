@@ -99,6 +99,11 @@ type ServerConfig struct {
 	// time, so an edited page appears without a restart.
 	Custom404Page string `toml:"custom_404_page"`
 
+	// VhostHTTPTimeout bounds how long the terminating virtual-host path waits
+	// for a local service's response headers, in seconds; 0 means no bound
+	// (frp's vhostHTTPTimeout).
+	VhostHTTPTimeout int `toml:"vhost_http_timeout"`
+
 	// SubdomainHost, when set, lets an http proxy without explicit domains be
 	// reached at <proxy-name>.<subdomain_host>.
 	SubdomainHost string `toml:"subdomain_host"`
@@ -185,6 +190,12 @@ type ClientConfig struct {
 	// request, so the server can show them and hand them to its
 	// [[http_plugins]] webhooks.
 	Metas map[string]string `toml:"metas"`
+	// LoginFailExit makes the client give up when its very first login is
+	// refused instead of retrying forever (frp's loginFailExit). A session
+	// that logged in once still reconnects when it drops. frp defaults this
+	// to true; this client keeps retrying unless the operator asks for the
+	// exit.
+	LoginFailExit bool `toml:"login_fail_exit"`
 }
 
 // AdminConfig is the [client.admin] section. It serves the client's
@@ -1237,6 +1248,9 @@ func (c *Config) Validate(role string) error {
 		}
 		if c.Server.HTTPSPassthroughPort < 0 {
 			problems = append(problems, fmt.Sprintf("server.https_passthrough_port cannot be negative, got %d", c.Server.HTTPSPassthroughPort))
+		}
+		if c.Server.VhostHTTPTimeout < 0 {
+			problems = append(problems, "server.vhost_http_timeout cannot be negative")
 		}
 		if c.Server.HTTPSPassthroughPort > 0 && c.Server.HTTPSPassthroughPort == c.Server.HTTPSPort {
 			problems = append(problems, "server.https_passthrough_port and server.https_port must differ: one relays TLS and the other terminates it")

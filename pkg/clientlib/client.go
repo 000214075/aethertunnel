@@ -18,6 +18,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -111,6 +112,13 @@ type client struct {
 	// pluginTLS caches the https2http certificate per proxy name.
 	pluginTLSMu sync.Mutex
 	pluginTLS   map[string]*tls.Config
+
+	// sessionEstablished reports that a session has logged in at least once,
+	// which is what client.login_fail_exit waits for before giving up.
+	sessionEstablished atomic.Bool
+	// giveUp carries the error that made client.login_fail_exit stop the
+	// client after a refused first login.
+	giveUp error
 
 	// oidcMu guards the cached access token of an [oidc] client.
 	oidcMu     sync.Mutex
@@ -320,6 +328,10 @@ func runWithShell(ctx context.Context, cfg *config.Config, logger *log.Logger,
 		len(cfg.Proxies), len(cfg.Visitors))
 
 	c.run(ctx)
+	if c.giveUp != nil {
+		c.logger.Printf("client stopped: %v", c.giveUp)
+		return c.giveUp
+	}
 	c.logger.Printf("client stopped")
 	return nil
 }
@@ -342,6 +354,14 @@ func (c *client) run(ctx context.Context) {
 		startedAt := time.Now()
 		err := c.runSession(ctx)
 		if ctx.Err() != nil {
+			return
+		}
+		// client.login_fail_exit mirrors frp's loginFailExit: a client whose
+		// very first login is refused gives up instead of retrying forever. A
+		// session that logged in once still reconnects when it drops.
+		if err != nil && c.cfg.Client.LoginFailExit && !c.sessionEstablished.Load() {
+			c.logger.Printf("login failed and client.login_fail_exit is set: %v", err)
+			c.giveUp = err
 			return
 		}
 
@@ -577,6 +597,7 @@ func (c *client) runSession(ctx context.Context) error {
 	if !response.OK {
 		return fmt.Errorf("authentication rejected: %s", response.Error)
 	}
+	c.sessionEstablished.Store(true)
 	if response.ProtocolMismatch {
 		c.logger.Printf("warning: server speaks protocol %d, this client speaks %d", response.Protocol, protocol.ProtocolVersion)
 	}

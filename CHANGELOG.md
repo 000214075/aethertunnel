@@ -182,6 +182,13 @@
   路由优先、全用户路由兜底）；路由发生在代理自身的凭据核对之前，因此用户名匹配但密码
   错误的访客拿到的是那个代理的 401 而非兜底代理的应答。冲突检查随之升级为
   （域名、前缀、用户）三元组：同三元组重复注册拒绝，三者任一不同即合法。
+- **对标 frp 第十二轮：vhost 响应头超时（vhost_http_timeout）与首登失败退出（login_fail_exit）**。
+  服务端新增 `vhost_http_timeout`（秒）：走终结路径的 http/https 代理等待本地服务回响应头的
+  上限，机制与 frp 相同——反代 Transport 的 ResponseHeaderTimeout；超时回 502 并记录原因，
+  0 保持旧行为（沿用拨号超时）。客户端新增 `login_fail_exit`：第一次登录就被拒绝（令牌不对、
+  被拉黑、名额用尽）时直接退出并写明原因，不再无限重试；登录成功过的会话掉线照常重连——
+  frp 默认 true，本客户端默认 false 保持旧的重试行为。frp 的 detailedErrorsToClient 研究后
+  刻意不复刻：本项目把拒绝原因始终写给客户端，属设计差异而非缺口。
 - **`transport = "webrtc"`：私有代理的访客数据路径可以走 WebRTC DataChannel**。信令就是
   已经完成认证的控制连接（一次 offer 帧、一次 answer 帧，ICE 候选非渐进收集），数据本身是
   DTLS 加密、ICE 选路的 UDP 字节流——直连被墙的网络环境下数据路径的另一种形态。访客配置

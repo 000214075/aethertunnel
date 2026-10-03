@@ -47,6 +47,7 @@ type ProxyGroup struct {
 	TLSPassthrough    bool
 	RequestHeaders    map[string]string
 	ResponseHeaders   map[string]string
+	vhostTimeout      time.Duration
 	tcpmux            *tcpmuxBinding
 	sni               *sniBinding
 	SecretKey         string
@@ -218,6 +219,7 @@ func newProxyGroup(spec protocol.ProxySpec, manager *TunnelManager) *ProxyGroup 
 		AuthMethod:        spec.AuthMethod,
 		RequestHeaders:    spec.RequestHeaders,
 		ResponseHeaders:   spec.ResponseHeaders,
+		vhostTimeout:      time.Duration(manager.cfg.Server.VhostHTTPTimeout) * time.Second,
 		RemotePort:        spec.RemotePort,
 		Group:             spec.Group,
 		Multipath:         spec.Multipath,
@@ -1430,6 +1432,16 @@ func (g *ProxyGroup) httpProxy() *httputil.ReverseProxy {
 	return g.proxy
 }
 
+// responseHeaderTimeout is how long the terminating path waits for a local
+// service's response headers: the virtual-host timeout when the operator set
+// one, the dial timeout otherwise.
+func responseHeaderTimeout(dial, vhost time.Duration) time.Duration {
+	if vhost > 0 {
+		return vhost
+	}
+	return dial
+}
+
 func (g *ProxyGroup) buildHTTPProxy() *httputil.ReverseProxy {
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -1469,7 +1481,7 @@ func (g *ProxyGroup) buildHTTPProxy() *httputil.ReverseProxy {
 		MaxIdleConns:          64,
 		MaxIdleConnsPerHost:   8,
 		IdleConnTimeout:       60 * time.Second,
-		ResponseHeaderTimeout: g.dialTimeout,
+		ResponseHeaderTimeout: responseHeaderTimeout(g.dialTimeout, g.vhostTimeout),
 		ExpectContinueTimeout: time.Second,
 		ForceAttemptHTTP2:     false,
 		// The client's web server chose the encoding; re-encoding here would

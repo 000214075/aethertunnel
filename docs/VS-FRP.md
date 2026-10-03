@@ -40,6 +40,9 @@ executable checks in this repository, not at marketing.
 | http 代理 hostHeaderRewrite | ✅ | ✅ `host_header_rewrite` | 终结路径转发给本地服务的 Host 改写为指定值 |
 | 按认证用户分流 routeByHTTPUser | ✅ | ✅ `route_by_http_user` | vhost 第三路由维度：同域名同前缀下按访客呈现的 basic-auth 用户名选路，命名路由优先、未声明用户的代理兜底；路由先于代理自身的凭据核对 |
 | 客户端 metas | ✅ | ✅ `[client.metas]` | 随认证请求上报，服务端交给 webhook 并记入日志 |
+| vhost 响应头超时 vhostHTTPTimeout | ✅（默认 60） | ✅ `vhost_http_timeout`（默认 0，沿用拨号超时） | 终结路径等待本地服务响应头的上限，超时回 502；机制同为反代 Transport 的 ResponseHeaderTimeout |
+| 首登失败退出 loginFailExit | ✅（默认 true） | ✅ `login_fail_exit`（默认 false，保持旧的重试行为） | 只看第一次登录：被拒即退出并写明原因；登录成功过的会话掉线照常重连 |
+| 错误明细开关 detailedErrorsToClient | ✅（默认 false，可对客户端隐藏细节） | ✅ 恒为开 | 本项目把拒绝原因（认证、白名单、端口名额等）始终写给客户端，属刻意差异，无此开关 |
 | OIDC 认证 | ✅ auth.oidc | ✅ `[oidc]` | 服务端经发现文档取 JWKS 并验签（RS/PS/ES 系列）、查 iss/aud/exp；客户端以 client-credentials 取 token。差异：本项目的 `[oidc]` 是**加一把**凭据——静态令牌在配置了 `[oidc]` 的服务器上仍然有效；JWS 自实现（无 go-oidc 依赖） |
 | 传输层 websocket | ✅ transport.protocol | ✅ `transport.protocol = "websocket"` | 到服务器的每条连接包进 RFC 6455 二进制帧；服务端同一端口按连接嗅探升级，无需配置；TLS 仍在外侧（wss 分层） |
 | 客户端插件：socks5 | ✅ | ✅ | 访客对公共端口说 SOCKS5，客户端从自己的网络拨目标；`allow_targets` 必填（比 frp 多一层圈界），`plugin_user`/`plugin_password` 可选认证 |
@@ -85,6 +88,7 @@ executable checks in this repository, not at marketing.
 |---|---|---|
 | tcp / udp 公共端口代理 | ✅ | `pkg/server/group.go`（bind、acceptLoop）、`pkg/clientlib/client.go`（serveStream） |
 | http / https 虚拟主机 | ✅ | `pkg/server/vhost.go` |
+| vhostHTTPTimeout 响应头超时 | ✅ `vhost_http_timeout` | `pkg/server/group.go` responseHeaderTimeout |
 | stcp / sudp 私有代理 | ✅ | `pkg/config` 私有类型 + `pkg/server/visitor.go` |
 | xtcp 打洞 | ✅ | `pkg/server/p2p*.go`、`pkg/clientlib/visitor.go`（openVisitorPath） |
 | socks5 出口代理 | ✅（形态不同：入口在服务端） | `pkg/socks`、`pkg/server/group.go`（serveVisit） |
@@ -120,6 +124,7 @@ executable checks in this repository, not at marketing.
 | frp 能力 | 本项目状态 | 落点 |
 |---|---|---|
 | 重连退避、心跳、空闲断开 | ✅ | `pkg/clientlib/client.go`（run/jitter、idle_timeout） |
+| 首登失败退出 loginFailExit | ✅ `login_fail_exit` | `pkg/clientlib/client.go`（sessionEstablished、giveUp） |
 | SIGHUP / 管理 API 热重载 | ✅ | `pkg/clientlib/reload.go`（SIGHUP）、`pkg/clientlib/admin.go`（`[client.admin]`：/healthz、/api/status、/api/reload） |
 | stcp/sudp/xtcp visitor | ✅ | `pkg/clientlib/visitor.go`、`pkg/config` VisitorConfig |
 | token 认证 | ✅ | `pkg/crypto` EqualTokens、control 握手 |
