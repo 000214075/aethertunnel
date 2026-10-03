@@ -210,6 +210,11 @@ func (c *client) http2HTTPSHandler(proxy config.ProxyConfig) http.Handler {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
+		// The local leg is bounded by the dial timeout until the response header
+		// is in: a local service that accepts and then never answers would
+		// otherwise hold the visitor's request open forever. The deadline is
+		// lifted before the body streams.
+		_ = raw.SetDeadline(time.Now().Add(dialTimeout))
 		tlsConn := tls.Client(raw, &tls.Config{InsecureSkipVerify: true, ServerName: sni})
 		if err := tlsConn.HandshakeContext(r.Context()); err != nil {
 			http.Error(w, "the local service's TLS handshake failed: "+err.Error(), http.StatusBadGateway)
@@ -225,6 +230,7 @@ func (c *client) http2HTTPSHandler(proxy config.ProxyConfig) http.Handler {
 			return
 		}
 		defer resp.Body.Close()
+		_ = raw.SetDeadline(time.Time{})
 		for key, values := range resp.Header {
 			for _, value := range values {
 				w.Header().Add(key, value)

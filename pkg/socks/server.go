@@ -152,6 +152,29 @@ func readCredentials(conn net.Conn, opts ServerOptions) error {
 	return err
 }
 
+// drainRequestTail reads and discards the address and port that follow the
+// request header, per the address type it names. Best effort: a caller that
+// sent a truncated request gets the refusal whenever the bytes stop coming.
+func drainRequestTail(conn net.Conn, atyp byte) {
+	var fixed int
+	switch atyp {
+	case AtypIPv4:
+		fixed = 4
+	case AtypIPv6:
+		fixed = 16
+	case AtypDomain:
+		length := make([]byte, 1)
+		if _, err := io.ReadFull(conn, length); err != nil {
+			return
+		}
+		fixed = int(length[0])
+	default:
+		return
+	}
+	tail := make([]byte, fixed+2)
+	_, _ = io.ReadFull(conn, tail)
+}
+
 // readCommand reads one request and accepts CONNECT only: the tunneled form
 // has no UDP relay to offer and no listener for BIND to announce.
 func readCommand(conn net.Conn) (Request, error) {
@@ -163,6 +186,11 @@ func readCommand(conn net.Conn) (Request, error) {
 		return Request{}, ErrNotSOCKS5
 	}
 	if request[1] != CmdConnect {
+		// The refusal goes out only after the rest of the request is drained:
+		// closing with unread bytes queued makes Windows reset the connection,
+		// and the visitor would never see the command-not-supported answer
+		// Linux delivers fine.
+		drainRequestTail(conn, request[3])
 		_ = WriteReply(conn, ReplyCommandNotSupported)
 		return Request{}, ErrUnsupported
 	}
