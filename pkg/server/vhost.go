@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -309,10 +310,28 @@ func (v *vhostRouter) handler(w http.ResponseWriter, r *http.Request) {
 	group := v.lookup(host)
 	if group == nil {
 		v.logger.Printf("%s: no proxy is registered for host %q", v.kind, host)
-		http.Error(w, fmt.Sprintf("no tunnel is registered for %s", host), http.StatusNotFound)
+		v.serveNotFound(w, host)
 		return
 	}
 	group.serveHTTP(w, r)
+}
+
+// serveNotFound answers a request for a hostname nobody published. A
+// configured custom_404_page replaces the built-in text; the file is read at
+// request time, so an edit appears without a restart, and a page that cannot
+// be read falls back to the built-in answer.
+func (v *vhostRouter) serveNotFound(w http.ResponseWriter, host string) {
+	if path := v.cfg.Server.Custom404Page; path != "" {
+		page, err := os.ReadFile(path)
+		if err == nil {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write(page)
+			return
+		}
+		v.logger.Printf("%s: custom_404_page %q cannot be read: %v", v.kind, path, err)
+	}
+	http.Error(w, fmt.Sprintf("no tunnel is registered for %s", host), http.StatusNotFound)
 }
 
 // start binds the listener and serves in the background.

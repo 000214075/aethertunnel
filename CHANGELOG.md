@@ -136,6 +136,20 @@
   `/healthz` 免认证供进程监管探活，`/api/status` 报告会话与每个代理的确认/健康状态
   （凭据可选 basic auth，默认绑 127.0.0.1），`POST /api/reload` 走与 SIGHUP 相同的
   重读路径。功能套件新增一节九项，总数到 **327 项**（无浏览器 184 项）。
+- **对标 frp 第七轮：websocket 传输、插件家族补齐与自定义 404 页**。`[transport].protocol
+  = "websocket"` 把到服务器的每条连接——控制、数据、访客——包进 RFC 6455 二进制帧
+  （`pkg/net/websocket.go`，自研最小实现，无新依赖；`Sec-WebSocket-Accept` 校验、掩码
+  方向按角色强制、ping 自动应答、续帧拼装），服务端在**同一端口**上按连接嗅探升级请求、
+  其余连接原样放行（frp 的 cmux 前缀分流形态），TLS 仍在外侧即 wss 分层。插件家族补齐
+  frp 的最后三个：`socks5`（访客对公共端口说 SOCKS5、客户端从自己的网络拨目标，
+  `allow_targets` 必填圈界、`plugin_user`/`plugin_password` 走 RFC 1929 认证，UDP
+  ASSOCIATE 明确拒绝；服务端会话逻辑抽到 `pkg/socks/server.go` 的 ServeConn 复用）、
+  `https2https`（终结访客 TLS 后再以 TLS 拨本地服务，两腿都加密）与 `tls2raw`（终结
+  访客 TLS 后明文转给自有协议的后端）。服务端 `[server].custom_404_page` 让无人发布的
+  http 域名以自定义页面回答 404（按请求时读取，frp 的 custom404Page 形态）。顺带修一个
+  被本轮端到端测试暴露的隐患：包装连接（websocket、SNI 透传的重放连接）把 `*net.TCPConn`
+  藏在 `net.Conn` 接口后面，半关闭会退化成整条关闭、切断"见到请求结束才回复"的服务——
+  现在显式转发 `CloseWrite`，并有回归测试钉住该契约。
 - **`transport = "webrtc"`：私有代理的访客数据路径可以走 WebRTC DataChannel**。信令就是
   已经完成认证的控制连接（一次 offer 帧、一次 answer 帧，ICE 候选非渐进收集），数据本身是
   DTLS 加密、ICE 选路的 UDP 字节流——直连被墙的网络环境下数据路径的另一种形态。访客配置

@@ -404,7 +404,23 @@ func (c *client) dialServer() (net.Conn, error) {
 			_ = conn.Close()
 			return nil, err
 		}
-		return disguised, nil
+		conn = disguised
+	}
+
+	// The websocket is the innermost layer, so the tunnel's own framing rides
+	// inside binary frames while the disguise and TLS keep their places — the
+	// wss shape when TLS is on. The server recognises the upgrade on the
+	// shared port and needs no setting of its own.
+	if c.cfg.Transport.Protocol == "websocket" {
+		host := target
+		if h, _, err := net.SplitHostPort(target); err == nil {
+			host = h
+		}
+		upgraded, err := flynet.WebsocketDial(conn, host, time.Duration(c.cfg.Client.DialTimeoutSecs)*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		conn = upgraded
 	}
 	return conn, nil
 }

@@ -255,13 +255,15 @@ func (c *client) httpBridgeFor(proxy config.ProxyConfig, handler http.Handler) *
 }
 
 // serveHTTPS2HTTP terminates the visitor's TLS on the tunnel end with the
-// configured certificate and relays the plaintext to the plain HTTP service
-// named by local_port. The certificate loads once per proxy and is cached for
-// the client's lifetime, so a connection costs no file reads.
+// configured certificate and relays the plaintext to the plain TCP service
+// named by local_port — the https2http and tls2raw plugins share this bridge,
+// one because the backend speaks HTTP, the other because it speaks its own
+// protocol. The certificate loads once per proxy and is cached for the
+// client's lifetime, so a connection costs no file reads.
 func (c *client) serveHTTPS2HTTP(server net.Conn, proxy config.ProxyConfig) {
 	tlsConfig, err := c.https2HTTPConfig(proxy)
 	if err != nil {
-		c.logger.Printf("plugin https2http for %q: %v", proxy.Name, err)
+		c.logger.Printf("plugin %s for %q: %v", proxy.Plugin, proxy.Name, err)
 		_ = server.Close()
 		return
 	}
@@ -270,7 +272,7 @@ func (c *client) serveHTTPS2HTTP(server net.Conn, proxy config.ProxyConfig) {
 	if err := tlsConn.Handshake(); err != nil {
 		// A plain-HTTP visitor on a TLS endpoint ends here; that is the
 		// visitor's mistake to see, not a tunnel fault.
-		c.logger.Printf("plugin https2http for %q: the visitor's TLS handshake failed: %v", proxy.Name, err)
+		c.logger.Printf("plugin %s for %q: the visitor's TLS handshake failed: %v", proxy.Plugin, proxy.Name, err)
 		_ = server.Close()
 		return
 	}
@@ -278,12 +280,76 @@ func (c *client) serveHTTPS2HTTP(server net.Conn, proxy config.ProxyConfig) {
 	dialTimeout := time.Duration(c.cfg.Client.DialTimeoutSecs) * time.Second
 	local, err := net.DialTimeout("tcp", proxy.LocalAddr(), dialTimeout)
 	if err != nil {
-		c.logger.Printf("plugin https2http for %q: cannot reach the local service %s: %v",
-			proxy.Name, proxy.LocalAddr(), err)
+		c.logger.Printf("plugin %s for %q: cannot reach the local service %s: %v",
+			proxy.Plugin, proxy.Name, proxy.LocalAddr(), err)
 		_ = tlsConn.Close()
 		return
 	}
 	flynet.Pipe(local, tlsConn, time.Duration(c.cfg.Client.IdleTimeoutSecs)*time.Second)
+}
+
+// serveHTTPS2HTTPS terminates the visitor's TLS with the configured
+// certificate and wraps the local leg in TLS as well: both legs encrypted, for
+// a local service that already speaks HTTPS. The local certificate is not
+// verified — the leg is inside this machine — with the local host as SNI.
+func (c *client) serveHTTPS2HTTPS(server net.Conn, proxy config.ProxyConfig) {
+	tlsConfig, err := c.https2HTTPConfig(proxy)
+	if err != nil {
+		c.logger.Printf("plugin %s for %q: %v", proxy.Plugin, proxy.Name, err)
+		_ = server.Close()
+		return
+	}
+	_ = server.SetDeadline(time.Now().Add(10 * time.Second))
+	tlsConn := tls.Server(server, tlsConfig)
+	if err := tlsConn.Handshake(); err != nil {
+		c.logger.Printf("plugin %s for %q: the visitor's TLS handshake failed: %v", proxy.Plugin, proxy.Name, err)
+		_ = server.Close()
+		return
+	}
+	_ = server.SetDeadline(time.Time{})
+	dialTimeout := time.Duration(c.cfg.Client.DialTimeoutSecs) * time.Second
+	local, err := net.DialTimeout("tcp", proxy.LocalAddr(), dialTimeout)
+	if err != nil {
+		c.logger.Printf("plugin %s for %q: cannot reach the local service %s: %v",
+			proxy.Plugin, proxy.Name, proxy.LocalAddr(), err)
+		_ = tlsConn.Close()
+		return
+	}
+	sni, _, err := net.SplitHostPort(proxy.LocalAddr())
+	if err != nil {
+		sni = proxy.LocalAddr()
+	}
+	localTLS := tls.Client(local, &tls.Config{InsecureSkipVerify: true, ServerName: sni})
+	if err := localTLS.Handshake(); err != nil {
+		c.logger.Printf("plugin %s for %q: the local TLS handshake failed: %v", proxy.Plugin, proxy.Name, err)
+		_ = tlsConn.Close()
+		_ = local.Close()
+		return
+	}
+	flynet.Pipe(localTLS, tlsConn, time.Duration(c.cfg.Client.IdleTimeoutSecs)*time.Second)
+}
+
+// serveSocks5 runs the SOCKS5 server the socks5 plugin promises: the visitor's
+// SOCKS5 bytes arrive through the tunnel, this end answers the handshake —
+// with username/password when plugin_user and plugin_password say so — dials
+// the named target through allow_targets and relays. UDP ASSOCIATE is refused:
+// the tunneled form has no UDP relay to offer.
+func (c *client) serveSocks5(server net.Conn, proxy config.ProxyConfig) {
+	dialTimeout := time.Duration(c.cfg.Client.DialTimeoutSecs) * time.Second
+	target, err := socks.ServeConn(server, socks.ServerOptions{
+		Username:  proxy.PluginUser,
+		Password:  proxy.PluginPassword,
+		Handshake: dialTimeout,
+		Dial: func(target string) (net.Conn, error) {
+			return c.proxyTargetDial(proxy, target)
+		},
+	})
+	if err != nil {
+		c.logger.Printf("plugin socks5 for %q: the visitor's session failed: %v", proxy.Name, err)
+		return
+	}
+	defer target.Close()
+	flynet.Pipe(target, server, time.Duration(c.cfg.Client.IdleTimeoutSecs)*time.Second)
 }
 
 // https2HTTPConfig loads and caches the certificate for one proxy.
@@ -385,9 +451,17 @@ func (c *client) dialForPlugin(proxy config.ProxyConfig) (net.Conn, error) {
 		}
 	case config.PluginUnixSocket:
 		return net.Dial("unix", proxy.PluginLocalPath)
-	case config.PluginHTTPS2HTTP:
+	case config.PluginHTTPS2HTTP, config.PluginTLS2Raw:
 		client, server := net.Pipe()
 		go c.serveHTTPS2HTTP(server, proxy)
+		return client, nil
+	case config.PluginHTTPS2HTTPS:
+		client, server := net.Pipe()
+		go c.serveHTTPS2HTTPS(server, proxy)
+		return client, nil
+	case config.PluginSocks5:
+		client, server := net.Pipe()
+		go c.serveSocks5(server, proxy)
 		return client, nil
 	case config.PluginHTTPProxy:
 		listener := c.httpBridgeFor(proxy, c.httpProxyHandler(proxy))

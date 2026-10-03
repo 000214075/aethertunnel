@@ -255,10 +255,20 @@ func (c readOnlyConn) SetReadDeadline(t time.Time) error  { return nil }
 func (c readOnlyConn) SetWriteDeadline(t time.Time) error { return nil }
 
 // replayConn reads the sniffed bytes back first, then the connection itself —
-// the tunnel's end receives the visitor's handshake as written.
+// the tunnel's end receives the visitor's handshake as written. CloseWrite is
+// forwarded by hand: net.Conn does not carry it, and a wrapper that hid the
+// TCP connection's half-close would turn it into a full close, cutting off a
+// reply the far side only sends after the end of its request.
 type replayConn struct {
 	net.Conn
 	reader io.Reader
 }
 
 func (c *replayConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
+
+func (c *replayConn) CloseWrite() error {
+	if hc, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return hc.CloseWrite()
+	}
+	return nil
+}

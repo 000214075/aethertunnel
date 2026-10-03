@@ -569,6 +569,18 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 
 	handshakeTimeout := time.Duration(s.cfg.Server.HandshakeTimeoutSecs) * time.Second
+	// The same port carries every connection shape: a peer that opens with the
+	// websocket upgrade for [transport].protocol = "websocket" is answered and
+	// continues as binary frames, every other peer gets its peeked bytes
+	// replayed in front of it and proceeds unchanged. A failed upgrade has
+	// already been answered and closed.
+	carried, err := flynet.AcceptOrPass(conn, handshakeTimeout)
+	if err != nil {
+		s.logger.Printf("websocket upgrade from %s failed: %v", conn.RemoteAddr(), err)
+		return
+	}
+	conn = carried
+
 	if handshakeTimeout > 0 {
 		_ = conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
 	}

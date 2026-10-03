@@ -93,6 +93,12 @@ type ServerConfig struct {
 	// the visitor sees is the one the client's side presents. 0 disables it.
 	HTTPSPassthroughPort int `toml:"https_passthrough_port"`
 
+	// Custom404Page names a file whose contents answer an http request that
+	// names no published hostname on the shared listener, in place of the
+	// plain built-in refusal. Empty keeps the built-in answer. Read at request
+	// time, so an edited page appears without a restart.
+	Custom404Page string `toml:"custom_404_page"`
+
 	// SubdomainHost, when set, lets an http proxy without explicit domains be
 	// reached at <proxy-name>.<subdomain_host>.
 	SubdomainHost string `toml:"subdomain_host"`
@@ -227,6 +233,11 @@ type ProxyConfig struct {
 	PluginLocalPath    string `toml:"plugin_local_path"`
 	PluginHTTPUser     string `toml:"plugin_http_user"`
 	PluginHTTPPassword string `toml:"plugin_http_password"`
+	// PluginUser and PluginPassword are the optional SOCKS5 credentials of the
+	// socks5 plugin; both set turns on username/password authentication, both
+	// empty answers any visitor.
+	PluginUser     string `toml:"plugin_user"`
+	PluginPassword string `toml:"plugin_password"`
 	// HealthCheck probes the local service and refuses dials while it fails.
 	HealthCheck *HealthCheckConfig `toml:"health_check"`
 }
@@ -410,6 +421,13 @@ type TransportConfig struct {
 	// InsecureSkipVerify accepts any certificate. It makes the connection
 	// private but not authenticated, so it is reported as a warning.
 	InsecureSkipVerify bool `toml:"insecure_skip_verify"` // client
+	// Protocol selects how the connection to the server is carried: empty is a
+	// plain stream, "websocket" wraps every connection to the server — control,
+	// data and visitor — in RFC 6455 binary frames, which lets the tunnel pass
+	// intermediaries that only forward well-formed websocket sessions. TLS
+	// (enable_tls) stays on the outside of the websocket, the wss shape. The
+	// server needs no setting: it recognises the upgrade on the shared port.
+	Protocol string `toml:"protocol"` // client
 }
 
 // IdentityConfig is the [identity] section: an Ed25519 key that authenticates a
@@ -1198,6 +1216,16 @@ func (c *Config) Validate(role string) error {
 
 	if c.Encryption.PostQuantum && !c.Encryption.Enabled {
 		problems = append(problems, "encryption.post_quantum is true but encryption.enabled is false")
+	}
+
+	switch c.Transport.Protocol {
+	case "", "websocket":
+	default:
+		problems = append(problems, fmt.Sprintf(
+			"transport.protocol must be \"websocket\" or empty, got %q", c.Transport.Protocol))
+	}
+	if c.Transport.Protocol != "" && role == RoleServer {
+		c.Warnings = append(c.Warnings, "transport.protocol has no effect in a server configuration: the server recognises the websocket upgrade on the shared port")
 	}
 
 	if c.Transport.EnableTLS {

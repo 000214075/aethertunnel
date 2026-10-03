@@ -155,10 +155,25 @@ const (
 	// the local HTTPS service named by local_port, wrapping the local leg in
 	// TLS with the request's Host as SNI.
 	PluginHTTP2HTTPS = "http2https"
+	// PluginSocks5 runs a SOCKS5 server on this client: the visitor speaks
+	// SOCKS5 to the public port and this client dials the named targets from
+	// its own network. allow_targets bounds what it may dial; plugin_user and
+	// plugin_password, when both set, require SOCKS5 username/password
+	// authentication.
+	PluginSocks5 = "socks5"
+	// PluginHTTPS2HTTPS terminates the visitor's TLS at this client with the
+	// configured certificate and forwards to the local HTTPS service named by
+	// local_port, wrapping the local leg in TLS again — both legs encrypted.
+	PluginHTTPS2HTTPS = "https2https"
+	// PluginTLS2Raw terminates the visitor's TLS at this client with the
+	// configured certificate and relays the plaintext bytes to the local TCP
+	// service named by local_port: the https2http bridge without the HTTP
+	// expectations, for a backend that speaks its own protocol.
+	PluginTLS2Raw = "tls2raw"
 )
 
 // ProxyPlugins lists the accepted [[proxies]].plugin values.
-var ProxyPlugins = []string{PluginStaticFile, PluginUnixSocket, PluginHTTPS2HTTP, PluginHTTPProxy, PluginHTTP2HTTPS}
+var ProxyPlugins = []string{PluginStaticFile, PluginUnixSocket, PluginHTTPS2HTTP, PluginHTTPProxy, PluginHTTP2HTTPS, PluginSocks5, PluginHTTPS2HTTPS, PluginTLS2Raw}
 
 // validateProxyExtras holds the checks every client-side proxy pays for,
 // beyond the type and port rules the caller already applies. It returns the
@@ -190,7 +205,8 @@ func (c *Config) validateProxyExtras(p ProxyConfig) []string {
 			"proxy %q: tls_passthrough routes an https tunnel by its ClientHello, not a %s tunnel",
 			p.Name, p.Type))
 	}
-	if p.TLSPassthrough && p.Plugin != "" && p.Plugin != PluginHTTPS2HTTP {
+	if p.TLSPassthrough && p.Plugin != "" &&
+		p.Plugin != PluginHTTPS2HTTP && p.Plugin != PluginHTTPS2HTTPS && p.Plugin != PluginTLS2Raw {
 		problems = append(problems, fmt.Sprintf(
 			"proxy %q: plugin %q does not terminate the visitor's TLS; with tls_passthrough the raw session reaches this client",
 			p.Name, p.Plugin))
@@ -255,6 +271,45 @@ func (c *Config) validateProxyExtras(p ProxyConfig) []string {
 		if p.LocalPort == 0 {
 			problems = append(problems, fmt.Sprintf(
 				"proxy %q: plugin %q forwards to the local HTTPS service named by local_port",
+				p.Name, p.Plugin))
+		}
+		if p.PluginLocalPath != "" {
+			c.Warnings = append(c.Warnings, fmt.Sprintf(
+				"proxy %q: plugin %q has no use for plugin_local_path", p.Name, p.Plugin))
+		}
+	case PluginSocks5:
+		// The plugin dials whatever the visitor asks for from this client's
+		// network — the same rule the socks5 proxy type and the http_proxy
+		// plugin answer to.
+		if len(p.AllowTargets) == 0 {
+			problems = append(problems, fmt.Sprintf(
+				"proxy %q: plugin %q needs allow_targets: without a list it is an exit for everything the client can reach",
+				p.Name, p.Plugin))
+		}
+		for _, cidr := range p.AllowTargets {
+			if _, err := socks.NewTargetPolicy([]string{cidr}); err != nil {
+				problems = append(problems, fmt.Sprintf("proxy %q: allow_targets entry %q: %v", p.Name, cidr, err))
+			}
+		}
+		if (p.PluginUser == "") != (p.PluginPassword == "") {
+			problems = append(problems, fmt.Sprintf(
+				"proxy %q: plugin %q needs plugin_user and plugin_password together: SOCKS5 authentication is both or none",
+				p.Name, p.Plugin))
+		}
+		if p.LocalPort != 0 || p.LocalIP != "" || p.PluginLocalPath != "" {
+			c.Warnings = append(c.Warnings, fmt.Sprintf(
+				"proxy %q: plugin %q dials the targets the visitor names, so local_ip, local_port and plugin_local_path are ignored",
+				p.Name, p.Plugin))
+		}
+	case PluginHTTPS2HTTPS, PluginTLS2Raw:
+		if p.LocalPort == 0 {
+			problems = append(problems, fmt.Sprintf(
+				"proxy %q: plugin %q forwards to the local service named by local_port",
+				p.Name, p.Plugin))
+		}
+		if p.PluginCertFile == "" || p.PluginKeyFile == "" {
+			problems = append(problems, fmt.Sprintf(
+				"proxy %q: plugin %q needs plugin_cert_file and plugin_key_file",
 				p.Name, p.Plugin))
 		}
 		if p.PluginLocalPath != "" {

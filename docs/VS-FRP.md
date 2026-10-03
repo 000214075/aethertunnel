@@ -34,6 +34,9 @@ executable checks in this repository, not at marketing.
 | https2http 插件 | ✅ | ✅ | 客户端用自己的证书终结访客的 TLS，明文转发给 local_port 的 HTTP 服务；可走专用 tcp 端口，也可叠加 `tls_passthrough` 骑在共享透传端口上 |
 | https SNI 透传 | ✅ | ✅ | `tls_passthrough = true` + `[server].https_passthrough_port`：按 ClientHello 的 SNI 分流，访客的 TLS 会话原样中继到客户端，证书由客户端逐域名提供 |
 | 客户端管理 API | ✅ webServer | ✅ `[client.admin]` | `/healthz` 免认证，`/api/status`、`/api/reload` 可选 basic auth |
+| 传输层 websocket | ✅ transport.protocol | ✅ `transport.protocol = "websocket"` | 到服务器的每条连接包进 RFC 6455 二进制帧；服务端同一端口按连接嗅探升级，无需配置；TLS 仍在外侧（wss 分层） |
+| 客户端插件：socks5 | ✅ | ✅ | 访客对公共端口说 SOCKS5，客户端从自己的网络拨目标；`allow_targets` 必填（比 frp 多一层圈界），`plugin_user`/`plugin_password` 可选认证 |
+| 客户端插件：https2https / tls2raw | ✅ | ✅ | 终结访客 TLS 后分别转本地 HTTPS（两腿加密）与本地 TCP 明文 |
 | 客户端插件：static_file | ✅ | ✅ | 含 HTTP basic auth |
 | 客户端插件：unix_domain_socket | ✅ | ✅ | |
 | socks5 出口 | ✅ 客户端插件 | ✅ 服务端代理类型 + allow_targets | 语义不同，见下 |
@@ -97,6 +100,10 @@ executable checks in this repository, not at marketing.
 | plugin static_file / unix_domain_socket | ✅ | `pkg/clientlib/plugins.go` |
 | plugin https2http | ✅（专用 tcp 端口形态） | `pkg/clientlib/plugins.go` serveHTTPS2HTTP |
 | plugin http_proxy | ✅（且多一层 allow_targets 圈定可拨范围） | `pkg/clientlib/plugins.go` httpProxyHandler |
+| plugin socks5 | ✅（且 allow_targets 必填圈界） | `pkg/clientlib/plugins.go` serveSocks5、`pkg/socks/server.go` ServeConn |
+| plugin https2https / tls2raw | ✅ | `pkg/clientlib/plugins.go` serveHTTPS2HTTPS、serveHTTPS2HTTP |
+| transport.protocol websocket | ✅ | `pkg/net/websocket.go`（RFC 6455 二进制帧）、服务端同一端口嗅探升级 |
+| 自定义 404 页 custom404Page | ✅ `custom_404_page` | `pkg/server/vhost.go` serveNotFound |
 | plugin http2https | ✅ | `pkg/clientlib/plugins.go` http2HTTPSHandler |
 | maxPortsPerClient | ✅ | `pkg/config` MaxPortsPerClient、`pkg/server/tunnel.go` Register |
 | includes 配置拆分 | ✅ | `pkg/config/config.go` mergeIncludes |
@@ -124,10 +131,9 @@ executable checks in this repository, not at marketing.
 ### 尚未复现 · Not reproduced yet
 
 - OIDC 认证（`auth_method` 的零知识/签名方案覆盖同场景）。
-- frp 的 `http_proxy`/`socks5` 作为**客户端插件**的形态（本项目的 socks5 是服务端入口，
-  出口能力等价）。
-- frp 的 kcp/quic 传输层（本项目走 TCP + 自有加密帧）。
+- frp 的 kcp/quic 传输层（本项目走 TCP + 自有加密帧；websocket 形态已实现）。
 - frp 的管理端 Web UI 形态（本项目面板另有实现）。
+- frp 服务端的 httpPlugins webhook 扩展与 xtcp 访客的 fallback_to 回退。
 
 ## 一句话 · In one sentence
 

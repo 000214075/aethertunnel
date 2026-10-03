@@ -64,6 +64,7 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `subdomain_host` | string | 空 | 子域名托管的域名后缀。设置后，没有显式 `domains` 的 `http`/`https` 代理以 `<代理名>.<该值>` 注册；客户端用 `subdomain` 声明标签时以 `<标签>.<该值>` 注册；为空时这类代理在注册阶段被服务端拒绝 |
 | `tcpmux_port` | int | 0 | `tcpmux` 代理的共享监听端口，0 表示不启用。访问者发一条 `CONNECT 主机名:端口`，服务器按主机名选中隧道并回 200，之后的字节都属于这条隧道；一个端口就能发布任意多条 TCP 服务 |
 | `https_passthrough_port` | int | 0 | https 代理的 TLS **透传**监听端口，0 表示不启用。声明了 `tls_passthrough = true` 的 https 代理骑在这上面：服务器只嗅探 ClientHello 的 SNI 选中隧道，访客的 TLS 会话原样中继到客户端，证书由客户端逐域名提供。与 `https_port` 配成同一个端口会被拒绝：一个中继 TLS、一个终结 TLS，绑在一起必有一个失效 |
+| `custom_404_page` | string | 空 | 一个文件的路径：http 共享监听上没有人发布的域名来访时，用它回答 404，代替内置的一句话。按请求时读取，改了文件无需重启；文件读不到时回退内置回答 |
 | `max_ports_per_client` | int | 0 | 一个客户端会话最多能注册的公共端口数，超出按名拒绝；0 表示不限制。private 代理不占名额 |
 | `p2p_port` | int | 0 | `xtcp` 打洞的 UDP 会合端口，0 表示不支持打洞（xtcp 走中继）。与 `dht.listen_addr` 撞在同一个 UDP 地址上时被拒绝 |
 | `load_balance` | string | `round-robin` | 代理池策略：`round-robin` `random` `latency` `failover` `adaptive` `bandit`。只对声明了 `group` 的代理有影响。`bandit` 是**在线学习**的多臂老虎机（UCB1）：每条流按应答速度记奖励（立即回答记 1，越慢越小），据此估计各成员的平均奖励并加一个探索项来选择成员；没有离线训练、没有模型文件，学习只来自这个池子实际服务过的流。每第 20 次选择会去测观测最少的成员，因此曾经很慢的成员在恢复后仍会被重新测量 |
@@ -121,8 +122,9 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `bandwidth` | string | 空 | 本代理在客户端侧的限速，双向合计，十进制字节每秒：`1MB`、`500KB`；留空不限速 |
 | `proxy_protocol` | string | 空 | `v1` 或 `v2`：服务器把带访客真实地址的 PROXY protocol 头插到本地服务收到的流最前面——`v1` 是文本行，`v2` 是二进制头（含签名与命令块）；留空不插。旧版服务端会忽略该设置（只是不发头） |
 | `remote_ports` | string | 空 | 端口段展开：`"6000-6002"` 生成 `remote_port` 6000/6001/6002 的三个代理，名字分别为 `名-6000`、`名-6001`、`名-6002`；条目的其余设置对每个副本生效。最多 256 个端口 |
-| `plugin` | string | 空 | 用客户端自带的组件代替本地服务：`static_file`（把 `plugin_local_path` 目录以 HTTP 发布）、`unix_domain_socket`（拨 `plugin_local_path` 的套接字）、`https2http`（用 `plugin_cert_file`/`plugin_key_file` 在客户端终结访客的 TLS，把明文转发给 `local_port` 的 HTTP 服务——配一条 `tcp` 代理即可在专用端口发布 HTTPS，或声明 `type = "https"` 加 `tls_passthrough = true` 骑在透传端口上）、`http_proxy`（客户端运行 HTTP 正向代理：访客用绝对地址请求与 CONNECT 出客户端网络，`allow_targets` 圈定可拨范围，`plugin_http_user`/`plugin_http_password` 可选保护）、`http2https`（明文进、以 TLS 出到 `local_port` 的本地 HTTPS 服务，SNI 取请求主机名） |
+| `plugin` | string | 空 | 用客户端自带的组件代替本地服务：`static_file`（把 `plugin_local_path` 目录以 HTTP 发布）、`unix_domain_socket`（拨 `plugin_local_path` 的套接字）、`https2http`（用 `plugin_cert_file`/`plugin_key_file` 在客户端终结访客的 TLS，把明文转发给 `local_port` 的 HTTP 服务——配一条 `tcp` 代理即可在专用端口发布 HTTPS，或声明 `type = "https"` 加 `tls_passthrough = true` 骑在透传端口上）、`https2https`（同上终结访客的 TLS，再以 TLS 拨 `local_port` 的本地 HTTPS 服务——两腿都加密）、`tls2raw`（终结访客的 TLS 后把明文字节原样转给 `local_port` 的 TCP 服务，适合说自有协议的后端）、`http_proxy`（客户端运行 HTTP 正向代理：访客用绝对地址请求与 CONNECT 出客户端网络，`allow_targets` 圈定可拨范围，`plugin_http_user`/`plugin_http_password` 可选保护）、`socks5`（访客对公共端口说 SOCKS5，客户端从自己的网络拨目标；`allow_targets` **必填**圈定可拨范围，`plugin_user`/`plugin_password` 可选认证；UDP ASSOCIATE 以"命令不支持"拒绝）、`http2https`（明文进、以 TLS 出到 `local_port` 的本地 HTTPS 服务，SNI 取请求主机名） |
 | `plugin_local_path` | string | 空 | `static_file` 与 `unix_domain_socket` 用的本地路径 |
+| `plugin_user` / `plugin_password` | string | 空 | 仅 `socks5` 插件：SOCKS5 用户名/密码认证（RFC 1929），两者必须成对出现；留空表示任何访客无需凭据 |
 | `plugin_cert_file` / `plugin_key_file` | string | 空 | `https2http` 插件终结 TLS 用的证书与私钥；证书按代理名缓存，连接不再读文件 |
 | `host_header_rewrite` | string | 空 | `http2https` 插件发往本地服务时替换 Host 头；原始主机名仍用于本地 TLS 的 SNI |
 | `plugin_http_user` / `plugin_http_password` | string | 空 | `static_file` 的 HTTP basic auth；两者任一非空即启用 |
@@ -206,6 +208,7 @@ SOCKS5 回复码 `0x02`（not allowed）拒绝。`allow_cidrs` / `deny_cidrs` �
 | `ca_file` | string | 空 | 客户端 | 信任锚；留空使用系统根证书 |
 | `server_name` | string | 空 | 客户端 | 覆盖证书校验用的名字；留空取 `client.server_addr` 的主机部分 |
 | `insecure_skip_verify` | bool | false | 客户端 | 接受任意证书。连接仍然加密，但服务器未被认证，会**警告** |
+| `protocol` | string | 空 | 客户端 | 到服务器的每条连接（控制、数据、访客）的承载方式：留空是普通流；`websocket` 把连接包进 RFC 6455 二进制帧，让隧道穿过只转发规整 websocket 会话的中间设备（frp 的 `transport.protocol = "websocket"` 形态）。服务端无需任何设置：它在同一端口上按连接嗅探升级请求，其余连接原样放行。TLS（`enable_tls`）仍在 websocket 之外，即 wss 的分层 |
 
 ## `[identity]`（Ed25519 身份，两端）
 

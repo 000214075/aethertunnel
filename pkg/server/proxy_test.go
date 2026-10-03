@@ -48,6 +48,10 @@ type testAgent struct {
 	// reports as a data race.
 	streams sync.WaitGroup
 
+	// websocket upgrades the agent's data connections the way
+	// [transport].protocol = "websocket" makes the real client do.
+	websocket bool
+
 	// dialTarget decides what a socks5 request may reach. It emulates the real
 	// client, which dials the address the visitor named rather than a local
 	// service of its own; leaving it nil means this agent serves no socks5 proxy.
@@ -135,6 +139,14 @@ func startAgent(t *testing.T, serverAddr string, encryption bool, handlers map[s
 	if _, err := client.authenticate("test-agent", testToken); err != nil {
 		t.Fatalf("authenticate: %v", err)
 	}
+	return startAgentWithClient(t, client, serverAddr, handlers)
+}
+
+// startAgentWithClient runs the agent loop for an already authenticated
+// client, so a variant dialer — the websocket transport, for one — can build
+// the control connection itself.
+func startAgentWithClient(t *testing.T, client *testClient, serverAddr string, handlers map[string]dataHandler) *testAgent {
+	t.Helper()
 
 	agent := &testAgent{
 		t:       t,
@@ -253,6 +265,18 @@ func (a *testAgent) serve(request protocol.DataRequest, handler dataHandler) {
 	conn, err := net.DialTimeout("tcp", a.addr, 5*time.Second)
 	if err != nil {
 		return
+	}
+	if a.websocket {
+		host := a.addr
+		if h, _, splitErr := net.SplitHostPort(a.addr); splitErr == nil {
+			host = h
+		}
+		upgraded, dialErr := flynet.WebsocketDial(conn, host, 5*time.Second)
+		if dialErr != nil {
+			_ = conn.Close()
+			return
+		}
+		conn = upgraded
 	}
 	framer := protocol.NewFramer(conn, a.client.cipher, 0)
 
