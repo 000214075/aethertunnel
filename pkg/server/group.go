@@ -42,6 +42,7 @@ type ProxyGroup struct {
 	Subdomain         string
 	HostHeaderRewrite string
 	HTTPUser          string
+	RouteByHTTPUser   string
 	HTTPPassword      string
 	TLSPassthrough    bool
 	RequestHeaders    map[string]string
@@ -210,6 +211,7 @@ func newProxyGroup(spec protocol.ProxySpec, manager *TunnelManager) *ProxyGroup 
 		Subdomain:         spec.Subdomain,
 		HostHeaderRewrite: spec.HostHeaderRewrite,
 		HTTPUser:          spec.HTTPUser,
+		RouteByHTTPUser:   spec.RouteByHTTPUser,
 		HTTPPassword:      spec.HTTPPassword,
 		TLSPassthrough:    spec.TLSPassthrough,
 		SecretKey:         spec.SecretKey,

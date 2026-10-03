@@ -73,6 +73,50 @@ tls_passthrough = true
 		}
 	})
 
+	t.Run("route_by_http_user on a tcp tunnel draws a warning", func(t *testing.T) {
+		path := writeConfig(t, `
+[client]
+server_addr = "127.0.0.1:7000"
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[[proxies]]
+name = "tcp"
+type = "tcp"
+local_port = 8080
+remote_port = 6000
+route_by_http_user = "alice"
+`)
+		cfg, err := LoadClient(path)
+		if err != nil {
+			t.Fatalf("LoadClient: %v", err)
+		}
+		if !strings.Contains(strings.Join(cfg.Warnings, "\n"), "a tcp tunnel never parses HTTP and ignores it") {
+			t.Fatalf("expected a route_by_http_user warning, got %v", cfg.Warnings)
+		}
+	})
+
+	t.Run("route_by_http_user round-trips", func(t *testing.T) {
+		path := writeConfig(t, `
+[client]
+server_addr = "127.0.0.1:7000"
+auth_token = "0123456789abcdef0123456789abcdef"
+
+[[proxies]]
+name = "api"
+type = "http"
+local_port = 8080
+domains = ["split.example.com"]
+route_by_http_user = "alice"
+`)
+		cfg, err := LoadClient(path)
+		if err != nil {
+			t.Fatalf("LoadClient: %v", err)
+		}
+		if cfg.Proxies[0].RouteByHTTPUser != "alice" {
+			t.Fatalf("route_by_http_user round-tripped as %q", cfg.Proxies[0].RouteByHTTPUser)
+		}
+	})
+
 	t.Run("locations and host_header_rewrite round-trip", func(t *testing.T) {
 		path := writeConfig(t, `
 [client]

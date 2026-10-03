@@ -790,6 +790,7 @@ func proxySpec(proxy config.ProxyConfig) protocol.ProxySpec {
 		ProxyProtocol:     proxy.ProxyProtocol,
 		Subdomain:         proxy.Subdomain,
 		HTTPUser:          proxy.HTTPUser,
+		RouteByHTTPUser:   proxy.RouteByHTTPUser,
 		HTTPPassword:      proxy.HTTPPassword,
 		Multiplexer:       proxy.Multiplexer,
 		UseCompression:    proxy.UseCompression,

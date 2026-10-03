@@ -260,6 +260,11 @@ type ProxyConfig struct {
 	// plugin terminates the visitor's TLS with.
 	PluginCertFile string `toml:"plugin_cert_file"`
 	PluginKeyFile  string `toml:"plugin_key_file"`
+	// RouteByHTTPUser splits a hostname by the basic-auth username the visitor
+	// presents: on one hostname, a proxy that names a user is matched only by
+	// requests presenting that username, and a proxy that names none is matched
+	// by everyone the named routes miss. Only for http/https.
+	RouteByHTTPUser string `toml:"route_by_http_user"`
 	// HostHeaderRewrite replaces the Host header the local service sees: the
 	// http2https plugin sends it to its local service, and the server's
 	// terminating virtual-host path forwards it on http/https proxies. Empty

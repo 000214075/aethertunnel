@@ -500,6 +500,10 @@ type ProxySpec struct {
 	// HostHeaderRewrite replaces the Host header the terminating virtual-host
 	// path forwards to the local service.
 	HostHeaderRewrite string `json:"host_header_rewrite,omitempty"`
+	// RouteByHTTPUser splits a hostname by the basic-auth username the visitor
+	// presents: routes named for that user win over proxies that named none.
+	// Only the terminating virtual-host path parses credentials for routing.
+	RouteByHTTPUser string `json:"route_by_http_user,omitempty"`
 	// HTTPUser and HTTPPassword guard an http/https hostname with HTTP basic
 	// auth: the server checks the visitor's Authorization header before any
 	// byte is relayed and answers a mismatch with 401. Older servers ignore

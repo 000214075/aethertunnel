@@ -38,6 +38,7 @@ executable checks in this repository, not at marketing.
 | 代理 HTTP 头注入 | ✅ requestHeaders/responseHeaders | ✅ `request_headers`/`response_headers` | 服务端终结 HTTP 的路径按代理注入请求头与应答头 |
 | vhost 按路径分流 locations | ✅ | ✅ `locations` | 一个主机名可被多个 http/https 代理按路径前缀拆分，最长前缀胜出，无 locations 的代理兜底；`tls_passthrough` 不解析路径 |
 | http 代理 hostHeaderRewrite | ✅ | ✅ `host_header_rewrite` | 终结路径转发给本地服务的 Host 改写为指定值 |
+| 按认证用户分流 routeByHTTPUser | ✅ | ✅ `route_by_http_user` | vhost 第三路由维度：同域名同前缀下按访客呈现的 basic-auth 用户名选路，命名路由优先、未声明用户的代理兜底；路由先于代理自身的凭据核对 |
 | 客户端 metas | ✅ | ✅ `[client.metas]` | 随认证请求上报，服务端交给 webhook 并记入日志 |
 | OIDC 认证 | ✅ auth.oidc | ✅ `[oidc]` | 服务端经发现文档取 JWKS 并验签（RS/PS/ES 系列）、查 iss/aud/exp；客户端以 client-credentials 取 token。差异：本项目的 `[oidc]` 是**加一把**凭据——静态令牌在配置了 `[oidc]` 的服务器上仍然有效；JWS 自实现（无 go-oidc 依赖） |
 | 传输层 websocket | ✅ transport.protocol | ✅ `transport.protocol = "websocket"` | 到服务器的每条连接包进 RFC 6455 二进制帧；服务端同一端口按连接嗅探升级，无需配置；TLS 仍在外侧（wss 分层） |

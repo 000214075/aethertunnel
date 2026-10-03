@@ -159,7 +159,7 @@ func (b *vhostBinding) extend(domains []string) error {
 
 	for _, raw := range domains {
 		domain := strings.ToLower(strings.TrimSuffix(raw, "."))
-		if err := b.router.checkFreeLocked(domain, b.group.routeLocation(), b.group); err != nil {
+		if err := b.router.checkFreeLocked(domain, b.group); err != nil {
 			return err
 		}
 		if strings.HasPrefix(domain, "*.") {
@@ -193,7 +193,7 @@ func (v *vhostRouter) add(group *ProxyGroup) (*vhostBinding, error) {
 
 	for _, raw := range group.Domains {
 		domain := strings.ToLower(strings.TrimSuffix(raw, "."))
-		if err := v.checkFreeLocked(domain, group.routeLocation(), group); err != nil {
+		if err := v.checkFreeLocked(domain, group); err != nil {
 			rollback()
 			return nil, err
 		}
@@ -210,7 +210,7 @@ func (v *vhostRouter) add(group *ProxyGroup) (*vhostBinding, error) {
 			rollback()
 			return nil, fmt.Errorf("proxy %q has no domains and server.subdomain_host is not set", group.Name)
 		}
-		if err := v.checkFreeLocked(group.Name, group.routeLocation(), group); err != nil {
+		if err := v.checkFreeLocked(group.Name, group); err != nil {
 			return nil, err
 		}
 		v.exact[group.Name] = append(v.exact[group.Name], group)
@@ -224,7 +224,7 @@ func (v *vhostRouter) add(group *ProxyGroup) (*vhostBinding, error) {
 // checkFreeLocked refuses a (domain, location) pair another proxy already
 // claims. Same domain with different locations is the point of locations: the
 // longest matching prefix on one hostname routes to different proxies.
-func (v *vhostRouter) checkFreeLocked(domain, location string, group *ProxyGroup) error {
+func (v *vhostRouter) checkFreeLocked(domain string, group *ProxyGroup) error {
 	var bucket map[string][]*ProxyGroup
 	if strings.HasPrefix(domain, "*.") {
 		bucket = v.wildcard
@@ -233,21 +233,28 @@ func (v *vhostRouter) checkFreeLocked(domain, location string, group *ProxyGroup
 		bucket = v.exact
 	}
 	for _, existing := range bucket[domain] {
-		if existing != group && existing.routeLocation() == location {
-			return fmt.Errorf("the domain %q at location %q is already published by proxy %q",
-				domain, locationDisplay(location), existing.Name)
+		if existing == group {
+			continue
+		}
+		for _, location := range group.routeLocations() {
+			for _, existingLocation := range existing.routeLocations() {
+				if location == existingLocation && group.RouteByHTTPUser == existing.RouteByHTTPUser {
+					return fmt.Errorf("the domain %q at location %q for http user %q is already published by proxy %q",
+						domain, locationDisplay(location), userDisplay(group.RouteByHTTPUser), existing.Name)
+				}
+			}
 		}
 	}
 	return nil
 }
 
-// routeLocation is the path prefix a proxy claims on its hostnames: empty when
-// it publishes the whole host.
-func (g *ProxyGroup) routeLocation() string {
-	if len(g.Locations) == 1 {
-		return g.Locations[0]
+// routeLocations lists the path prefixes a proxy claims on its hostnames: one
+// empty prefix when it publishes the whole host.
+func (g *ProxyGroup) routeLocations() []string {
+	if len(g.Locations) == 0 {
+		return []string{""}
 	}
-	return ""
+	return g.Locations
 }
 
 func locationDisplay(location string) string {
@@ -257,26 +264,37 @@ func locationDisplay(location string) string {
 	return location
 }
 
-// selectByPath picks one proxy from the host's candidates the way frp's router
-// does: the longest declared location prefix that matches the request path
-// wins, and a proxy with no locations catches whatever is left.
-func selectByPath(candidates []*ProxyGroup, path string) *ProxyGroup {
-	best := (*ProxyGroup)(nil)
-	bestLen := -1
-	for _, group := range candidates {
-		if len(group.Locations) == 0 {
-			if bestLen < 0 {
-				best, bestLen = group, 0
+func userDisplay(user string) string {
+	if user == "" {
+		return "(any)"
+	}
+	return user
+}
+
+// selectByRoute picks one proxy from the host's candidates the way frp's
+// router does: routes named for the request's basic-auth user come first, and
+// a proxy that named no user catches whatever they miss; within each pass the
+// longest declared location prefix that matches the request path wins, and a
+// proxy with no locations catches whatever is left.
+func selectByRoute(candidates []*ProxyGroup, path, user string) *ProxyGroup {
+	for _, passUser := range []string{user, ""} {
+		best := (*ProxyGroup)(nil)
+		bestLen := -1
+		for _, group := range candidates {
+			if group.RouteByHTTPUser != passUser {
+				continue
 			}
-			continue
+			for _, location := range group.routeLocations() {
+				if strings.HasPrefix(path, location) && len(location) > bestLen {
+					best, bestLen = group, len(location)
+				}
+			}
 		}
-		for _, location := range group.Locations {
-			if strings.HasPrefix(path, location) && len(location) > bestLen {
-				best, bestLen = group, len(location)
-			}
+		if best != nil {
+			return best
 		}
 	}
-	return best
+	return nil
 }
 
 func (v *vhostRouter) remove(binding *vhostBinding) {
@@ -364,7 +382,11 @@ func (v *vhostRouter) handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	candidates := v.lookup(host)
-	group := selectByPath(candidates, r.URL.Path)
+	// The routing user is the name the visitor presented, before any proxy's
+	// own credential check: two proxies can share a hostname and split it by
+	// who is asking.
+	user, _, _ := r.BasicAuth()
+	group := selectByRoute(candidates, r.URL.Path, user)
 	if group == nil {
 		v.logger.Printf("%s: no proxy is registered for host %q at %q", v.kind, host, r.URL.Path)
 		v.serveNotFound(w, host)

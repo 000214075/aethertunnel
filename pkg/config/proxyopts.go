@@ -234,6 +234,11 @@ func (c *Config) validateProxyExtras(p ProxyConfig) []string {
 			"proxy %q: locations split a hostname's paths on the terminating http/https listeners; a %s tunnel never parses HTTP and ignores them",
 			p.Name, p.Type))
 	}
+	if p.RouteByHTTPUser != "" && p.Type != ProxyTypeHTTP && p.Type != ProxyTypeHTTPS {
+		c.Warnings = append(c.Warnings, fmt.Sprintf(
+			"proxy %q: route_by_http_user splits a hostname's http/https traffic by the username the visitor presents; a %s tunnel never parses HTTP and ignores it",
+			p.Name, p.Type))
+	}
 	if len(p.Locations) > 0 && p.Type == ProxyTypeHTTPS && p.TLSPassthrough {
 		c.Warnings = append(c.Warnings, fmt.Sprintf(
 			"proxy %q: locations are ignored with tls_passthrough: the server relays the TLS session without reading the HTTP path",
