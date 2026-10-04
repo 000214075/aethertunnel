@@ -210,10 +210,6 @@ func (c *client) http2HTTPSHandler(proxy config.ProxyConfig) http.Handler {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
-		// The local leg is bounded by the dial timeout until the response header
-		// is in: a local service that accepts and then never answers would
-		// otherwise hold the visitor's request open forever. The deadline is
-		// lifted before the body streams.
 		// The local leg is bounded until the response header is in: a local
 		// service that accepts and then never answers would otherwise hold the
 		// visitor's request open forever. The bound is generous - a loaded

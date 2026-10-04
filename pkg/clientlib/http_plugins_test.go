@@ -189,7 +189,17 @@ func TestHTTP2HTTPSPluginWrapsTheLocalLeg(t *testing.T) {
 	pluginServer := httptest.NewServer(c.http2HTTPSHandler(proxy))
 	defer pluginServer.Close()
 
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(pluginServer.URL + "/")
+	// Windows has turned the plugin's clean close into an abortive one under
+	// the reader ("wsarecv: The I/O operation has been aborted..."), so a
+	// single aborted read is retried; the assertion is about the wrapped local
+	// leg, not about the platform's close semantics.
+	var response *http.Response
+	for attempt := 0; attempt < 2; attempt++ {
+		response, err = (&http.Client{Timeout: 10 * time.Second}).Get(pluginServer.URL + "/")
+		if err == nil || !strings.Contains(err.Error(), "aborted") {
+			break
+		}
+	}
 	if err != nil {
 		t.Fatalf("plain http to the plugin: %v", err)
 	}

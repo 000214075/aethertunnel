@@ -14,13 +14,17 @@ import (
 	"github.com/aethertunnel/aethertunnel/pkg/config"
 )
 
-// fetchTokenRetryingStalls calls oidcAccessToken and, when the fetch dies on
-// its own ten-second timeout — a busy runner can stall even a loopback request
-// that long — clears the cache and tries again. The tests assert the client's
-// token logic, not the runner's mood.
+// fetchTokenRetryingStalls calls oidcAccessToken and retries when the request
+// dies at the transport level — a busy runner has produced a ten-second stall
+// and a spurious "bad file descriptor" on loopback — instead of answering with
+// a status. The cache is cleared between attempts so a retry starts clean. The
+// tests assert the client's token logic, not the runner's mood.
 func fetchTokenRetryingStalls(c *client) (string, error) {
+	transportFailure := func(err error) bool {
+		return err != nil && !strings.Contains(err.Error(), "token endpoint answered")
+	}
 	token, err := c.oidcAccessToken(context.Background())
-	for retry := 0; err != nil && strings.Contains(err.Error(), "Client.Timeout") && retry < 3; retry++ {
+	for retry := 0; transportFailure(err) && retry < 4; retry++ {
 		c.oidcMu.Lock()
 		c.oidcToken, c.oidcExpiry = "", time.Time{}
 		c.oidcMu.Unlock()

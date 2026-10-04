@@ -492,7 +492,7 @@ func TestDatagramPumpClosesThePathsOfASessionThatEndedWhileTheyOpened(t *testing
 func TestDatagramPumpDropsDatagramsOverTheCap(t *testing.T) {
 	var dropped atomic.Int64
 	var droppedSize atomic.Int64
-	pump, socket := newEchoPumpWith(t, 2*time.Second, func(p *DatagramPump) {
+	pump, _ := newEchoPumpWith(t, 2*time.Second, func(p *DatagramPump) {
 		p.MaxDatagram = 64
 		p.OnOversize = func(n int) {
 			dropped.Add(1)
@@ -500,12 +500,21 @@ func TestDatagramPumpDropsDatagramsOverTheCap(t *testing.T) {
 		}
 	})
 
+	// The sender needs its own socket: writing from the pump's own socket would
+	// feed every reply back into the pump as a fresh datagram.
+	sender, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the sender: %v", err)
+	}
+	defer sender.Close()
+	target := pump.Socket.LocalAddr()
+
 	fitting := strings.Repeat("a", 64)
-	if got := sendAndReceive(t, socket, pump.Socket.LocalAddr(), fitting); got != fitting {
+	if got := sendAndReceive(t, sender, target, fitting); got != fitting {
 		t.Fatalf("a datagram that exactly fills the cap came back as %d bytes, want 64", len(got))
 	}
 
-	if _, err := socket.WriteTo([]byte(strings.Repeat("b", 65)), pump.Socket.LocalAddr()); err != nil {
+	if _, err := sender.WriteTo([]byte(strings.Repeat("b", 65)), target); err != nil {
 		t.Fatalf("send the oversized datagram: %v", err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
@@ -526,17 +535,23 @@ func TestDatagramPumpDropsDatagramsOverTheCap(t *testing.T) {
 // Without a cap the pump relays a datagram larger than frp's 1500-byte default,
 // which is what a configuration that does not set udp_packet_size keeps.
 func TestDatagramPumpWithoutACapRelaysLargeDatagrams(t *testing.T) {
-	pump, socket := newEchoPump(t, 2*time.Second)
+	pump, _ := newEchoPump(t, 2*time.Second)
+
+	sender, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the sender: %v", err)
+	}
+	defer sender.Close()
 
 	payload := strings.Repeat("x", 4000)
-	_ = socket.SetDeadline(time.Now().Add(3 * time.Second))
+	_ = sender.SetDeadline(time.Now().Add(3 * time.Second))
 	buf := make([]byte, 8192)
 	var got []byte
 	for attempt := 0; attempt < 25 && got == nil; attempt++ {
-		if _, err := socket.WriteTo([]byte(payload), pump.Socket.LocalAddr()); err != nil {
+		if _, err := sender.WriteTo([]byte(payload), pump.Socket.LocalAddr()); err != nil {
 			t.Fatalf("send: %v", err)
 		}
-		n, _, err := socket.ReadFrom(buf)
+		n, _, err := sender.ReadFrom(buf)
 		if err == nil {
 			got = append([]byte(nil), buf[:n]...)
 		}
