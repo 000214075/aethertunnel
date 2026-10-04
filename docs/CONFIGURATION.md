@@ -66,6 +66,7 @@ aethertunnel-server --config server.toml --check --reject-unknown-keys
 | `https_passthrough_port` | int | 0 | https 代理的 TLS **透传**监听端口，0 表示不启用。声明了 `tls_passthrough = true` 的 https 代理骑在这上面：服务器只嗅探 ClientHello 的 SNI 选中隧道，访客的 TLS 会话原样中继到客户端，证书由客户端逐域名提供。与 `https_port` 配成同一个端口会被拒绝：一个中继 TLS、一个终结 TLS，绑在一起必有一个失效 |
 | `custom_404_page` | string | 空 | 一个文件的路径：http 共享监听上没有人发布的域名来访时，用它回答 404，代替内置的一句话。按请求时读取，改了文件无需重启；文件读不到时回退内置回答 |
 | `vhost_http_timeout` | int | 0 | 走终结路径的 http/https 代理等待本地服务回**响应头**的上限（秒），超时回 502 并在日志记录原因；0 表示不设这条界，沿用拨号超时。对应 frp 服务端的 `vhost_http_timeout`（frp 默认 60，机制相同：反代 Transport 的响应头超时）——本地服务卡住时，先于访客一侧的超时给出明确答复 |
+| `udp_packet_size` | int | 0 | 服务端侧 udp / sudp 代理上允许中继的单条数据报载荷上限（字节），超限的数据报被丢弃、计入 `/metrics` 的 `aethertunnel_udp_oversize_dropped_total`，而不是截断后交给本地服务。0 表示最大 UDP 载荷 65535；frp 同名键 `udpPacketSize` 默认 1500 |
 | `max_ports_per_client` | int | 0 | 一个客户端会话最多能注册的公共端口数，超出按名拒绝；0 表示不限制。private 代理不占名额 |
 | `p2p_port` | int | 0 | `xtcp` 打洞的 UDP 会合端口，0 表示不支持打洞（xtcp 走中继）。与 `dht.listen_addr` 撞在同一个 UDP 地址上时被拒绝 |
 | `load_balance` | string | `round-robin` | 代理池策略：`round-robin` `random` `latency` `failover` `adaptive` `bandit`。只对声明了 `group` 的代理有影响。`bandit` 是**在线学习**的多臂老虎机（UCB1）：每条流按应答速度记奖励（立即回答记 1，越慢越小），据此估计各成员的平均奖励并加一个探索项来选择成员；没有离线训练、没有模型文件，学习只来自这个池子实际服务过的流。每第 20 次选择会去测观测最少的成员，因此曾经很慢的成员在恢复后仍会被重新测量 |
@@ -128,6 +129,8 @@ frp `auth.oidc` 的对应物。配置了 `[oidc]` 的**服务器**在静态令�
 | `dial_via` | string | 空 | 经一个中转代理连接服务器：`socks5://user:pass@10.0.0.2:1080`、`socks5h://proxy.lan`、`http://proxy.lan:3128`、`https://…`。直连被封或计费时用它；隧道自身的 TLS 与加密全部加在中转之上，中转只看到不透明的 TLS 形状流量。留空直连 |
 | `metas` | 表 | 空 | 操作者自选的键值对（`[client.metas]` 下），随认证请求上报：服务端在日志里记录，并原样交给 `[[http_plugins]]` 的 webhook |
 | `login_fail_exit` | bool | false | 设为 true 时，**第一次**登录就被拒绝（token 不对、被拉黑、端口名额用尽）的客户端直接退出并在日志里给出原因，不再无限重试；已经成功登录过一次的会话掉线后照常重连。对应 frp 客户端的 `loginFailExit`——frp 默认 true，本客户端默认 false 保持旧行为 |
+| `start` | 字符串数组 | 空 | 只启动其中列出的代理与访客，文件里其余条目保持定义但不启动——对应 frp 客户端的 `start`。空数组表示全部启动；写了没有任何条目对应的名字只在启动时给一条警告，不影响其余条目。热重载会重新按它筛选：新列出的隧道上线，不再列出的隧道注销并关闭公开端口 |
+| `udp_packet_size` | int | 0 | 客户端侧 udp / sudp 隧道上允许中继的单条数据报载荷上限（字节），超限的数据报被丢弃且不截断（否则本地服务会收到半条数据报）。0 表示最大 UDP 载荷 65535；frp 同名键 `udpPacketSize` 默认 1500，为不改动既有行为本客户端默认不设限 |
 
 ## `[client.admin]`（客户端管理 API）
 

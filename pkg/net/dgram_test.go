@@ -4,6 +4,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -481,5 +482,66 @@ func TestDatagramPumpClosesThePathsOfASessionThatEndedWhileTheyOpened(t *testing
 	}
 	if got := sessions.Load(); got != 0 {
 		t.Errorf("the session gauge is %d after the late path came up, want 0", got)
+	}
+}
+
+// A datagram over the cap is dropped and reported instead of being relayed:
+// the read buffer stops one byte past the cap, so the pump can tell an
+// oversized datagram from one that exactly fills it rather than truncating a
+// datagram the local service would then see shortened.
+func TestDatagramPumpDropsDatagramsOverTheCap(t *testing.T) {
+	var dropped atomic.Int64
+	var droppedSize atomic.Int64
+	pump, socket := newEchoPumpWith(t, 2*time.Second, func(p *DatagramPump) {
+		p.MaxDatagram = 64
+		p.OnOversize = func(n int) {
+			dropped.Add(1)
+			droppedSize.Store(int64(n))
+		}
+	})
+
+	fitting := strings.Repeat("a", 64)
+	if got := sendAndReceive(t, socket, pump.Socket.LocalAddr(), fitting); got != fitting {
+		t.Fatalf("a datagram that exactly fills the cap came back as %d bytes, want 64", len(got))
+	}
+
+	if _, err := socket.WriteTo([]byte(strings.Repeat("b", 65)), pump.Socket.LocalAddr()); err != nil {
+		t.Fatalf("send the oversized datagram: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for dropped.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := dropped.Load(); got != 1 {
+		t.Fatalf("the pump dropped %d datagrams for size, want 1", got)
+	}
+	if got := droppedSize.Load(); got != 65 {
+		t.Fatalf("the drop reported %d bytes, want 65", got)
+	}
+	if sessions := pump.Sessions(); sessions != 1 {
+		t.Fatalf("the pump tracks %d sessions, want 1: the oversized datagram opened none", sessions)
+	}
+}
+
+// Without a cap the pump relays a datagram larger than frp's 1500-byte default,
+// which is what a configuration that does not set udp_packet_size keeps.
+func TestDatagramPumpWithoutACapRelaysLargeDatagrams(t *testing.T) {
+	pump, socket := newEchoPump(t, 2*time.Second)
+
+	payload := strings.Repeat("x", 4000)
+	_ = socket.SetDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 8192)
+	var got []byte
+	for attempt := 0; attempt < 25 && got == nil; attempt++ {
+		if _, err := socket.WriteTo([]byte(payload), pump.Socket.LocalAddr()); err != nil {
+			t.Fatalf("send: %v", err)
+		}
+		n, _, err := socket.ReadFrom(buf)
+		if err == nil {
+			got = append([]byte(nil), buf[:n]...)
+		}
+	}
+	if len(got) != len(payload) {
+		t.Fatalf("a %d-byte datagram came back as %d bytes, want all of it", len(payload), len(got))
 	}
 }

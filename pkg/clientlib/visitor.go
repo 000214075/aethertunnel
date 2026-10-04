@@ -177,6 +177,7 @@ func (c *client) serveUDPVisitor(ctx context.Context, cfg config.VisitorConfig) 
 			return path.framer, path.close, nil
 		},
 		IdleTimeout: time.Duration(c.cfg.Client.IdleTimeoutSecs) * time.Second,
+		MaxDatagram: c.cfg.Client.UDPPacketSize,
 		Logger:      c.logger,
 	}
 	pump.Start()

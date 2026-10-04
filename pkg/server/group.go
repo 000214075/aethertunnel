@@ -48,6 +48,7 @@ type ProxyGroup struct {
 	RequestHeaders    map[string]string
 	ResponseHeaders   map[string]string
 	vhostTimeout      time.Duration
+	udpPacketSize     int
 	tcpmux            *tcpmuxBinding
 	sni               *sniBinding
 	SecretKey         string
@@ -220,6 +221,7 @@ func newProxyGroup(spec protocol.ProxySpec, manager *TunnelManager) *ProxyGroup 
 		RequestHeaders:    spec.RequestHeaders,
 		ResponseHeaders:   spec.ResponseHeaders,
 		vhostTimeout:      time.Duration(manager.cfg.Server.VhostHTTPTimeout) * time.Second,
+		udpPacketSize:     manager.cfg.Server.UDPPacketSize,
 		RemotePort:        spec.RemotePort,
 		Group:             spec.Group,
 		Multipath:         spec.Multipath,
@@ -1285,6 +1287,8 @@ func (g *ProxyGroup) startUDP() {
 			g.recordSession(toPeer, fromPeer)
 		},
 		OnDatagram:  func(toPeer bool, n int) { g.metrics.udpDatagrams.Add(1) },
+		OnOversize:  func(n int) { g.metrics.udpOversize.Add(1) },
+		MaxDatagram: g.udpPacketSize,
 		OnSession:   func(delta int) { g.metrics.udpSessions.Add(int64(delta)) },
 		IdleTimeout: g.idleTimeout,
 		Logger:      g.logger,

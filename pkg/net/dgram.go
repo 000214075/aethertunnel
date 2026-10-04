@@ -10,6 +10,10 @@ import (
 	"github.com/aethertunnel/aethertunnel/pkg/protocol"
 )
 
+// maxUDPPayload is the largest payload a UDP datagram can carry, which is what
+// an unset MaxDatagram relays.
+const maxUDPPayload = 65535
+
 // DatagramPump relays datagrams between a packet socket and one framed stream per
 // source address.
 //
@@ -31,6 +35,15 @@ type DatagramPump struct {
 	Close func(addr net.Addr, toPeer, fromPeer int64)
 	// OnDatagram, when set, is called for each relayed datagram.
 	OnDatagram func(toPeer bool, n int)
+	// MaxDatagram caps a relayed datagram's payload. A datagram over the cap
+	// is dropped rather than truncated, and OnOversize hears about it; the
+	// read buffer stays one byte past the cap so an oversized datagram is
+	// detectable instead of silently shortened. Zero or a value above the
+	// largest UDP payload selects that payload.
+	MaxDatagram int
+	// OnOversize, when set, is called with the payload size of a datagram
+	// dropped for exceeding MaxDatagram.
+	OnOversize func(n int)
 	// OnSession, when set, is called with +1 when a source address starts being
 	// tracked and -1 when it is released.
 	OnSession func(delta int)
@@ -84,7 +97,14 @@ func (s *datagramSession) idleFor() time.Duration {
 
 // Run reads datagrams until the socket is closed. It blocks.
 func (p *DatagramPump) Run() {
-	buf := make([]byte, 65535)
+	limit := p.MaxDatagram
+	if limit <= 0 || limit > maxUDPPayload {
+		limit = maxUDPPayload
+	}
+	// One byte past the cap tells a datagram that overflows it apart from one
+	// that exactly fills it: the read returns the extra byte, and the session
+	// sees nothing.
+	buf := make([]byte, limit+1)
 	for {
 		n, addr, err := p.Socket.ReadFrom(buf)
 		if err != nil {
@@ -93,6 +113,12 @@ func (p *DatagramPump) Run() {
 			}
 			p.logf("datagram pump: read error: %v", err)
 			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if n > limit {
+			if p.OnOversize != nil {
+				p.OnOversize(n)
+			}
 			continue
 		}
 		datagram := make([]byte, n)

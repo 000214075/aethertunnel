@@ -3,6 +3,7 @@ package clientlib
 import (
 	"context"
 	"errors"
+	"log"
 	"os"
 	"os/signal"
 	"reflect"
@@ -124,7 +125,7 @@ func (c *client) applyReload(newCfg *config.Config) {
 		old    any
 		latest any
 	}{
-		{"[client]", c.cfg.Client, newCfg.Client},
+		{"[client]", withoutStart(c.cfg.Client), withoutStart(newCfg.Client)},
 		{"[transport]", c.cfg.Transport, newCfg.Transport},
 		{"[encryption]", c.cfg.Encryption, newCfg.Encryption},
 		{"[identity]", c.cfg.Identity, newCfg.Identity},
@@ -137,8 +138,46 @@ func (c *client) applyReload(newCfg *config.Config) {
 		}
 	}
 
-	c.applyProxyReload(newCfg.Proxies)
-	c.applyVisitorReload(newCfg.Visitors)
+	selectedProxies, selectedVisitors := selectByStart(newCfg, c.logger)
+	c.applyProxyReload(selectedProxies)
+	c.applyVisitorReload(selectedVisitors)
+}
+
+// withoutStart drops the client.start list so the reload's "[client] changed"
+// message does not cover it: the selection is applied by the same reload,
+// unlike the sections that really do wait for a restart.
+func withoutStart(cfg config.ClientConfig) config.ClientConfig {
+	cfg.Start = nil
+	return cfg
+}
+
+// selectByStart narrows the proxy and visitor lists to the names client.start
+// selects, in the order the configuration lists them. An empty list keeps
+// everything, which is what a configuration without the key means. A selected
+// name that nothing defines was already reported as a warning by validation,
+// so it is not repeated here.
+func selectByStart(cfg *config.Config, logger *log.Logger) ([]config.ProxyConfig, []config.VisitorConfig) {
+	start := cfg.Client.StartSet()
+	if start == nil {
+		return cfg.Proxies, cfg.Visitors
+	}
+	proxies := make([]config.ProxyConfig, 0, len(cfg.Proxies))
+	for _, proxy := range cfg.Proxies {
+		if _, selected := start[proxy.Name]; selected {
+			proxies = append(proxies, proxy)
+		}
+	}
+	visitors := make([]config.VisitorConfig, 0, len(cfg.Visitors))
+	for _, visitor := range cfg.Visitors {
+		if _, selected := start[visitor.Name]; selected {
+			visitors = append(visitors, visitor)
+		}
+	}
+	if len(proxies) != len(cfg.Proxies) || len(visitors) != len(cfg.Visitors) {
+		logger.Printf("client.start selects %d of %d tunnel(s) and %d of %d visitor(s)",
+			len(proxies), len(cfg.Proxies), len(visitors), len(cfg.Visitors))
+	}
+	return proxies, visitors
 }
 
 // applyProxyReload diffs the proxy set by name and converges the running

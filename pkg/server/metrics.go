@@ -42,6 +42,7 @@ type Metrics struct {
 	bytesToClients    atomic.Int64
 	udpDatagrams      atomic.Int64
 	udpSessions       atomic.Int64
+	udpOversize       atomic.Int64
 	httpRequests      atomic.Int64
 	p2pPunches        atomic.Int64
 	p2pDirect         atomic.Int64
@@ -172,6 +173,7 @@ func (m *Metrics) Render() string {
 	counter("aethertunnel_bytes_to_clients_total", "Bytes sent to clients.", m.bytesToClients.Load())
 	counter("aethertunnel_udp_datagrams_total", "UDP datagrams relayed by a udp or sudp proxy.", m.udpDatagrams.Load())
 	gauge("aethertunnel_udp_sessions_active", "UDP visitor sessions currently tracked, which is what a udp proxy keeps per source address.", m.udpSessions.Load())
+	counter("aethertunnel_udp_oversize_dropped_total", "UDP datagrams dropped for exceeding server.udp_packet_size.", m.udpOversize.Load())
 	counter("aethertunnel_http_requests_total", "Requests served by the shared virtual-host listener.", m.httpRequests.Load())
 	counter("aethertunnel_p2p_punches_total", "Hole punching attempts started for xtcp proxies.", m.p2pPunches.Load())
 	counter("aethertunnel_p2p_direct_total", "Hole punching attempts that produced a direct path.", m.p2pDirect.Load())

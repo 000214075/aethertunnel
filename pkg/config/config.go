@@ -111,6 +111,11 @@ type ServerConfig struct {
 	// P2PPort is the UDP rendezvous port used by xtcp hole punching. It is
 	// served by the same process as the control port; zero disables xtcp.
 	P2PPort int `toml:"p2p_port"`
+	// UDPPacketSize caps a relayed datagram's payload in bytes; a datagram
+	// over the cap is dropped and counted rather than truncated. Zero selects
+	// the largest UDP payload (65535), which is what the server did before the
+	// key existed — frp calls the same knob udpPacketSize and defaults to 1500.
+	UDPPacketSize int `toml:"udp_packet_size"`
 }
 
 // OIDCConfig is the [oidc] section. A server fills the issuer side (issuer,
@@ -196,6 +201,57 @@ type ClientConfig struct {
 	// to true; this client keeps retrying unless the operator asks for the
 	// exit.
 	LoginFailExit bool `toml:"login_fail_exit"`
+	// Start names the proxies and visitors to start; the others in the file
+	// stay defined and stay stopped, which is frp's `start`. Empty starts
+	// everything, and a name that matches nothing is a warning rather than an
+	// error, so a file can carry a name a disabled fragment would define.
+	Start []string `toml:"start"`
+	// UDPPacketSize caps a relayed datagram's payload in bytes on the visitor
+	// side of a udp or sudp tunnel; a datagram over the cap is dropped rather
+	// than truncated. Zero selects the largest UDP payload (65535); frp calls
+	// the same knob udpPacketSize and defaults to 1500.
+	UDPPacketSize int `toml:"udp_packet_size"`
+}
+
+// StartSet returns the names client.start selects, or nil when the list is
+// empty and every proxy and visitor starts.
+func (c ClientConfig) StartSet() map[string]struct{} {
+	if len(c.Start) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(c.Start))
+	for _, name := range c.Start {
+		set[name] = struct{}{}
+	}
+	return set
+}
+
+// missingStartNames returns, in configuration order and once each, the
+// client.start names that no proxy or visitor defines.
+func (c *Config) missingStartNames() []string {
+	if len(c.Client.Start) == 0 {
+		return nil
+	}
+	defined := make(map[string]struct{}, len(c.Proxies)+len(c.Visitors))
+	for _, p := range c.Proxies {
+		defined[p.Name] = struct{}{}
+	}
+	for _, v := range c.Visitors {
+		defined[v.Name] = struct{}{}
+	}
+	var missing []string
+	seen := make(map[string]struct{}, len(c.Client.Start))
+	for _, name := range c.Client.Start {
+		if _, ok := defined[name]; ok {
+			continue
+		}
+		if _, duplicate := seen[name]; duplicate {
+			continue
+		}
+		seen[name] = struct{}{}
+		missing = append(missing, name)
+	}
+	return missing
 }
 
 // AdminConfig is the [client.admin] section. It serves the client's
@@ -354,6 +410,11 @@ const (
 
 // Visitor transports accepted in [[visitors]].transport.
 const (
+	// maxUDPPayloadSize is the largest payload a UDP datagram can carry, and so
+	// the largest value server.udp_packet_size and client.udp_packet_size can
+	// usefully ask for.
+	maxUDPPayloadSize = 65535
+
 	// TransportDefault relays the visitor's data over the control connection.
 	TransportDefault = ""
 	// TransportWebRTC moves the visitor's data path onto a WebRTC DataChannel.
@@ -1252,6 +1313,12 @@ func (c *Config) Validate(role string) error {
 		if c.Server.VhostHTTPTimeout < 0 {
 			problems = append(problems, "server.vhost_http_timeout cannot be negative")
 		}
+		if c.Server.UDPPacketSize < 0 {
+			problems = append(problems, "server.udp_packet_size cannot be negative")
+		}
+		if c.Server.UDPPacketSize > maxUDPPayloadSize {
+			problems = append(problems, fmt.Sprintf("server.udp_packet_size cannot exceed %d, got %d", maxUDPPayloadSize, c.Server.UDPPacketSize))
+		}
 		if c.Server.HTTPSPassthroughPort > 0 && c.Server.HTTPSPassthroughPort == c.Server.HTTPSPort {
 			problems = append(problems, "server.https_passthrough_port and server.https_port must differ: one relays TLS and the other terminates it")
 		}
@@ -1341,6 +1408,13 @@ func (c *Config) Validate(role string) error {
 		}
 		if len(c.HTTPPlugins) > 0 {
 			c.Warnings = append(c.Warnings, "http_plugins has no effect in a client configuration: the webhooks run on a server")
+		}
+		// client.start selects what runs, so a name nothing defines is worth
+		// saying out loud: the operator meant a proxy that is not there, and
+		// the rest of the file started without it.
+		for _, missing := range c.missingStartNames() {
+			c.Warnings = append(c.Warnings, fmt.Sprintf(
+				"client.start names %q, which no proxy or visitor defines: it starts nothing", missing))
 		}
 		if o := c.OIDC; o != nil {
 			clientSide := o.TokenEndpointURL != "" || o.ClientID != "" || o.ClientSecret != "" || o.Scope != ""
@@ -1488,11 +1562,15 @@ func (c *Config) Validate(role string) error {
 		{"client.heartbeat_seconds", c.Client.HeartbeatSeconds},
 		{"client.dial_timeout_seconds", c.Client.DialTimeoutSecs},
 		{"client.idle_timeout_seconds", c.Client.IdleTimeoutSecs},
+		{"client.udp_packet_size", c.Client.UDPPacketSize},
 		{"dht.lookup_timeout_seconds", c.DHT.LookupTimeoutSeconds},
 	} {
 		if key.value < 0 {
 			problems = append(problems, fmt.Sprintf("%s cannot be negative, got %d", key.name, key.value))
 		}
+	}
+	if c.Client.UDPPacketSize > maxUDPPayloadSize {
+		problems = append(problems, fmt.Sprintf("client.udp_packet_size cannot exceed %d, got %d", maxUDPPayloadSize, c.Client.UDPPacketSize))
 	}
 	// A ceiling below the starting value would be exceeded by the first wait, so the
 	// backoff would begin above the limit that is supposed to bound it.

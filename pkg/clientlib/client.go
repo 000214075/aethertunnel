@@ -270,8 +270,7 @@ func runWithShell(ctx context.Context, cfg *config.Config, logger *log.Logger,
 	c := &client{cfg: cfg, cipher: cipher, tlsConfig: tlsConfig, logger: logger, target: cfg.Client.ServerAddr,
 		vpnShellOpen: openDevice, vpnShellProtect: protect}
 	c.baseCtx = ctx
-	c.proxies = cfg.Proxies
-	c.visitors = cfg.Visitors
+	c.proxies, c.visitors = selectByStart(cfg, logger)
 	c.startReloadWatcher()
 	c.startHealthChecks(ctx)
 	if err := c.startAdminServer(); err != nil {
@@ -325,7 +324,7 @@ func runWithShell(ctx context.Context, cfg *config.Config, logger *log.Logger,
 
 	logger.Printf("AetherTunnel client %s (protocol %d) -> %s, encryption %s, %d tunnel(s), %d visitor(s) configured",
 		Version, protocol.ProtocolVersion, c.target, cipher.Algorithm(),
-		len(cfg.Proxies), len(cfg.Visitors))
+		len(c.proxies), len(c.visitors))
 
 	c.run(ctx)
 	if c.giveUp != nil {
