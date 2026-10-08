@@ -1,0 +1,127 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aethertunnel-server
+  namespace: aethertunnel
+  labels:
+    app.kubernetes.io/name: aethertunnel
+    app.kubernetes.io/component: server
+spec:
+  replicas: 1
+  # The server publishes the proxies its clients register on the pod that runs it,
+  # and a client session lives on exactly one pod, so a rolling update drops every
+  # client once. Two replicas do not share proxied ports.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aethertunnel
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aethertunnel
+        app.kubernetes.io/component: server
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: server
+          image: ghcr.io/aethertunnel/aethertunnel:latest
+          args: ["--config", "/etc/aethertunnel/server.toml"]
+          # The Secret's keys are mapped explicitly. `envFrom: secretRef` would turn
+          # each key into an environment variable of the same name, and the keys here
+          # are short ("auth-token"), while the server reads AETHERTUNNEL_AUTH_TOKEN:
+          # with envFrom the credential never reaches the program and the server
+          # refuses to start with "server.auth_token is required".
+          env:
+            - name: AETHERTUNNEL_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aethertunnel-secrets
+                  key: auth-token
+            - name: AETHERTUNNEL_DASHBOARD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aethertunnel-secrets
+                  key: dashboard-token
+          ports:
+            - name: control
+              containerPort: 7001
+              protocol: TCP
+            - name: dashboard
+              containerPort: 7500
+              protocol: TCP
+            - name: rendezvous
+              containerPort: 7002
+              protocol: UDP
+            - name: dht
+              containerPort: 7003
+              protocol: UDP
+          # The control port cannot answer an HTTP probe, so liveness and readiness
+          # are taken from the dashboard's own probes. Both are public and cheap.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: dashboard
+            initialDelaySeconds: 5
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: dashboard
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # To use the [vpn] section, set vpn.enabled and vpn.address in the ConfigMap
+          # and make four edits. Each one changes a list or a map that is already here,
+          # so none of them can be pasted as a block: a second securityContext or
+          # volumeMounts on this container is a duplicate key, and a parser that keeps
+          # the last copy silently drops readOnlyRootFilesystem,
+          # allowPrivilegeEscalation: false and the state mount.
+          #
+          #   1. under this container's securityContext.capabilities, add NET_ADMIN
+          #   2. under this container's volumeMounts, add
+          #        - {name: tun, mountPath: /dev/net/tun}
+          #   3. under the pod's volumes below, add
+          #        - name: tun
+          #          hostPath: {path: /dev/net/tun, type: CharDevice}
+          #   4. drop the pod's runAsNonRoot and runAsUser. A process whose uid is not
+          #      0 does not receive a capability the container adds, so TUNSETIFF is
+          #      refused with EPERM even with NET_ADMIN present. Measured against
+          #      docker 20.10.24, 28.4.0 and 29.2.1: with --user 65532:65532
+          #      --cap-add NET_ADMIN --device /dev/net/tun the ioctl was refused,
+          #      while the same run as uid 0 opened the device.
+          #
+          # The server refuses to start with [vpn] enabled until both the device and
+          # the capability are there, and names which is missing: "open /dev/net/tun:
+          # no such file or directory" or "TUNSETIFF ... operation not permitted".
+          volumeMounts:
+            - name: config
+              mountPath: /etc/aethertunnel
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/aethertunnel
+      volumes:
+        - name: config
+          configMap:
+            name: aethertunnel-server
+        - name: state
+          emptyDir: {}

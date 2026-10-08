@@ -1,0 +1,260 @@
+name: mobile app
+
+# Builds the Android artifacts from pkg/mobile: the gomobile binding (AAR) and the
+# app skeleton under mobile/android (debug APK). Runs on every push to main so a
+# broken binding or app build is caught without a tag, and on version tags, where
+# both files are uploaded to the release the Release workflow creates.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    name: android (aar and apk)
+    runs-on: ubuntu-latest
+    env:
+      XMV: v0.0.0-20260821151724-5c0595f4cdbb   # the newest x/mobile whose go directive the toolchain here satisfies
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # The runner image ships the Android SDK and an NDK; only the path changes.
+      - name: locate the NDK the runner already has
+        run: |
+          ls "$ANDROID_HOME/ndk"
+          echo "ANDROID_NDK_HOME=$(ls -d "$ANDROID_HOME"/ndk/* | head -1)" >> "$GITHUB_ENV"
+
+      - name: install gomobile
+        run: |
+          go install "golang.org/x/mobile/cmd/gomobile@${XMV}"
+          go install "golang.org/x/mobile/cmd/gobind@${XMV}"
+          "$(go env GOPATH)/bin/gomobile" init
+          "$(go env GOPATH)/bin/gomobile" version
+
+      # gomobile bind needs golang.org/x/mobile in the module graph of the package it
+      # binds, and the newest x/mobile forces a go-directive bump on whatever module
+      # carries it. The main go.mod stays untouched: the binding runs from a throwaway
+      # wrapper module that replaces the repository and pins a compatible x/mobile.
+      - name: bind the client into an AAR
+        env:
+          REPO: ${{ github.workspace }}
+        run: |
+          mkdir -p /tmp/binder mobile/android/app/libs
+          cd /tmp/binder
+          cat > go.mod <<EOF
+          module aethertunnel/binder
+
+          go 1.25.0
+
+          require (
+          	github.com/aethertunnel/aethertunnel v0.0.0
+          	golang.org/x/mobile ${XMV}
+          )
+
+          replace github.com/aethertunnel/aethertunnel => ${REPO}
+          EOF
+          cat > binder.go <<EOF
+          // Package binder holds only the module graph gomobile bind needs: the
+          // repository under a replace, and x/mobile pinned to a version this
+          // toolchain satisfies.
+          package binder
+
+          import (
+          	_ "github.com/aethertunnel/aethertunnel/pkg/mobile"
+          	_ "golang.org/x/mobile/bind"
+          )
+          EOF
+          go mod tidy
+          "$(go env GOPATH)/bin/gomobile" bind \
+            -target=android/arm64,android/amd64 \
+            -androidapi 21 \
+            -javapkg=io.github.aethertunnel \
+            -ldflags='-checklinkname=0' \
+            -o "${REPO}/mobile/android/app/libs/aethertunnel.aar" \
+            github.com/aethertunnel/aethertunnel/pkg/mobile
+          unzip -l "${REPO}/mobile/android/app/libs/aethertunnel.aar" | grep -E 'classes\.jar|arm64-v8a/libgojni\.so|x86_64/libgojni\.so'
+          cp "${REPO}/mobile/android/app/libs/aethertunnel.aar" "${REPO}/aethertunnel-mobile-android.aar"
+
+      - name: build the app APK
+        run: |
+          curl -fsSL --retry 5 -o /tmp/gradle.zip \
+            https://services.gradle.org/distributions/gradle-8.9-bin.zip
+          unzip -q /tmp/gradle.zip -d /tmp
+          /tmp/gradle-8.9/bin/gradle -p mobile/android --no-daemon assembleDebug
+
+      - name: the APK carries the bound library
+        run: |
+          apk=mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          test -s "$apk"
+          unzip -l "$apk" | grep -q 'lib/arm64-v8a/libgojni\.so'
+          unzip -l "$apk" | grep -q 'lib/x86_64/libgojni\.so'
+          unzip -l "$apk" | grep -q 'classes\.dex'
+          cp "$apk" aethertunnel-app-android-arm64-debug.apk
+          ls -l aethertunnel-mobile-android.aar aethertunnel-app-android-arm64-debug.apk
+
+      - name: hand the APK to the e2e job and the release job
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: aethertunnel-app-android-arm64-debug.apk
+          retention-days: 14
+
+      - name: hand the AAR to the release job
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-aar
+          path: aethertunnel-mobile-android.aar
+          retention-days: 14
+
+      # The Release workflow folds both files into the release after it creates
+      # it; uploading from here raced the release's own delete-and-recreate and
+      # lost the files (see the release job in release.yml).
+
+  android-e2e:
+    name: android e2e (emulator)
+    needs: android
+    runs-on: ubuntu-latest
+    env:
+      # avdmanager and the emulator must agree on where AVDs live, or the emulator
+      # looks in $HOME/.android/avd and reports an unknown AVD name.
+      ANDROID_AVD_HOME: /home/runner/.android/avd
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: take the APK the android job built
+        uses: actions/download-artifact@v4
+        with:
+          name: app-debug-apk
+          path: .
+
+      # The runner ships the SDK with KVM acceleration; the system image is the
+      # one piece it does not carry, so fetch an x86_64 one — the APK carries an
+      # x86_64 libgojni for exactly this.
+      - name: fetch a system image and create the emulator
+        run: |
+          mkdir -p "$ANDROID_AVD_HOME"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "system-images;android-34;google_apis;x86_64" >/dev/null
+          echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
+            -n ci -k "system-images;android-34;google_apis;x86_64"
+          found=$(find /home /root /tmp -maxdepth 6 -name ci.ini 2>/dev/null | head -1)
+          echo "avd ini: $found"
+          [ -n "$found" ]
+          dir=$(dirname "$found")
+          if [ "$dir" != "$ANDROID_AVD_HOME" ]; then
+            cp -r "$dir/." "$ANDROID_AVD_HOME/"
+          fi
+          ls "$ANDROID_AVD_HOME"
+
+      - name: boot it headless
+        run: |
+          # /dev/kvm exists but the runner user is not in the kvm group; the
+          # group membership would need a fresh login, the mode bit works now.
+          sudo chmod 666 /dev/kvm
+          # The emulator registers itself with the adb daemon at startup; if the
+          # daemon is not running yet, the device shows up offline forever.
+          "$ANDROID_HOME/platform-tools/adb" start-server
+          "$ANDROID_HOME/emulator/emulator" -avd ci -no-window -gpu swiftshader_indirect \
+            -no-snapshot -no-audio -no-boot-anim -accel on &
+          timeout 300 "$ANDROID_HOME/platform-tools/adb" wait-for-device
+          timeout 600 bash -c 'while [ "$("$ANDROID_HOME/platform-tools/adb" shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" != "1" ]; do sleep 5; done'
+          "$ANDROID_HOME/platform-tools/adb" shell getprop ro.build.version.release
+
+      - name: install, launch, and hold the process to account
+        run: |
+          ls -la
+          apk=$(find . -name '*.apk' | head -1)
+          [ -n "$apk" ] || { echo "no apk came out of the artifact"; exit 1; }
+          adb="$ANDROID_HOME/platform-tools/adb"
+          "$adb" install -r "$apk"
+          out=$("$adb" shell am start -W -n io.github.aethertunnel.app/.MainActivity)
+          echo "$out"
+          echo "$out" | grep -q 'Status: ok'
+          sleep 5
+          pid=$("$adb" shell pidof io.github.aethertunnel.app | tr -d '\r')
+          [ -n "$pid" ] || { echo "the app process is gone"; exit 1; }
+          echo "pid: $pid"
+          # The warm-up in onCreate loads libgojni; a broken binding would have
+          # crashed the process into a FATAL EXCEPTION by now.
+          if "$adb" logcat -d | grep -qE 'FATAL EXCEPTION|UnsatisfiedLinkError'; then
+            "$adb" logcat -d | grep -E 'FATAL EXCEPTION|UnsatisfiedLinkError' | head -20
+            exit 1
+          fi
+          echo "the activity is up and the Go runtime is loaded"
+
+      # The deepest check available without a phone: a real server runs on the
+      # runner, the emulator is granted VPN consent through appops, the service
+      # starts from a config dropped in via run-as, and an ICMP echo from the
+      # device enters the VpnService fd, crosses the tunnel, is answered by the
+      # server's kernel and comes back.
+      - name: run the server on the runner
+        run: |
+          go build -o /tmp/aethertunnel-server .
+          cat > /tmp/server.toml <<'EOF'
+          [server]
+          bind_addr = "127.0.0.1"
+          bind_port = 7099
+          auth_token = "emulator-data-path-check-01"
+
+          [vpn]
+          enabled = true
+          address = "10.7.0.1/24"
+          EOF
+          sudo /tmp/aethertunnel-server /tmp/server.toml > /tmp/server.log 2>&1 &
+          sleep 3
+          tail -5 /tmp/server.log
+          grep -q 'tunnel' /tmp/server.log || grep -q 'listening' /tmp/server.log
+
+      - name: start the tunnel service on the emulator
+        run: |
+          adb="$ANDROID_HOME/platform-tools/adb"
+          cat > /tmp/client.toml <<'EOF'
+          [client]
+          server_addr = "10.0.2.2:7099"
+          auth_token = "emulator-data-path-check-01"
+
+          [vpn]
+          enabled = true
+          EOF
+          "$adb" push /tmp/client.toml /data/local/tmp/client.toml
+          "$adb" shell run-as io.github.aethertunnel.app mkdir -p files
+          "$adb" shell run-as io.github.aethertunnel.app cp -f /data/local/tmp/client.toml files/client.toml
+          "$adb" shell appops set io.github.aethertunnel.app ACTIVATE_VPN allow
+          # The service is not exported, so the shell cannot start it; the
+          # activity starts it, and with appops set the consent dialog is gone.
+          # -S force-stops the instance from the earlier launch step so this
+          # launch really runs onCreate with the start_vpn extra.
+          "$adb" shell am start -S -n io.github.aethertunnel.app/.MainActivity --ez start_vpn true
+          ok=0
+          for i in $(seq 1 60); do
+            if grep -q 'connected as' /tmp/server.log || "$adb" logcat -d | grep -q 'tunnel interface'; then ok=1; break; fi
+            sleep 5
+          done
+          [ "$ok" = 1 ] || {
+            echo "the tunnel session never came up"
+            "$adb" shell dumpsys activity services io.github.aethertunnel.app | head -30
+            "$adb" logcat -d -s GoLog:* AetherTunnel:* | tail -120
+            tail -40 /tmp/server.log
+            exit 1
+          }
+          "$adb" logcat -d | grep -o 'tunnel interface[^,]*' | tail -1 || true
+
+      - name: the packet path crosses the tunnel and comes back
+        run: |
+          adb="$ANDROID_HOME/platform-tools/adb"
+          "$adb" shell ping -c 3 -W 10 10.7.0.1 | tee /dev/stderr | grep -q '0% packet loss'

@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aethertunnel-server
+  namespace: aethertunnel
+  labels:
+    app.kubernetes.io/name: aethertunnel
+    app.kubernetes.io/component: server
+data:
+  # server.toml. It holds no credential: the auth token and the dashboard token come
+  # from the Secret, which the Deployment mounts as environment variables, and
+  # config.ApplyEnv puts them into the loaded configuration.
+  server.toml: |
+    [server]
+    bind_addr = "0.0.0.0"
+    bind_port = 7001
+    max_connections = 512
+    heartbeat_seconds = 30
+    read_timeout_seconds = 120
+    dial_timeout_seconds = 10
+    p2p_port = 7002
+    load_balance = "adaptive"
+    # Refuse a source for five minutes once it has failed authentication three
+    # times. Only the control port counts: the dashboard checks its own token, and
+    # the kubelet's probes on it are answered without touching this list, so no
+    # address has to be reserved for them. The loopback entry keeps a client
+    # running inside this pod from banning the pod it runs in.
+    ban_after_failures = 3
+    ban_seconds = 300
+    ban_ignore_cidrs = ["127.0.0.1/32"]
+
+    [dashboard]
+    enabled = true
+    bind_addr = "0.0.0.0"
+    port = 7500
+
+    [metrics]
+    enabled = true
+
+    [audit]
+    enabled = true
+    path = "/var/lib/aethertunnel/audit.jsonl"
+    max_bytes = 33554432
+
+    [ledger]
+    enabled = true
+    path = "/var/lib/aethertunnel/ledger.jsonl"
+    signing_key_file = "/var/lib/aethertunnel/ledger.key"
+
+    [dht]
+    enabled = true
+    # 7003 rather than the 7001 the server defaults to: a Service merges its ports by
+    # number, so a control port and a DHT node sharing 7001 cannot both be applied,
+    # and kubectl apply then drops one of them without an error.
+    listen_addr = "0.0.0.0:7003"
+    # The address a visitor is handed for a proxy published here, so it has to be one
+    # that visitor can reach. The Service name is right for a visitor inside the
+    # cluster; for one outside it, replace this with the address the LoadBalancer or
+    # the node advertises. Whichever it is, the Service also has to publish the port
+    # the proxy was published on: a client chooses its own port, and only the ports in
+    # service.yaml are routed.
+    advertise_host = "aethertunnel.aethertunnel.svc.cluster.local"
+    # Sign every announcement so a client that names this key with dht.trusted_keys
+    # refuses a record written by any other node. Read the public key with
+    # `kubectl exec ... -- aethertunnel-server --config ... --dht-key`.
+    signing_key_file = "/var/lib/aethertunnel/dht.key"
+
+    [obfuscation]
+    enabled = true
+    pad_to = 256
+    disguise = "tls-record"

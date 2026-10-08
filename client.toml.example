@@ -1,0 +1,223 @@
+# AetherTunnel client configuration — 1.0.0
+#
+# Start with:  aethertunnel-client --config client.toml
+# Validate:    aethertunnel-client --config client.toml --check
+# Resolve a proxy name through the DHT:  aethertunnel-client --config client.toml --discover ssh
+# Print this client's identity key:      aethertunnel-client --config client.toml --identity
+#
+# The auth token may also come from the environment:
+#   AETHERTUNNEL_AUTH_TOKEN
+
+[client]
+# host:port of the AetherTunnel server. Leave it empty and set [dht] discover to
+# resolve the address from the DHT instead.
+server_addr = "127.0.0.1:7001"
+
+# Must match the server's auth_token.
+auth_token = "CHANGE-ME-use-at-least-16-random-characters"
+
+# Reconnect backoff: starts at reconnect_seconds and doubles up to
+# max_reconnect_seconds, with ±20% jitter so a fleet does not retry in lockstep.
+reconnect_seconds = 3
+max_reconnect_seconds = 60
+
+# How often to heartbeat. The server states its own interval when the session starts
+# and the client follows it, because the server is what drops a connection that has
+# been quiet for three intervals; this value is the fallback for a server that does
+# not state one. A value that differs from the server's is reported at connect time.
+heartbeat_seconds = 30
+# How long to wait for the server to answer a data-stream request before giving up on
+# a visiting connection.
+dial_timeout_seconds = 10
+
+# Drop a tunnelled stream that has been idle for this many seconds.
+idle_timeout_seconds = 300
+
+# Keep this many data connections open and parked at the server, so a visitor's first
+# byte does not wait for a dial — one full TLS handshake saved per stream when
+# [transport] enable_tls is on. 0 (the default) opens a connection per stream. A parked
+# connection carries one stream and is replaced afterwards; if one has been dropped, the
+# server asks for a new connection over the control connection instead, so nothing breaks
+# when this is set. 0-64.
+pool_count = 0
+
+[encryption]
+# Must match the server exactly. Empty passphrase means "derive from auth_token".
+enabled = false
+algorithm = "xchacha20-poly1305"   # or "aes-256-gcm"
+passphrase = ""
+salt = "aethertunnel"
+# Must match the server. Agrees a separate key for every data connection.
+post_quantum = false
+
+[transport]
+# TLS to the server. ca_file is the trust anchor; empty uses the system roots.
+enable_tls = false
+ca_file = ""
+# Overrides the name checked against the certificate. Empty uses the host part of
+# client.server_addr.
+server_name = ""
+# Accept any certificate. The connection is private but the server is not
+# authenticated, and the setting is reported as a warning.
+insecure_skip_verify = false
+
+[identity]
+# Present an Ed25519 key instead of, or as well as, the shared token. The key is
+# generated on first use.
+enabled = false
+key_file = "aethertunnel-identity.key"
+
+# Padding and jitter apply to what this client writes. The disguise has to match the
+# server, because it changes the bytes on the wire rather than how many of them
+# there are.
+[obfuscation]
+enabled = false
+pad_to = 256
+jitter_millis = 0
+# disguise = "tls-record"   # must match the server; leave unset for no disguise
+
+# Join a DHT and resolve the server address from it. Combined with an empty
+# client.server_addr this is how a client follows a proxy that moves between
+# servers: the address is re-resolved before every connection attempt.
+[dht]
+enabled = false
+listen_addr = "0.0.0.0:7001"
+bootstrap = []
+node_id = ""
+namespace = "aethertunnel"
+ttl_seconds = 3600
+announce_ttl_seconds = 90
+republish_seconds = 30
+lookup_timeout_seconds = 5
+# The proxy name to resolve when client.server_addr is empty.
+discover = ""
+# Any node on the DHT can write to a proxy's key, so a record is only an address
+# until its signature is checked. require_signed refuses a record that carries no
+# signature; trusted_keys names the announcement keys that are believed and also
+# refuses unsigned records. Read the server's key with --dht-key, from the server's
+# startup log, or from GET /api/dht as signing_key.
+require_signed = false
+trusted_keys = []
+
+# Layer-3 tunnel: ask the server for an address on its subnet and carry this
+# machine's IP traffic to it.
+#
+# The device is real: Linux opens or creates a tun interface with this name, Windows
+# opens a Wintun adapter under it, and macOS opens the utunN interface it names. A
+# platform the build has no implementation for reports that. The address is assigned by
+# the server and does not come from this file.
+[vpn]
+enabled = false
+device = "tun0"
+# Overrides the MTU the server reports.
+mtu = 0
+
+# One [[proxies]] block per service you want to publish. Types:
+#
+#   tcp    remote_port on the server, forwarded to a local TCP service
+#   udp    remote_port on the server, one session per visitor address
+#   http   reached through the server's shared listener, selected by Host header;
+#          remote_port must be 0; leave domains empty and the server fills in
+#          <proxy-name>.<server.subdomain_host>, which the client only warns about
+#   https  the same over TLS
+#   stcp   private: reachable only by a visitor that knows secret_key
+#   sudp   private and datagram based
+#   xtcp   private, tries a direct path between the visitor and this client first
+#          and falls back to the server's relay
+#   socks5 an exit: the visitor names the address, this client dials it. There is no
+#          local service, so local_ip and local_port do not apply; remote_port and
+#          allow_targets are both required, and allow_targets bounds what may be
+#          reached. A request for anything else is refused with SOCKS5 0x02.
+#
+# local_ip and remote_port default to 127.0.0.1 and 0.
+#
+# allow_cidrs and deny_cidrs restrict which visitor addresses this proxy serves, on
+# top of the server-wide lists; deny wins, and an empty allow_cidrs admits everyone.
+#
+# group pools several clients that publish the same name under one endpoint;
+# server.load_balance decides which one serves a visitor. multipath spreads a
+# datagram proxy over up to 8 data connections.
+
+[[proxies]]
+name = "ssh"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = 22
+remote_port = 6022
+
+[[proxies]]
+name = "web"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = 8000
+remote_port = 8080
+
+# Shared by every client that joins the same group.
+# [[proxies]]
+# name = "pooled-web"
+# type = "tcp"
+# local_ip = "127.0.0.1"
+# local_port = 8000
+# remote_port = 8080
+# group = "web-pool"
+
+# A private tunnel: no public port, and a visitor needs the secret.
+# [[proxies]]
+# name = "database"
+# type = "stcp"
+# local_ip = "127.0.0.1"
+# local_port = 5432
+# secret_key = "CHANGE-ME-a-second-random-secret"
+# auth_method = "secret"   # or "nizk", which proves knowledge without sending it
+
+# A socks5 exit: a visitor points at this client's port and names the address it
+# wants, so this machine's network position is what the visitor gets. Keep the
+# allow list as narrow as the service needs.
+# [[proxies]]
+# name = "socks-exit"
+# type = "socks5"
+# remote_port = 6100
+# allow_targets = ["192.168.1.0/24", "10.0.0.0/8"]
+# allow_cidrs = ["203.0.113.0/24"]   # optional: who may use the exit
+
+# A proxy only one office subnet may reach, whichever client serves it.
+# [[proxies]]
+# name = "internal-web"
+# type = "tcp"
+# local_ip = "127.0.0.1"
+# local_port = 8000
+# remote_port = 8080
+# allow_cidrs = ["198.51.100.0/24"]
+# deny_cidrs = ["198.51.100.7/32"]
+
+# A health check probes the local service and, after max_failed consecutive
+# failures, withdraws the proxy from the server so its public endpoint closes; a
+# successful probe publishes it again. "tcp" only has to connect; "http" asks for
+# path and takes a 2xx answer as healthy (a redirect is followed). http_headers is
+# how an endpoint that wants a credential is probed at all.
+# [proxies.health_check]
+# type = "http"
+# path = "/healthz"
+# interval_s = 10
+# timeout_s = 3
+# max_failed = 3
+# http_headers = { Authorization = "Bearer CHANGE-ME-probe-token" }
+
+# One [[visitors]] block per private tunnel you want to reach on this machine.
+# [[visitors]]
+# name = "database"
+# type = "stcp"
+# server_name = "database"
+# bind_addr = "127.0.0.1"
+# bind_port = 15432
+# secret_key = "CHANGE-ME-a-second-random-secret"
+# auth_method = "secret"
+
+[log]
+# Where this client writes its own log: empty keeps standard error. The same three
+# keys as the server's [log]; see server.toml.example. On mobile the platform hook
+# already points standard error at logcat, so leave to empty unless the app should
+# keep the log in its own sandbox.
+to = ""
+max_days = 0
+disable_timestamp = false

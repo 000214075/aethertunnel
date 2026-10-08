@@ -1,0 +1,489 @@
+package clientlib
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"log"
+	"net"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/aethertunnel/aethertunnel/pkg/config"
+	"github.com/aethertunnel/aethertunnel/pkg/crypto"
+	"github.com/aethertunnel/aethertunnel/pkg/protocol"
+	"github.com/aethertunnel/aethertunnel/pkg/socks"
+	"github.com/aethertunnel/aethertunnel/pkg/vpn"
+)
+
+// testClient builds the smallest client the heartbeat decision needs: a config and a
+// logger whose output the test can read.
+func testClient(t *testing.T, clientHeartbeatSeconds int) (*client, *bytes.Buffer) {
+	t.Helper()
+
+	buf := &bytes.Buffer{}
+	cfg := &config.Config{}
+	cfg.Client.HeartbeatSeconds = clientHeartbeatSeconds
+	return &client{cfg: cfg, logger: log.New(buf, "", 0)}, buf
+}
+
+// The server decides how often a client heartbeats, because the server is what drops
+// a client that has been quiet for three intervals.
+func TestHeartbeatIntervalFollowsTheServer(t *testing.T) {
+	c, logs := testClient(t, 60)
+
+	if got := c.heartbeatInterval(15); got != 15*time.Second {
+		t.Fatalf("interval is %s, want the server's 15s", got)
+	}
+	if !strings.Contains(logs.String(), "client.heartbeat_seconds") {
+		t.Errorf("a configured value that is overridden was not reported: %q", logs.String())
+	}
+}
+
+// A server that does not state an interval leaves the configured value in charge:
+// that is what makes [client].heartbeat_seconds a setting rather than a decoration.
+func TestHeartbeatIntervalFallsBackToTheConfiguredValue(t *testing.T) {
+	c, logs := testClient(t, 45)
+
+	if got := c.heartbeatInterval(0); got != 45*time.Second {
+		t.Fatalf("interval is %s, want the configured 45s", got)
+	}
+	if logs.Len() != 0 {
+		t.Errorf("the fallback logged something: %q", logs.String())
+	}
+	// A negative value cannot mean an interval either; treat it like a missing one.
+	if got := c.heartbeatInterval(-1); got != 45*time.Second {
+		t.Fatalf("interval for a negative server value is %s, want the configured 45s", got)
+	}
+}
+
+// A config built without applyDefaults has zero everywhere, and a ticker needs a
+// positive period, so there is a floor under it.
+func TestHeartbeatIntervalHasADefaultWhenNothingIsSet(t *testing.T) {
+	c, _ := testClient(t, 0)
+
+	if got := c.heartbeatInterval(0); got != 30*time.Second {
+		t.Fatalf("interval is %s, want the 30s default", got)
+	}
+}
+
+// The same interval is agreed on, so nothing claims an override happened.
+func TestHeartbeatIntervalIsSilentWhenBothAgree(t *testing.T) {
+	c, logs := testClient(t, 30)
+
+	if got := c.heartbeatInterval(30); got != 30*time.Second {
+		t.Fatalf("interval is %s, want 30s", got)
+	}
+	if logs.Len() != 0 {
+		t.Errorf("an agreeing pair logged something: %q", logs.String())
+	}
+}
+
+// A client with no server_addr uses the resolved address as its control address, so the
+// record it resolves has to be one that names the control port. Only a private proxy's
+// record does; the others name where visitors reach the proxy, and the client warns
+// instead of leaving the operator to guess why the connection keeps failing.
+func TestOnlyAPrivateProxyRecordNamesTheControlPort(t *testing.T) {
+	for _, proxyType := range []string{"stcp", "sudp", "xtcp"} {
+		if !namesAControlPort(proxyType) {
+			t.Errorf("a %s record names the control port; the client would not warn about it", proxyType)
+		}
+	}
+	for _, proxyType := range []string{"tcp", "udp", "http", "https", "socks5", ""} {
+		if namesAControlPort(proxyType) {
+			t.Errorf("a %s record does not name the control port, so resolving one as a server address is a mistake the client should report", proxyType)
+		}
+	}
+}
+
+// The client wraps every relayed stream in cryptoStreamConn, and flynet.Pipe ends each
+// direction with CloseWrite when the connection has one and closes the whole stream
+// otherwise. Without CloseWrite here, a client that half-closes after sending a request
+// closes the whole stream instead, so a local service that answers only after it has seen
+// the end of the request — HTTP/1.0, several database protocols — answers into a closed
+// socket and the visitor gets nothing.
+func TestTheRelayedStreamHalfClosesInsteadOfClosing(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			accepted <- nil
+			return
+		}
+		accepted <- conn
+	}()
+	dialed, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	peer := <-accepted
+	if peer == nil {
+		t.Fatal("the listener stopped before accepting")
+	}
+	defer peer.Close()
+	defer dialed.Close()
+
+	// An empty cipher is the passthrough stream, which is what "encryption off" uses.
+	wrapped := &cryptoStreamConn{Stream: crypto.NewStream(dialed, &crypto.Cipher{}), conn: dialed}
+	if _, err := wrapped.Write([]byte("request")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := wrapped.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite: %v", err)
+	}
+
+	// The local service sees the request and then end of stream.
+	got, err := io.ReadAll(peer)
+	if err != nil {
+		t.Fatalf("the local service read: %v", err)
+	}
+	if string(got) != "request" {
+		t.Fatalf("the local service read %q, want request", got)
+	}
+	// And its reply still reaches the half-closed client.
+	if _, err := peer.Write([]byte("answer")); err != nil {
+		t.Fatalf("the local service could not answer: %v", err)
+	}
+	answer := make([]byte, len("answer"))
+	_ = wrapped.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.ReadFull(wrapped, answer); err != nil {
+		t.Fatalf("the reply did not reach the half-closed client: %v", err)
+	}
+	if string(answer) != "answer" {
+		t.Fatalf("the reply came back as %q", answer)
+	}
+}
+
+// A client that names its server is not redirected by the DHT. Measured with real
+// processes before this was fixed: with server_addr = 127.0.0.1:17703 and
+// dht.discover = "moved", where the record pointed at 127.0.0.1:17701, the client logged
+// "the configured address is used and the DHT is not consulted" and then dialled
+// 127.0.0.1:17701. The record is unsigned unless dht.trusted_keys says otherwise, so
+// following it means handing an auth_token to whoever answers for the name.
+func TestAConfiguredAddressIsNotOverriddenByDhtDiscover(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  *config.Config
+		want bool
+	}{
+		{"address and discover", &config.Config{
+			Client: config.ClientConfig{ServerAddr: "127.0.0.1:17703"},
+			DHT:    config.DHTConfig{Enabled: true, Discover: "moved"},
+		}, false},
+		{"discover only", &config.Config{
+			DHT: config.DHTConfig{Enabled: true, Discover: "moved"},
+		}, true},
+		{"address only", &config.Config{
+			Client: config.ClientConfig{ServerAddr: "127.0.0.1:17703"},
+			DHT:    config.DHTConfig{Enabled: true},
+		}, false},
+		{"discover without the dht section", &config.Config{
+			DHT: config.DHTConfig{Discover: "moved"},
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &client{cfg: tc.cfg}
+			if got := c.usesDiscoveredAddress(); got != tc.want {
+				t.Fatalf("usesDiscoveredAddress() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The confirmation line is the client's only report of what the server published, and
+// the port it names is the one the server listens on: a member of a pool that was
+// already published asks for one port and gets another, and an operator who read the
+// requested one would test a port nothing is listening on.
+func TestTheConfirmationLineNamesThePortTheServerListensOn(t *testing.T) {
+	got := describePublishedProxy(protocol.ProxyStatus{
+		Name: "pooled", Type: "tcp", RemotePort: 6022,
+	})
+	if !strings.Contains(got, "on port 6022") {
+		t.Errorf("the confirmation names %q, want the server's port", got)
+	}
+	if !strings.Contains(got, "tcp") {
+		t.Errorf("the confirmation names %q, want the proxy type", got)
+	}
+}
+
+// A name can be published by several clients, and the share count is what tells the
+// operator of a second client that it joined the existing pool instead of publishing a
+// second endpoint.
+func TestTheConfirmationLineReportsASharedName(t *testing.T) {
+	shared := describePublishedProxy(protocol.ProxyStatus{
+		Name: "pooled", Type: "tcp", RemotePort: 6022, GroupMembers: 3,
+	})
+	if !strings.Contains(shared, "3") {
+		t.Errorf("a name shared by three clients reads %q, want the share count", shared)
+	}
+	single := describePublishedProxy(protocol.ProxyStatus{
+		Name: "solo", Type: "tcp", RemotePort: 6023, GroupMembers: 1,
+	})
+	if strings.Contains(single, "shared by") {
+		t.Errorf("a proxy served by one client was reported as shared: %q", single)
+	}
+}
+
+// A stream reaches a client either as a connection to the published port or as a
+// visitor asking for the proxy by name. The per-stream log line is where that
+// difference is visible, so the flag has to be read rather than assumed.
+func TestAStreamFromAVisitorIsLabelledAsOne(t *testing.T) {
+	if got := streamOrigin(protocol.DataRequest{Visitor: true}); !strings.Contains(got, "visitor") {
+		t.Errorf("a visitor stream is labelled %q", got)
+	}
+	if got := streamOrigin(protocol.DataRequest{}); strings.Contains(got, "visitor") {
+		t.Errorf("a stream from the public port is labelled %q", got)
+	}
+}
+
+// The socks5 UDP relay is what lets a socks5 exit carry UDP: it parses the target
+// out of each wrapped datagram, dials it, and wraps every reply back with the
+// target as its source.
+func TestSocksUDPRelayForwardsDatagramsAndWrapsReplies(t *testing.T) {
+	echo, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("start the udp echo: %v", err)
+	}
+	defer echo.Close()
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, addr, err := echo.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			_, _ = echo.WriteTo(buf[:n], addr)
+		}
+	}()
+
+	policy, err := socks.NewTargetPolicy([]string{"127.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+
+	// One pipe plays the server's data connection; the relay sits on one end and
+	// the test drives the other.
+	serverSide, clientSide := net.Pipe()
+	t.Cleanup(func() { serverSide.Close(); clientSide.Close() })
+
+	relay := &socksUDPRelay{
+		policy:      policy,
+		framer:      protocol.NewFramer(clientSide, nil, 0),
+		logger:      log.New(io.Discard, "", 0),
+		name:        "exit",
+		idleTimeout: 2 * time.Second,
+		dialTimeout: 5 * time.Second,
+		sockets:     make(map[string]*socksUDPTarget),
+	}
+	defer relay.close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		relay.run()
+	}()
+
+	peer := protocol.NewFramer(serverSide, nil, 0)
+	wrapped, err := socks.WrapUDPDatagram(echo.LocalAddr().String(), []byte("ping"))
+	if err != nil {
+		t.Fatalf("wrap: %v", err)
+	}
+	if err := peer.WriteFrame(&protocol.Message{Type: protocol.TypeUDPPacket, Payload: wrapped}); err != nil {
+		t.Fatalf("send the datagram: %v", err)
+	}
+
+	_ = serverSide.SetReadDeadline(time.Now().Add(5 * time.Second))
+	msg, err := peer.ReadFrame()
+	if err != nil {
+		t.Fatalf("read the reply: %v", err)
+	}
+	target, data, err := socks.ParseUDPDatagram(msg.Payload)
+	if err != nil {
+		t.Fatalf("parse the reply: %v", err)
+	}
+	if target != echo.LocalAddr().String() {
+		t.Errorf("the reply names %q, want %q", target, echo.LocalAddr().String())
+	}
+	if string(data) != "ping" {
+		t.Errorf("the reply carries %q", data)
+	}
+
+	_ = serverSide.Close()
+	<-done
+}
+
+// A visitor that sends datagrams to many distinct targets would otherwise give
+// the client one UDP socket per target until the file-descriptor table runs out.
+// The relay bounds the cache and evicts the target it has not seen in the longest.
+func TestSocksUDPRelayEvictsTheLeastRecentlyUsedTarget(t *testing.T) {
+	echo := func() string {
+		conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("start a udp echo: %v", err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		go func() {
+			buf := make([]byte, 4096)
+			for {
+				n, addr, err := conn.ReadFrom(buf)
+				if err != nil {
+					return
+				}
+				_, _ = conn.WriteTo(buf[:n], addr)
+			}
+		}()
+		return conn.LocalAddr().String()
+	}
+	a, b, c := echo(), echo(), echo()
+
+	policy, err := socks.NewTargetPolicy([]string{"127.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	relay := &socksUDPRelay{
+		policy:      policy,
+		logger:      log.New(io.Discard, "", 0),
+		name:        "exit",
+		idleTimeout: time.Second,
+		dialTimeout: 5 * time.Second,
+		maxSockets:  2,
+		sockets:     make(map[string]*socksUDPTarget),
+	}
+	defer relay.close()
+
+	if _, err := relay.socketFor(a); err != nil {
+		t.Fatalf("socket for a: %v", err)
+	}
+	if _, err := relay.socketFor(b); err != nil {
+		t.Fatalf("socket for b: %v", err)
+	}
+	// Touch a again so b, not a, is the least recently used, then add c.
+	if _, err := relay.socketFor(a); err != nil {
+		t.Fatalf("touch a: %v", err)
+	}
+	if _, err := relay.socketFor(c); err != nil {
+		t.Fatalf("socket for c: %v", err)
+	}
+
+	relay.mu.Lock()
+	defer relay.mu.Unlock()
+	if len(relay.sockets) != 2 {
+		t.Fatalf("the relay holds %d sockets after adding a third, want 2", len(relay.sockets))
+	}
+	if _, ok := relay.sockets[b]; ok {
+		t.Error("the least recently used target was not evicted")
+	}
+	if _, ok := relay.sockets[a]; !ok {
+		t.Error("the recently used target was evicted")
+	}
+	if _, ok := relay.sockets[c]; !ok {
+		t.Error("the new target was not cached")
+	}
+}
+
+func TestTheShellProtectHookRunsForServerSockets(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	var protected []int
+	c := &client{
+		cfg:    &config.Config{},
+		logger: log.New(io.Discard, "", 0),
+		target: listener.Addr().String(),
+	}
+	c.vpnShellProtect = func(fd int) {
+		protected = append(protected, fd)
+	}
+
+	conn, err := c.dialServer(context.Background())
+	if err != nil {
+		t.Fatalf("dialServer: %v", err)
+	}
+	conn.Close()
+
+	if len(protected) != 1 {
+		t.Fatalf("the hook ran %d times, want once", len(protected))
+	}
+	if protected[0] <= 0 {
+		t.Fatalf("the hook saw fd %d, want a real descriptor", protected[0])
+	}
+}
+
+func TestTheDialerWithoutAShellProtectsNothing(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	c := &client{
+		cfg:    &config.Config{},
+		logger: log.New(io.Discard, "", 0),
+		target: listener.Addr().String(),
+	}
+	conn, err := c.dialServer(context.Background())
+	if err != nil {
+		t.Fatalf("dialServer: %v", err)
+	}
+	conn.Close()
+	// No hook installed, no panic, no error: the plain path is unchanged.
+}
+
+func TestTheShellDeviceIsClosedWhenTheSessionEnds(t *testing.T) {
+	// Ownership contract of RunWithShell: the descriptor the shell hands over
+	// becomes the Go side's to close, and the tunnel closes it when the session
+	// ends — on a phone that is what keeps reconnects from leaking interfaces.
+	clientSide, serverSide := net.Pipe()
+	defer serverSide.Close()
+	framer := protocol.NewFramer(clientSide, nil, 0)
+
+	cfg := &config.Config{}
+	cfg.VPN.Enabled = true
+	c := &client{cfg: cfg, logger: log.New(io.Discard, "", 0)}
+
+	_, writerFD := handedOverPipe(t)
+	device, err := vpn.NewFromFD(writerFD, "pipe", 1400)
+	if err != nil {
+		t.Fatalf("NewFromFD: %v", err)
+	}
+
+	calls := 0
+	c.vpnShellOpen = func(mtu int, address string, prefix int, subnet string) (vpn.Device, error) {
+		calls++
+		if mtu != 1400 || address != "10.7.0.2" || prefix != 24 || subnet != "10.7.0.0" {
+			t.Errorf("the shell was asked for mtu=%d address=%s prefix=%d subnet=%s", mtu, address, prefix, subnet)
+		}
+		return device, nil
+	}
+
+	stop, err := c.startVPN(context.Background(), framer, protocol.AuthResponse{
+		VPNAddress: "10.7.0.2",
+		VPNMask:    "255.255.255.0",
+		VPNMTU:     1400,
+	})
+	if err != nil {
+		t.Fatalf("startVPN: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("the shell was asked %d times, want once", calls)
+	}
+
+	stop()
+
+	if _, err := device.Write([]byte{0x45, 0x00}); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("Write after stop: %v, want a closed-file error", err)
+	}
+}

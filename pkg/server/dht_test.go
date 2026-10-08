@@ -1,0 +1,742 @@
+package server
+
+import (
+	"context"
+	"crypto/ed25519"
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/aethertunnel/aethertunnel/pkg/config"
+	"github.com/aethertunnel/aethertunnel/pkg/crypto"
+	"github.com/aethertunnel/aethertunnel/pkg/dht"
+	"github.com/aethertunnel/aethertunnel/pkg/discovery"
+	"github.com/aethertunnel/aethertunnel/pkg/protocol"
+)
+
+// dhtConfig is a server configuration with the DHT enabled on a free loopback port.
+func dhtConfig(t *testing.T, encryption bool) *config.Config {
+	t.Helper()
+	cfg := testConfig(t, encryption)
+	cfg.DHT.Enabled = true
+	cfg.DHT.ListenAddr = "127.0.0.1:" + itoa(freeUDPPort(t))
+	cfg.DHT.AdvertiseHost = "127.0.0.1"
+	cfg.DHT.AnnounceTTLSeconds = 60
+	cfg.DHT.RepublishSeconds = 20
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("dht config invalid: %v", err)
+	}
+	return cfg
+}
+
+func itoa(v int) string { return strconv.Itoa(v) }
+
+// --- tests --------------------------------------------------------------------
+
+func TestDirectoryPublishesARegisteredProxy(t *testing.T) {
+	echoAddr := startEcho(t)
+	cfg := dhtConfig(t, false)
+	rs := startServer(t, cfg)
+
+	publicPort := freePort(t)
+	client, err := newTestClient(t, rs.addr, false)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.close()
+
+	if _, err := client.authenticate("test-client", testToken); err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	if err := client.register(protocol.ProxySpec{
+		Name: "ssh", Type: "tcp", LocalAddr: echoAddr, RemotePort: publicPort,
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := client.framer.ReadFrame(); err != nil {
+		t.Fatalf("read proxy list: %v", err)
+	}
+	waitForListener(t, rs.server, "ssh")
+
+	// A separate node, bootstrapped on the server's DHT address, resolves the name.
+	visitor, err := discovery.Start(discovery.Config{
+		ListenAddr: "127.0.0.1:" + itoa(freeUDPPort(t)),
+		Bootstrap:  []string{rs.server.directory.node.Addr()},
+		Logger:     discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("start the resolving node: %v", err)
+	}
+	defer visitor.Close()
+
+	record, err := resolveEventually(t, visitor, "ssh")
+	if err != nil {
+		t.Fatalf("resolve ssh: %v", err)
+	}
+
+	want := net.JoinHostPort("127.0.0.1", itoa(publicPort))
+	if record.Server != want {
+		t.Errorf("the announcement names %q, want %q", record.Server, want)
+	}
+	if record.Type != "tcp" {
+		t.Errorf("the announcement reports type %q, want tcp", record.Type)
+	}
+}
+
+func TestDirectoryWithdrawsWhenTheLastMemberLeaves(t *testing.T) {
+	echoAddr := startEcho(t)
+	cfg := dhtConfig(t, false)
+	rs := startServer(t, cfg)
+
+	client, err := newTestClient(t, rs.addr, false)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if _, err := client.authenticate("test-client", testToken); err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	if err := client.register(protocol.ProxySpec{
+		Name: "ssh", Type: "tcp", LocalAddr: echoAddr, RemotePort: freePort(t),
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := client.framer.ReadFrame(); err != nil {
+		t.Fatalf("read proxy list: %v", err)
+	}
+	waitForListener(t, rs.server, "ssh")
+
+	if got := rs.server.directory.node.Announced(); len(got) != 1 || got[0] != "ssh" {
+		t.Fatalf("the directory announces %v, want [ssh]", got)
+	}
+
+	client.close()
+
+	// The withdrawal happens on the connection handler's teardown path.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if len(rs.server.directory.node.Announced()) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the proxy was still announced 5s after the client left")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := rs.server.directory.Lookup("ssh"); err == nil {
+		t.Error("the withdrawn proxy still resolves")
+	}
+}
+
+func TestDirectoryReportsItsState(t *testing.T) {
+	cfg := dhtConfig(t, false)
+	rs := startServer(t, cfg)
+
+	summary := rs.server.directory.summary()
+	if enabled, _ := summary["enabled"].(bool); !enabled {
+		t.Fatalf("the summary reports the DHT as disabled: %v", summary)
+	}
+	if summary["advertise_as"] != "127.0.0.1" {
+		t.Errorf("advertise_as is %v, want 127.0.0.1", summary["advertise_as"])
+	}
+	nodeID, _ := summary["node_id"].(string)
+	if len(nodeID) != 40 {
+		t.Errorf("node_id is %q, want 40 hex characters", nodeID)
+	}
+	if namespace, _ := summary["namespace"].(string); namespace != config.DefaultDHTNamespace {
+		t.Errorf("namespace is %q, want %q", namespace, config.DefaultDHTNamespace)
+	}
+}
+
+func TestDirectoryDisabledIsInert(t *testing.T) {
+	cfg := testConfig(t, false)
+	dir, err := openDirectory(cfg, discardLogger())
+	if err != nil {
+		t.Fatalf("openDirectory with the DHT disabled: %v", err)
+	}
+	if dir != nil {
+		t.Fatal("a DHT node was started even though dht.enabled is false")
+	}
+	if err := dir.Close(); err != nil {
+		t.Errorf("closing a disabled directory: %v", err)
+	}
+	if err := dir.publish(protocol.ProxySpec{Name: "ssh", Type: "tcp"}); err != nil {
+		t.Errorf("publishing through a disabled directory: %v", err)
+	}
+	dir.withdraw("ssh")
+	if dir.Publishes() != 0 {
+		t.Error("a disabled directory reports publications")
+	}
+	if _, err := dir.Lookup("ssh"); err == nil {
+		t.Error("a disabled directory resolved a name")
+	}
+	summary := dir.summary()
+	if enabled, _ := summary["enabled"].(bool); enabled {
+		t.Errorf("a disabled directory reports itself as enabled: %v", summary)
+	}
+}
+
+func TestServerAddrForPicksThePortAVisitorDials(t *testing.T) {
+	dir := &directory{advertise: "203.0.113.7", controlPort: 7000, httpPort: 7080, httpsPort: 7443, httpsPassthroughPort: 7444}
+
+	cases := []struct {
+		name string
+		spec protocol.ProxySpec
+		want string
+	}{
+		{"tcp uses its own port", protocol.ProxySpec{Type: config.ProxyTypeTCP, RemotePort: 22}, "203.0.113.7:22"},
+		{"udp uses its own port", protocol.ProxySpec{Type: config.ProxyTypeUDP, RemotePort: 51820}, "203.0.113.7:51820"},
+		{"http uses the shared listener", protocol.ProxySpec{Type: config.ProxyTypeHTTP}, "203.0.113.7:7080"},
+		{"https uses the shared TLS listener", protocol.ProxySpec{Type: config.ProxyTypeHTTPS}, "203.0.113.7:7443"},
+		{"https with tls_passthrough uses the passthrough listener", protocol.ProxySpec{Type: config.ProxyTypeHTTPS, TLSPassthrough: true}, "203.0.113.7:7444"},
+		{"stcp is reached through the control port", protocol.ProxySpec{Type: config.ProxyTypeSTCP}, "203.0.113.7:7000"},
+		{"sudp is reached through the control port", protocol.ProxySpec{Type: config.ProxyTypeSUDP}, "203.0.113.7:7000"},
+		{"xtcp is reached through the control port", protocol.ProxySpec{Type: config.ProxyTypeXTCP}, "203.0.113.7:7000"},
+		{"tcp without a remote port falls back to the control port", protocol.ProxySpec{Type: config.ProxyTypeTCP}, "203.0.113.7:7000"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := dir.serverAddrFor(tc.spec); got != tc.want {
+				t.Fatalf("serverAddrFor(%+v) = %q, want %q", tc.spec, got, tc.want)
+			}
+		})
+	}
+}
+
+// tls_passthrough moves the proxy to the SNI listener, but that listener only runs
+// when a port is configured for it. A record for a passthrough proxy on a server
+// without one still names the terminating listener: port 0 would be no address at
+// all.
+func TestServerAddrForFallsBackWhenNoPassthroughPortIsConfigured(t *testing.T) {
+	dir := &directory{advertise: "203.0.113.7", controlPort: 7000, httpsPort: 7443}
+	got := dir.serverAddrFor(protocol.ProxySpec{Type: config.ProxyTypeHTTPS, TLSPassthrough: true})
+	if got != "203.0.113.7:7443" {
+		t.Fatalf("serverAddrFor with tls_passthrough and no passthrough port = %q, want 203.0.113.7:7443", got)
+	}
+}
+
+func TestServerAddrForBracketsAnIPv6AdvertiseAddress(t *testing.T) {
+	dir := &directory{advertise: "2001:db8::1", controlPort: 7000}
+	if got := dir.serverAddrFor(protocol.ProxySpec{Type: config.ProxyTypeSTCP}); got != "[2001:db8::1]:7000" {
+		t.Fatalf("serverAddrFor over IPv6 = %q, want [2001:db8::1]:7000", got)
+	}
+}
+
+func TestLookupProxyWithoutTheDHTEnabled(t *testing.T) {
+	cfg := testConfig(t, false)
+	if _, err := LookupProxy(cfg, discardLogger(), "ssh"); err == nil {
+		t.Fatal("LookupProxy succeeded with the DHT disabled")
+	}
+}
+
+// resolveEventually waits for a record to become resolvable: the joining node
+// learns the record from the DHT, which takes a round trip.
+func resolveEventually(t *testing.T, node *discovery.Node, name string) (discovery.Record, error) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var lastErr error
+	for {
+		record, err := node.Resolve(name)
+		if err == nil {
+			return record, nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return discovery.Record{}, lastErr
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// TestLookupProxyResolvesThroughASecondNode is the operator path: a process that is
+// not the server resolves a published name with -dht-lookup.
+func TestLookupProxyResolvesThroughASecondNode(t *testing.T) {
+	echoAddr := startEcho(t)
+	cfg := dhtConfig(t, false)
+	rs := startServer(t, cfg)
+
+	publicPort := freePort(t)
+	client, err := newTestClient(t, rs.addr, false)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.close()
+	if _, err := client.authenticate("test-client", testToken); err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	if err := client.register(protocol.ProxySpec{
+		Name: "ssh", Type: "tcp", LocalAddr: echoAddr, RemotePort: publicPort,
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := client.framer.ReadFrame(); err != nil {
+		t.Fatalf("read proxy list: %v", err)
+	}
+	waitForListener(t, rs.server, "ssh")
+
+	serverDHTAddr := rs.server.directory.node.Addr()
+	// A second configuration resolves through the server's DHT node, and its
+	// listen_addr deliberately names the port the running server already holds: a
+	// lookup node binds its own port, so that collision must not matter.
+	lookupCfg := &config.Config{}
+	lookupCfg.DHT.Enabled = true
+	lookupCfg.DHT.ListenAddr = serverDHTAddr
+	lookupCfg.DHT.Bootstrap = []string{serverDHTAddr}
+	if err := lookupCfg.Validate(""); err != nil {
+		t.Fatalf("lookup config invalid: %v", err)
+	}
+
+	record, err := LookupProxy(lookupCfg, discardLogger(), "ssh")
+	if err != nil {
+		t.Fatalf("LookupProxy: %v", err)
+	}
+	if record.Server != net.JoinHostPort("127.0.0.1", itoa(publicPort)) {
+		t.Errorf("resolved %q, want the published port %d", record.Server, publicPort)
+	}
+}
+
+// TestLookupProxyFallsBackToTheConfiguredListenAddress covers the operator who runs
+// the lookup with the server's own configuration, which names no bootstrap peer
+// because the file describes the node that starts the DHT.
+func TestLookupProxyFallsBackToTheConfiguredListenAddress(t *testing.T) {
+	echoAddr := startEcho(t)
+	cfg := dhtConfig(t, false)
+	cfg.DHT.ListenAddr = "0.0.0.0:" + itoa(freeUDPPort(t))
+	cfg.DHT.AdvertiseHost = "127.0.0.1"
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("config invalid: %v", err)
+	}
+	rs := startServer(t, cfg)
+
+	publicPort := freePort(t)
+	client, err := newTestClient(t, rs.addr, false)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.close()
+	if _, err := client.authenticate("test-client", testToken); err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	if err := client.register(protocol.ProxySpec{
+		Name: "ssh", Type: "tcp", LocalAddr: echoAddr, RemotePort: publicPort,
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := client.framer.ReadFrame(); err != nil {
+		t.Fatalf("read proxy list: %v", err)
+	}
+	waitForListener(t, rs.server, "ssh")
+
+	// The server's own configuration, with no bootstrap peer of its own.
+	record, err := LookupProxy(cfg, discardLogger(), "ssh")
+	if err != nil {
+		t.Fatalf("LookupProxy with no bootstrap peer: %v", err)
+	}
+	if record.Server != net.JoinHostPort("127.0.0.1", itoa(publicPort)) {
+		t.Errorf("resolved %q, want the published port %d", record.Server, publicPort)
+	}
+}
+
+func TestLocalDHTAddr(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"127.0.0.1:7001", "127.0.0.1:7001"},
+		{"0.0.0.0:7001", "127.0.0.1:7001"},
+		{":7001", "127.0.0.1:7001"},
+		{"[::]:7001", "127.0.0.1:7001"},
+		{"2001:db8::1:7001", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := localDHTAddr(tc.in); got != tc.want {
+			t.Errorf("localDHTAddr(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestLookupProxyReportsAnUnknownName checks the error an operator sees when a name
+// was never published.
+func TestLookupProxyReportsAnUnknownName(t *testing.T) {
+	cfg := dhtConfig(t, false)
+	rs := startServer(t, cfg)
+
+	lookupCfg := &config.Config{}
+	lookupCfg.DHT.Enabled = true
+	lookupCfg.DHT.ListenAddr = "127.0.0.1:" + itoa(freeUDPPort(t))
+	lookupCfg.DHT.Bootstrap = []string{rs.server.directory.node.Addr()}
+	lookupCfg.DHT.LookupTimeoutSeconds = 1
+	if err := lookupCfg.Validate(""); err != nil {
+		t.Fatalf("lookup config invalid: %v", err)
+	}
+
+	if _, err := LookupProxy(lookupCfg, discardLogger(), "nothing-here"); err == nil {
+		t.Fatal("resolving a name that was never published succeeded")
+	}
+}
+
+// nonLoopbackIPv4 is an address of this machine that a second machine could send a
+// datagram back to, or "" when the machine has nothing but loopback.
+func nonLoopbackIPv4(t *testing.T) string {
+	t.Helper()
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Fatalf("interface addresses: %v", err)
+	}
+	for _, addr := range addrs {
+		ipnet, ok := addr.(*net.IPNet)
+		if !ok || ipnet.IP.IsLoopback() {
+			continue
+		}
+		if ip4 := ipnet.IP.To4(); ip4 != nil {
+			return ip4.String()
+		}
+	}
+	return ""
+}
+
+// A peer answers the address the request arrived from, so a query bound to loopback is
+// answered only by a node on this same machine. The bare socket here is the observer: it
+// records where the request came from and never answers.
+func TestLookupProxyQueriesFromAnAddressTheAnswerCanReach(t *testing.T) {
+	routable := nonLoopbackIPv4(t)
+	if routable == "" {
+		t.Skip("this machine has no address other than loopback to send from")
+	}
+
+	observer, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero})
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer observer.Close()
+	_, port, err := net.SplitHostPort(observer.LocalAddr().String())
+	if err != nil {
+		t.Fatalf("split %q: %v", observer.LocalAddr(), err)
+	}
+
+	requests := make(chan *net.UDPAddr, 1)
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			_, from, err := observer.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			select {
+			case requests <- from:
+			default:
+			}
+		}
+	}()
+
+	lookupCfg := &config.Config{}
+	lookupCfg.DHT.Enabled = true
+	lookupCfg.DHT.ListenAddr = "127.0.0.1:0"
+	lookupCfg.DHT.Bootstrap = []string{net.JoinHostPort(routable, port)}
+	lookupCfg.DHT.LookupTimeoutSeconds = 1
+	if err := lookupCfg.Validate(""); err != nil {
+		t.Fatalf("lookup config invalid: %v", err)
+	}
+
+	// Nobody answers, so the lookup fails. What it leaves behind is the address its
+	// request carried, which is the answer a peer would have sent.
+	if _, err := LookupProxy(lookupCfg, discardLogger(), "ssh"); err == nil {
+		t.Fatal("a lookup against a socket that never answers resolved")
+	}
+
+	select {
+	case from := <-requests:
+		if from.IP.IsLoopback() {
+			t.Fatalf("the request came from %s, an address only a node on this machine answers", from)
+		}
+	default:
+		t.Fatal("the observer saw no request")
+	}
+}
+
+// --- signed announcements ------------------------------------------------------
+
+// signingConfig is dhtConfig with announcements signed by a key file, which is the
+// [dht] signing_key_file a server is given.
+func signingConfig(t *testing.T, encryption bool) *config.Config {
+	t.Helper()
+	cfg := dhtConfig(t, encryption)
+	cfg.DHT.SigningKeyFile = filepath.Join(t.TempDir(), "dht.key")
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("dht signing config invalid: %v", err)
+	}
+	return cfg
+}
+
+// publishSSH registers one tcp proxy and waits for it to appear in the directory.
+func publishSSH(t *testing.T, rs *runningServer) {
+	t.Helper()
+	client, err := newTestClient(t, rs.addr, false)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.close)
+	if _, err := client.authenticate("test-client", testToken); err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	echoAddr := startEcho(t)
+	if err := client.register(protocol.ProxySpec{
+		Name: "ssh", Type: "tcp", LocalAddr: echoAddr, RemotePort: freePort(t),
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := client.framer.ReadFrame(); err != nil {
+		t.Fatalf("read proxy list: %v", err)
+	}
+	waitForListener(t, rs.server, "ssh")
+}
+
+func TestAServerSignsItsAnnouncements(t *testing.T) {
+	cfg := signingConfig(t, false)
+	rs := startServer(t, cfg)
+	publishSSH(t, rs)
+
+	// The key the record was signed with is the key file's key, and the operator
+	// can read it from GET /api/dht to hand it to clients.
+	signer, err := crypto.LoadIdentity(cfg.DHT.SigningKeyFile)
+	if err != nil {
+		t.Fatalf("load the signing key: %v", err)
+	}
+	summary := rs.server.directory.summary()
+	if summary["signing_key"] != signer.PublicKeyHex() {
+		t.Errorf("the summary reports signing_key %v, want %s", summary["signing_key"], signer.PublicKeyHex())
+	}
+
+	reader, err := discovery.Start(discovery.Config{
+		ListenAddr:  "127.0.0.1:" + itoa(freeUDPPort(t)),
+		Bootstrap:   []string{rs.server.directory.node.Addr()},
+		TrustedKeys: []ed25519.PublicKey{signer.PublicKey()},
+		Logger:      discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("start the reading node: %v", err)
+	}
+	defer reader.Close()
+
+	record, err := resolveEventually(t, reader, "ssh")
+	if err != nil {
+		t.Fatalf("resolve ssh: %v", err)
+	}
+	if !record.Verified {
+		t.Error("the record the server published is not reported as verified")
+	}
+	if record.PublicKey != signer.PublicKeyHex() {
+		t.Errorf("the record names key %q, want %q", record.PublicKey, signer.PublicKeyHex())
+	}
+}
+
+func TestAReaderThatNamesAnotherKeyRefusesTheServer(t *testing.T) {
+	cfg := signingConfig(t, false)
+	rs := startServer(t, cfg)
+	publishSSH(t, rs)
+
+	stranger, err := crypto.NewIdentity()
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	reader, err := discovery.Start(discovery.Config{
+		ListenAddr:  "127.0.0.1:" + itoa(freeUDPPort(t)),
+		Bootstrap:   []string{rs.server.directory.node.Addr()},
+		TrustedKeys: []ed25519.PublicKey{stranger.PublicKey()},
+		Logger:      discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("start the reading node: %v", err)
+	}
+	defer reader.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err := reader.Resolve("ssh")
+		switch {
+		case errors.Is(err, discovery.ErrUntrustedPublisher):
+			return
+		case err != nil && !errors.Is(err, dht.ErrNotFound):
+			t.Fatalf("resolve ssh: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the reader accepted a record signed by a key it was not given")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestAReaderThatRequiresSignaturesRefusesAnUnsignedServer(t *testing.T) {
+	cfg := dhtConfig(t, false)
+	rs := startServer(t, cfg)
+	publishSSH(t, rs)
+
+	reader, err := discovery.Start(discovery.Config{
+		ListenAddr:    "127.0.0.1:" + itoa(freeUDPPort(t)),
+		Bootstrap:     []string{rs.server.directory.node.Addr()},
+		RequireSigned: true,
+		Logger:        discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("start the reading node: %v", err)
+	}
+	defer reader.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err := reader.Resolve("ssh")
+		switch {
+		case errors.Is(err, discovery.ErrUnsigned):
+			return
+		case err != nil && !errors.Is(err, dht.ErrNotFound):
+			t.Fatalf("resolve ssh: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("an unsigned record satisfied a reader that requires signatures")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestTheSigningKeySurvivesARestart(t *testing.T) {
+	cfg := signingConfig(t, false)
+
+	first, err := openDirectory(cfg, discardLogger())
+	if err != nil {
+		t.Fatalf("open the directory: %v", err)
+	}
+	key := first.signingKey
+	if key == "" {
+		t.Fatal("a directory with a signing key file reports no signing key")
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close the directory: %v", err)
+	}
+
+	// A second node started from the same file reads the key back rather than
+	// generating another one, so clients that trust it keep working.
+	second, err := openDirectory(cfg, discardLogger())
+	if err != nil {
+		t.Fatalf("reopen the directory: %v", err)
+	}
+	defer second.Close()
+	if second.signingKey != key {
+		t.Fatalf("the restarted node signs with %s, want the key it started with, %s", second.signingKey, key)
+	}
+}
+
+func TestAServerWithNoSigningKeyPublishesUnsignedRecords(t *testing.T) {
+	cfg := dhtConfig(t, false)
+	rs := startServer(t, cfg)
+	publishSSH(t, rs)
+
+	if key := rs.server.directory.signingKey; key != "" {
+		t.Errorf("a server with no signing key file reports the key %s", key)
+	}
+	record, err := rs.server.directory.Lookup("ssh")
+	if err != nil {
+		t.Fatalf("resolve ssh: %v", err)
+	}
+	if record.PublicKey != "" || record.Signature != "" {
+		t.Errorf("an unsigned deployment signed its record with %q", record.PublicKey)
+	}
+}
+
+// --- record lifetime ----------------------------------------------------------
+
+// TestAShortAnnounceTTLIsStillRewrittenInTime drives the derived republish interval
+// through a real configuration. dht.republish_seconds defaults to a third of
+// dht.announce_ttl_seconds, and a third of a short TTL is zero seconds — which the
+// discovery node reads as "the caller chose nothing" and replaces with its own
+// 30-second default. The announcement would then lapse before it was rewritten, and
+// the name of a server that is still running would stop resolving: the name is what
+// a client resolves instead of being configured with an address.
+//
+// config validation requires the storage TTL to be at least the announcement TTL, so
+// the two are set to the same short value, which is the shortest pair the validator
+// accepts. The name is then resolved well past that TTL, which only republishing
+// inside it can achieve. The other half of a record's lifetime — a copy whose
+// announcer has stopped refreshing it — is covered where it is observable:
+// pkg/dht for the storage lapse and pkg/discovery for a stale announcement.
+func TestAShortAnnounceTTLIsStillRewrittenInTime(t *testing.T) {
+	const ttlSeconds = 2
+
+	path := filepath.Join(t.TempDir(), "ttl.toml")
+	body := fmt.Sprintf(`
+[server]
+bind_addr = "127.0.0.1"
+bind_port = %d
+auth_token = "%s"
+
+[dht]
+enabled = true
+listen_addr = "127.0.0.1:%d"
+advertise_host = "127.0.0.1"
+ttl_seconds = %d
+announce_ttl_seconds = %d
+`, freePort(t), testToken, freeUDPPort(t), ttlSeconds, ttlSeconds)
+
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write the configuration: %v", err)
+	}
+	cfg, err := config.Load(path, config.ValidateOptions{Role: config.RoleServer})
+	if err != nil {
+		t.Fatalf("load the configuration: %v", err)
+	}
+	if cfg.DHT.TTLSeconds != ttlSeconds {
+		t.Fatalf("dht.ttl_seconds loaded as %d, want %d", cfg.DHT.TTLSeconds, ttlSeconds)
+	}
+	settings := cfg.DHTSettings(discardLogger())
+	// A third of two seconds is zero, and zero would come back as the node's own
+	// 30-second default, so the derived interval has a one-second floor.
+	if cfg.DHT.RepublishSeconds != 1 {
+		t.Fatalf("dht.republish_seconds came out as %d for a %ds announce TTL, want 1",
+			cfg.DHT.RepublishSeconds, cfg.DHT.AnnounceTTLSeconds)
+	}
+	if settings.RepublishInterval >= time.Duration(cfg.DHT.AnnounceTTLSeconds)*time.Second {
+		t.Fatalf("the node rewrites its announcements every %s, which is not inside the %ds announce TTL",
+			settings.RepublishInterval, cfg.DHT.AnnounceTTLSeconds)
+	}
+
+	node, err := discovery.Start(settings)
+	if err != nil {
+		t.Fatalf("start the node: %v", err)
+	}
+	defer node.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := node.Publish(ctx, discovery.Record{
+		Name: "ssh", Type: "tcp", Server: "127.0.0.1:2022",
+	}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	published := time.Now()
+
+	// Inside the lifetime the name resolves, which is what makes the checks below
+	// about republishing rather than about a record that never worked.
+	record, err := node.Resolve("ssh")
+	if err != nil {
+		t.Fatalf("resolve inside the lifetime: %v", err)
+	}
+	if record.Server != "127.0.0.1:2022" {
+		t.Fatalf("resolved %q, want the published address", record.Server)
+	}
+
+	// Well past the announce TTL and past the storage TTL: nothing that was not
+	// rewritten in between is still here.
+	time.Sleep(time.Duration(ttlSeconds)*time.Second + time.Second)
+	for i := 0; i < 5; i++ {
+		if _, err := node.Resolve("ssh"); err != nil {
+			t.Fatalf("the name stopped resolving %v after it was published, with a %ds announce TTL: %v",
+				time.Since(published).Round(time.Millisecond), ttlSeconds, err)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+}

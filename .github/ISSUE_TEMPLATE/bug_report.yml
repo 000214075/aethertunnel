@@ -1,0 +1,76 @@
+name: Bug 报告 · Bug report
+description: 功能不工作，或与文档不符 · Something does not work, or does not match the docs
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢报告。AetherTunnel 的每项能力都有可执行的检查，所以一份能复现的报告
+        （版本、两端配置与日志）几乎总能定位到具体原因。**请永远不要在 issue 里贴令牌、
+        密钥或完整未脱敏的配置**；安全问题请按 [`docs/SECURITY.md`](../blob/main/docs/SECURITY.md)
+        私下报告，不要开公开 issue。
+
+        Thank you for reporting. Every capability has an executable check, so a
+        reproducible report (version, both ends' configuration and logs) almost always
+        pins down the cause. **Never paste a token, a secret or an unredacted
+        configuration into an issue**; for a security problem, report it privately as
+        [`docs/SECURITY.md`](../blob/main/docs/SECURITY.md) describes instead of opening
+        a public issue.
+  - type: input
+    id: version
+    attributes:
+      label: 版本 · Version
+      description: "aethertunnel-server --version 与 aethertunnel-client --version 的输出"
+      placeholder: "AetherTunnel server 1.0.0 (protocol 4)"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 平台 · Platform
+      options:
+        - linux/amd64
+        - linux/arm64
+        - windows/amd64
+        - windows/arm64
+        - darwin/amd64
+        - darwin/arm64
+        - android（App 或绑定 · app or binding）
+        - 其它 · other
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: 配置（脱敏） · Configuration (redacted)
+      description: 两端的 `[[proxies]]`/`[[visitors]]` 与相关小节；令牌与密钥用占位符
+      placeholder: |
+        [server]
+        bind_port = 7001
+        auth_token = "<redacted>"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 · Logs
+      description: 服务端与客户端的日志（默认级别即可；被拒绝的连接需要 `debug` 或 `trace` 级别才能看到细节）
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望与实际 · Expected vs actual
+      description: 期望发生什么、实际发生了什么；如果是与文档不符，请给出文档里的原句
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤 · Steps to reproduce
+      placeholder: |
+        1. 服务端 …
+        2. 客户端 …
+        3. 访问 …
+    validations:
+      required: true

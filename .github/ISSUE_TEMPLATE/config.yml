@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全问题 · Security
+    url: https://github.com/000214075/aethertunnel/blob/main/docs/SECURITY.md
+    about: 请按安全策略私下报告，不要开公开 issue · Report a security problem privately as the policy describes
+  - name: 与 frp 的对照 · Against frp
+    url: https://github.com/000214075/aethertunnel/blob/main/docs/VS-FRP.md
+    about: 提功能建议前先看这份逐项对照 · Check this comparison before proposing a feature
+  - name: 配置参考 · Configuration reference
+    url: https://github.com/000214075/aethertunnel/blob/main/docs/CONFIGURATION.md
+    about: 每个配置键的语义 · What every configuration key means

@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: aethertunnel
+  namespace: aethertunnel
+  labels:
+    app.kubernetes.io/name: aethertunnel
+    app.kubernetes.io/component: server
+spec:
+  type: LoadBalancer
+  # externalTrafficPolicy: Local keeps the client's source address, which is what the
+  # access-control lists and the per-address rate limit act on. With Cluster, every
+  # connection appears to come from a node address.
+  externalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/name: aethertunnel
+    app.kubernetes.io/component: server
+  ports:
+    - name: control
+      port: 7001
+      targetPort: control
+      protocol: TCP
+    # The DHT node is the address the ConfigMap's dht.listen_addr names and the one
+    # dht.advertise_host is published for. Without this entry a client outside the
+    # cluster cannot join the DHT, and the hostname the server advertises resolves to
+    # a port nothing answers on. The number differs from the control port's because a
+    # Service merges its ports by number: with both on 7001, kubectl apply drops one
+    # of them and reports success.
+    - name: dht
+      port: 7003
+      targetPort: dht
+      protocol: UDP
+    - name: rendezvous
+      port: 7002
+      targetPort: rendezvous
+      protocol: UDP
+    - name: dashboard
+      port: 7500
+      targetPort: dashboard
+      protocol: TCP

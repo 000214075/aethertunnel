@@ -1,0 +1,1569 @@
+package server
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/aethertunnel/aethertunnel/pkg/config"
+	"github.com/aethertunnel/aethertunnel/pkg/crypto"
+	flynet "github.com/aethertunnel/aethertunnel/pkg/net"
+	"github.com/aethertunnel/aethertunnel/pkg/protocol"
+	"github.com/aethertunnel/aethertunnel/pkg/socks"
+)
+
+// --- a full protocol client ---------------------------------------------------
+
+// dataHandler serves one accepted data connection. It owns the connection and
+// must close it.
+type dataHandler func(conn net.Conn, framer *protocol.Framer)
+
+// testAgent behaves like the real client binary: it authenticates, registers its
+// proxies and forwards every data request to the matching local service.
+//
+// One goroutine reads the control framer for the life of the agent; everything
+// else goes through it. Reading from two places, or reading with a deadline that
+// can fire in the middle of a frame, desynchronises the stream.
+type testAgent struct {
+	t       *testing.T
+	client  *testClient
+	addr    string
+	done    chan struct{}
+	stopped chan struct{}
+	verdict chan *protocol.Message
+
+	// streams counts the goroutines serving one stream each. They log through the test,
+	// so the test waits for them before it ends: a stream that is still copying when the
+	// test returns would otherwise call Logf on a finished test, which the race detector
+	// reports as a data race.
+	streams sync.WaitGroup
+
+	// websocket upgrades the agent's data connections the way
+	// [transport].protocol = "websocket" makes the real client do.
+	websocket bool
+
+	// dialTarget decides what a socks5 request may reach. It emulates the real
+	// client, which dials the address the visitor named rather than a local
+	// service of its own; leaving it nil means this agent serves no socks5 proxy.
+	// serve goroutines run on the agent's own goroutine, so it is set and read
+	// under dialMu.
+	dialMu     sync.Mutex
+	dialTarget func(target string) (net.Conn, error)
+
+	// udpDialTarget does the same for a socks5 UDP ASSOCIATE datagram; nil means
+	// this agent serves no socks5 UDP relay.
+	udpDialMu     sync.Mutex
+	udpDialTarget func(target string) (net.Conn, error)
+
+	// requests records what the server said about each stream, oldest first. The
+	// control loop writes it and the test reads it, so it is guarded. A real client
+	// reads the same fields, including the one that says whether a visitor asked for
+	// the stream rather than a connection to the published port.
+	reqMu    sync.Mutex
+	requests []protocol.DataRequest
+}
+
+// recordRequest keeps one data request for the test to inspect.
+func (a *testAgent) recordRequest(request protocol.DataRequest) {
+	a.reqMu.Lock()
+	a.requests = append(a.requests, request)
+	a.reqMu.Unlock()
+}
+
+// requestFor returns the first data request recorded for a proxy name. It waits,
+// because the request is written by the agent's own control loop.
+func (a *testAgent) requestFor(t *testing.T, name string) protocol.DataRequest {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		a.reqMu.Lock()
+		for _, request := range a.requests {
+			if request.Proxy == name {
+				a.reqMu.Unlock()
+				return request
+			}
+		}
+		a.reqMu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatalf("the server never sent a data request for %q", name)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// setDialTarget installs the dial function a socks5 request goes through.
+func (a *testAgent) setDialTarget(fn func(string) (net.Conn, error)) {
+	a.dialMu.Lock()
+	a.dialTarget = fn
+	a.dialMu.Unlock()
+}
+
+func (a *testAgent) targetDialer() func(string) (net.Conn, error) {
+	a.dialMu.Lock()
+	defer a.dialMu.Unlock()
+	return a.dialTarget
+}
+
+// setUDPDialTarget installs the UDP dial function a socks5 UDP ASSOCIATE goes
+// through.
+func (a *testAgent) setUDPDialTarget(fn func(string) (net.Conn, error)) {
+	a.udpDialMu.Lock()
+	a.udpDialTarget = fn
+	a.udpDialMu.Unlock()
+}
+
+func (a *testAgent) udpDialer() func(string) (net.Conn, error) {
+	a.udpDialMu.Lock()
+	defer a.udpDialMu.Unlock()
+	return a.udpDialTarget
+}
+
+func startAgent(t *testing.T, serverAddr string, encryption bool, handlers map[string]dataHandler) *testAgent {
+	t.Helper()
+
+	client, err := newTestClient(t, serverAddr, encryption)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if _, err := client.authenticate("test-agent", testToken); err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	return startAgentWithClient(t, client, serverAddr, handlers)
+}
+
+// startAgentWithClient runs the agent loop for an already authenticated
+// client, so a variant dialer — the websocket transport, for one — can build
+// the control connection itself.
+func startAgentWithClient(t *testing.T, client *testClient, serverAddr string, handlers map[string]dataHandler) *testAgent {
+	t.Helper()
+
+	agent := &testAgent{
+		t:       t,
+		client:  client,
+		addr:    serverAddr,
+		done:    make(chan struct{}),
+		stopped: make(chan struct{}),
+		verdict: make(chan *protocol.Message, 8),
+	}
+	go agent.loop(handlers)
+	t.Cleanup(func() {
+		close(agent.done)
+		client.close()
+		<-agent.stopped
+		agent.streams.Wait()
+	})
+	return agent
+}
+
+func (a *testAgent) register(spec protocol.ProxySpec) {
+	a.t.Helper()
+	if err := a.client.register(spec); err != nil {
+		a.t.Fatalf("register %q: %v", spec.Name, err)
+	}
+	a.expectAccepted(spec.Name)
+}
+
+// expectAccepted waits for the server's verdict on the last registration or
+// visitor exchange and fails the test when it was refused.
+func (a *testAgent) expectAccepted(name string) {
+	a.t.Helper()
+	select {
+	case msg := <-a.verdict:
+		if msg.Type == protocol.TypeError {
+			var payload protocol.ErrorPayload
+			_ = json.Unmarshal(msg.Payload, &payload)
+			a.t.Fatalf("the server refused %q: %s", name, payload.Error)
+		}
+	case <-time.After(5 * time.Second):
+		a.t.Fatalf("no verdict for %q arrived", name)
+	}
+}
+
+// expectRefused waits for the server's verdict and returns its message.
+func (a *testAgent) expectRefused(name string) string {
+	a.t.Helper()
+	select {
+	case msg := <-a.verdict:
+		if msg.Type != protocol.TypeError {
+			a.t.Fatalf("%q was accepted (got %s)", name, msg.Type)
+		}
+		var payload protocol.ErrorPayload
+		_ = json.Unmarshal(msg.Payload, &payload)
+		return payload.Error
+	case <-time.After(5 * time.Second):
+		a.t.Fatalf("no verdict for %q arrived", name)
+		return ""
+	}
+}
+
+func (a *testAgent) loop(handlers map[string]dataHandler) {
+	defer close(a.stopped)
+
+	for {
+		msg, err := a.client.framer.ReadFrame()
+		if err != nil {
+			return
+		}
+
+		switch msg.Type {
+		case protocol.TypeDataRequest:
+			var request protocol.DataRequest
+			if err := json.Unmarshal(msg.Payload, &request); err != nil {
+				continue
+			}
+			a.recordRequest(request)
+			if request.SocksUDP {
+				// A socks5 UDP ASSOCIATE names its target inside each datagram,
+				// so it also needs no handlers entry.
+				a.goServe(request, nil)
+				continue
+			}
+			if request.Target != "" {
+				// A socks5 request carries the address to reach, so it needs no
+				// entry in the handlers map: the agent dials the target itself.
+				a.goServe(request, nil)
+				continue
+			}
+			handler, ok := handlers[request.Proxy]
+			if !ok {
+				continue
+			}
+			a.goServe(request, handler)
+
+		case protocol.TypeError, protocol.TypeProxyList:
+			select {
+			case a.verdict <- msg:
+			default:
+			}
+		}
+	}
+}
+
+// goServe runs one stream in its own goroutine, tracked so the agent's cleanup can wait
+// for it. The goroutine logs through the test, and test logging must be over before the
+// test is.
+func (a *testAgent) goServe(request protocol.DataRequest, handler dataHandler) {
+	a.streams.Add(1)
+	go func() {
+		defer a.streams.Done()
+		a.serve(request, handler)
+	}()
+}
+
+func (a *testAgent) serve(request protocol.DataRequest, handler dataHandler) {
+	conn, err := net.DialTimeout("tcp", a.addr, 5*time.Second)
+	if err != nil {
+		return
+	}
+	if a.websocket {
+		host := a.addr
+		if h, _, splitErr := net.SplitHostPort(a.addr); splitErr == nil {
+			host = h
+		}
+		upgraded, dialErr := flynet.WebsocketDial(conn, host, 5*time.Second)
+		if dialErr != nil {
+			_ = conn.Close()
+			return
+		}
+		conn = upgraded
+	}
+	framer := protocol.NewFramer(conn, a.client.cipher, 0)
+
+	// A socks5 UDP ASSOCIATE names its target inside each datagram.
+	if request.SocksUDP {
+		a.serveSocksUDP(conn, framer, request)
+		return
+	}
+
+	// A socks5 request names its own target, so the agent dials it (subject to
+	// whatever ranges the test allows) and reports a refusal the way the real
+	// client does, before the stream is handed over.
+	if request.Target != "" {
+		a.serveTarget(conn, framer, request)
+		return
+	}
+
+	if err := framer.WriteJSON(protocol.TypeDataOpen, protocol.DataOpen{
+		Session: a.client.session, Proxy: request.Proxy, StreamID: request.StreamID,
+	}); err != nil {
+		_ = conn.Close()
+		return
+	}
+	var ack protocol.DataOpenAck
+	if err := framer.ReadJSON(protocol.TypeDataOpenAck, &ack); err != nil || !ack.OK {
+		_ = conn.Close()
+		return
+	}
+	if request.Encrypted && a.client.cipher == nil {
+		// The server echoed the proxy's use_encryption, and this session agreed
+		// no cipher of its own: the agent derives the per-proxy key from the
+		// credential its session authenticated with and the proxy's name,
+		// exactly as the real client does.
+		token := a.client.authToken
+		if token == "" {
+			token = testToken
+		}
+		cipher, cipherErr := crypto.ProxyStreamCipher(token, request.Proxy)
+		if cipherErr != nil {
+			_ = conn.Close()
+			return
+		}
+		conn = &cryptoStreamConn{Stream: crypto.NewStream(conn, cipher), conn: conn}
+	}
+	if request.Compressed {
+		// The server echoed the proxy's use_compression; the agent wraps its
+		// side the way the real client does. Both wraps go on in the same order
+		// the server applies them: compression outside, encryption inside.
+		conn = flynet.CompressConn(conn)
+	}
+	handler(conn, framer)
+}
+
+// serveTarget emulates the client end of a socks5 stream.
+func (a *testAgent) serveTarget(conn net.Conn, framer *protocol.Framer, request protocol.DataRequest) {
+	open := protocol.DataOpen{Session: a.client.session, Proxy: request.Proxy, StreamID: request.StreamID}
+
+	dial := a.targetDialer()
+	if dial == nil {
+		open.Error = "this agent serves no socks5 tunnel"
+		a.refuseTarget(conn, framer, open)
+		return
+	}
+
+	target, err := dial(request.Target)
+	if err != nil {
+		open.Error = err.Error()
+		a.refuseTarget(conn, framer, open)
+		return
+	}
+	defer target.Close()
+
+	if err := framer.WriteJSON(protocol.TypeDataOpen, open); err != nil {
+		_ = conn.Close()
+		return
+	}
+	var ack protocol.DataOpenAck
+	if err := framer.ReadJSON(protocol.TypeDataOpenAck, &ack); err != nil || !ack.OK {
+		_ = conn.Close()
+		return
+	}
+
+	toTarget, fromTarget := flynet.Pipe(target, conn, 5*time.Second)
+	a.t.Logf("socks5 stream for %s finished (%d bytes to the target, %d back)", request.Target, toTarget, fromTarget)
+}
+
+// serveSocksUDP emulates the client end of a socks5 UDP ASSOCIATE: it parses
+// each wrapped datagram, dials the target over UDP, sends the data and wraps the
+// reply back.
+func (a *testAgent) serveSocksUDP(conn net.Conn, framer *protocol.Framer, request protocol.DataRequest) {
+	open := protocol.DataOpen{Session: a.client.session, Proxy: request.Proxy, StreamID: request.StreamID}
+
+	dial := a.udpDialer()
+	if dial == nil {
+		open.Error = "this agent serves no socks5 udp relay"
+		a.refuseTarget(conn, framer, open)
+		return
+	}
+
+	if err := framer.WriteJSON(protocol.TypeDataOpen, open); err != nil {
+		_ = conn.Close()
+		return
+	}
+	var ack protocol.DataOpenAck
+	if err := framer.ReadJSON(protocol.TypeDataOpenAck, &ack); err != nil || !ack.OK {
+		_ = conn.Close()
+		return
+	}
+
+	for {
+		msg, err := framer.ReadFrame()
+		if err != nil {
+			return
+		}
+		if msg.Type != protocol.TypeUDPPacket {
+			continue
+		}
+		target, data, err := socks.ParseUDPDatagram(msg.Payload)
+		if err != nil {
+			continue
+		}
+		remote, err := dial(target)
+		if err != nil {
+			continue
+		}
+		if _, err := remote.Write(data); err != nil {
+			_ = remote.Close()
+			continue
+		}
+		_ = remote.SetReadDeadline(time.Now().Add(5 * time.Second))
+		buf := make([]byte, 65535)
+		n, err := remote.Read(buf)
+		_ = remote.Close()
+		if err != nil {
+			continue
+		}
+		wrapped, err := socks.WrapUDPDatagram(target, buf[:n])
+		if err != nil {
+			continue
+		}
+		if err := framer.WriteFrame(&protocol.Message{Type: protocol.TypeUDPPacket, Payload: wrapped}); err != nil {
+			return
+		}
+	}
+}
+
+// refuseTarget reports a stream the agent will not serve.
+func (a *testAgent) refuseTarget(conn net.Conn, framer *protocol.Framer, open protocol.DataOpen) {
+	defer conn.Close()
+	_ = framer.WriteJSON(protocol.TypeDataOpen, open)
+	var ack protocol.DataOpenAck
+	_ = framer.ReadJSON(protocol.TypeDataOpenAck, &ack)
+}
+
+// --- local services -----------------------------------------------------------
+
+func startUDPEcho(t *testing.T) string {
+	t.Helper()
+	socket, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("start udp echo: %v", err)
+	}
+	t.Cleanup(func() { socket.Close() })
+
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, addr, err := socket.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			_, _ = socket.WriteTo(buf[:n], addr)
+		}
+	}()
+	return socket.LocalAddr().String()
+}
+
+func startHTTPService(t *testing.T, body string) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("start http service: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "%s|host=%s", body, r.Host)
+	})
+	server := &http.Server{Handler: mux}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Close() })
+	return listener.Addr().String()
+}
+
+// --- handlers used by the agents ----------------------------------------------
+
+// streamHandler serves a byte-stream proxy exactly as the real client does: the
+// handshake is framed, and everything after the ack is raw bytes.
+func streamHandler(localAddr string) dataHandler {
+	return func(conn net.Conn, framer *protocol.Framer) {
+		_ = framer
+		local, err := net.DialTimeout("tcp", localAddr, 5*time.Second)
+		if err != nil {
+			_ = conn.Close()
+			return
+		}
+		flynet.Pipe(local, conn, 2*time.Second)
+	}
+}
+
+// --- tests --------------------------------------------------------------------
+
+func datagramHandler(localAddr string) dataHandler {
+	return func(conn net.Conn, framer *protocol.Framer) {
+		local, err := net.Dial("udp", localAddr)
+		if err != nil {
+			_ = conn.Close()
+			return
+		}
+		defer local.Close()
+		defer conn.Close()
+
+		done := make(chan struct{}, 2)
+		go func() {
+			defer func() { done <- struct{}{} }()
+			for {
+				msg, err := framer.ReadFrame()
+				if err != nil {
+					return
+				}
+				if msg.Type != protocol.TypeUDPPacket {
+					continue
+				}
+				if _, err := local.Write(msg.Payload); err != nil {
+					return
+				}
+			}
+		}()
+		go func() {
+			defer func() { done <- struct{}{} }()
+			buf := make([]byte, 65535)
+			for {
+				_ = local.SetReadDeadline(time.Now().Add(3 * time.Second))
+				n, err := local.Read(buf)
+				if err != nil {
+					return
+				}
+				if err := framer.WriteFrame(&protocol.Message{
+					Type:    protocol.TypeUDPPacket,
+					Payload: buf[:n],
+				}); err != nil {
+					return
+				}
+			}
+		}()
+
+		<-done
+		_ = conn.Close()
+		_ = local.Close()
+		<-done
+	}
+}
+
+// bytesStreamHandler moves a byte stream that is carried as frames, which is what
+// a visitor connection uses before the record layer is applied.
+func framedStreamHandler(localAddr string) dataHandler {
+	return streamHandler(localAddr)
+}
+
+// --- tests --------------------------------------------------------------------
+
+func TestUDPTunnelRoundTrip(t *testing.T) {
+	echo := startUDPEcho(t)
+	cfg := testConfig(t, false)
+	// A udp proxy binds UDP, so the port has to come from a UDP probe.
+	remotePort := freeUDPPort(t)
+
+	rs := startServer(t, cfg)
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"echo-udp": datagramHandler(echo)})
+	agent.register(protocol.ProxySpec{Name: "echo-udp", Type: protocol.ProxyTypeUDP, RemotePort: remotePort})
+
+	visitor, err := net.Dial("udp", fmt.Sprintf("127.0.0.1:%d", remotePort))
+	if err != nil {
+		t.Fatalf("dial the tunnel: %v", err)
+	}
+	defer visitor.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for i := 0; i < 12; i++ {
+		payload := []byte(fmt.Sprintf("datagram-%d", i))
+		if _, err := visitor.Write(payload); err != nil {
+			t.Fatalf("send: %v", err)
+		}
+
+		_ = visitor.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		buf := make([]byte, 2048)
+		n, err := visitor.Read(buf)
+		if err != nil {
+			continue // the first datagrams can be dropped while the session is set up
+		}
+		if string(buf[:n]) != string(payload) {
+			t.Fatalf("echo returned %q, want %q", buf[:n], payload)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the tunnel did not answer in time")
+		}
+		t.Logf("datagram %d echoed after %d attempt(s)", i, i+1)
+		return
+	}
+	t.Fatal("no datagram was echoed within 12 attempts")
+}
+
+// TestUDPTunnelSessionCountsBytesWithoutCountingStreams covers the accounting of
+// a udp proxy: a datagram session carries real bytes, but it is not a stream, so
+// it must leave aethertunnel_streams_total alone. The sudp and socks5 datagram
+// paths already work that way, and the udp path has to agree with them.
+func TestUDPTunnelSessionCountsBytesWithoutCountingStreams(t *testing.T) {
+	echo := startUDPEcho(t)
+	cfg := testConfig(t, false)
+	// The pump books a session's traffic when it releases it, and it releases an
+	// idle session after read_timeout_seconds. Keep that short so the test does not
+	// wait out the 20-second default.
+	cfg.Server.ReadTimeoutSecs = 1
+	remotePort := freeUDPPort(t)
+
+	rs := startServer(t, cfg)
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"echo-udp": datagramHandler(echo)})
+	agent.register(protocol.ProxySpec{Name: "echo-udp", Type: protocol.ProxyTypeUDP, RemotePort: remotePort})
+
+	visitor, err := net.Dial("udp", fmt.Sprintf("127.0.0.1:%d", remotePort))
+	if err != nil {
+		t.Fatalf("dial the tunnel: %v", err)
+	}
+	defer visitor.Close()
+
+	// A session is only worth accounting once it has carried something.
+	payload := []byte("counted-without-a-stream")
+	echoed := false
+	for attempt := 0; attempt < 12 && !echoed; attempt++ {
+		if _, err := visitor.Write(payload); err != nil {
+			t.Fatalf("send: %v", err)
+		}
+		_ = visitor.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		buf := make([]byte, 2048)
+		n, err := visitor.Read(buf)
+		if err != nil {
+			continue
+		}
+		if string(buf[:n]) != string(payload) {
+			t.Fatalf("echo returned %q, want %q", buf[:n], payload)
+		}
+		echoed = true
+	}
+	if !echoed {
+		t.Fatal("no datagram was echoed, so there is no session traffic to account")
+	}
+
+	// The visitor goes quiet, so the pump releases the session and books its bytes.
+	metrics := rs.server.metrics
+	deadline := time.Now().Add(15 * time.Second)
+	for metrics.bytesFromClients.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := metrics.bytesFromClients.Load(); got == 0 {
+		t.Fatal("the datagram session never booked the bytes it carried")
+	}
+	if got := metrics.streamsTotal.Load(); got != 0 {
+		t.Errorf("aethertunnel_streams_total is %d after a datagram session, want 0", got)
+	}
+	if entry := metrics.tunnel("echo-udp"); entry.streamsTotal.Load() != 0 {
+		t.Errorf("the per-tunnel stream count for echo-udp is %d, want 0", entry.streamsTotal.Load())
+	}
+}
+
+func TestUDPTunnelKeepsSessionsPerVisitorAddress(t *testing.T) {
+	echo := startUDPEcho(t)
+	cfg := testConfig(t, false)
+	remotePort := freeUDPPort(t)
+
+	rs := startServer(t, cfg)
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"echo-udp": datagramHandler(echo)})
+	agent.register(protocol.ProxySpec{Name: "echo-udp", Type: protocol.ProxyTypeUDP, RemotePort: remotePort})
+
+	// Two visitors must each get their own session, and both must work.
+	target := fmt.Sprintf("127.0.0.1:%d", remotePort)
+	for i := 0; i < 2; i++ {
+		conn, err := net.Dial("udp", target)
+		if err != nil {
+			t.Fatalf("visitor %d: %v", i, err)
+		}
+		defer conn.Close()
+
+		payload := []byte(fmt.Sprintf("visitor-%d", i))
+		answered := false
+		for attempt := 0; attempt < 10 && !answered; attempt++ {
+			if _, err := conn.Write(payload); err != nil {
+				t.Fatalf("visitor %d: send: %v", i, err)
+			}
+			_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			buf := make([]byte, 2048)
+			n, err := conn.Read(buf)
+			if err == nil && string(buf[:n]) == string(payload) {
+				answered = true
+			}
+		}
+		if !answered {
+			t.Fatalf("visitor %d never got its datagram back", i)
+		}
+	}
+
+	if sessions := agentSessions(rs.server, "echo-udp"); sessions < 1 {
+		t.Fatalf("the tunnel tracked %d datagram sessions", sessions)
+	}
+}
+
+func agentSessions(srv *Server, name string) int {
+	tunnel, err := srv.tunnels.Get(name)
+	if err != nil {
+		return 0
+	}
+	pump := tunnel.datagramPump()
+	if pump == nil {
+		return 0
+	}
+	return pump.Sessions()
+}
+
+func TestHTTPVHostRoutesByHostHeader(t *testing.T) {
+	service := startHTTPService(t, "local-service")
+
+	cfg := testConfig(t, false)
+	cfg.Server.HTTPPort = freePort(t)
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+
+	rs := startServer(t, cfg)
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"web": framedStreamHandler(service)})
+	agent.register(protocol.ProxySpec{
+		Name: "web", Type: protocol.ProxyTypeHTTP, LocalAddr: service,
+		Domains: []string{"web.example.com", "*.wild.example.com"},
+	})
+
+	base := fmt.Sprintf("http://127.0.0.1:%d/", cfg.Server.HTTPPort)
+
+	cases := []struct {
+		host string
+		want int
+		body string
+	}{
+		{"web.example.com", http.StatusOK, "local-service|host=web.example.com"},
+		{"WEB.EXAMPLE.COM", http.StatusOK, "local-service|host=WEB.EXAMPLE.COM"},
+		{"a.wild.example.com", http.StatusOK, "local-service|host=a.wild.example.com"},
+		{"a.b.wild.example.com", http.StatusOK, "local-service|host=a.b.wild.example.com"},
+		{"unknown.example.com", http.StatusNotFound, ""},
+		{"example.com", http.StatusNotFound, ""},
+	}
+
+	for _, tc := range cases {
+		request, err := http.NewRequest(http.MethodGet, base, nil)
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		request.Host = tc.host
+
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.host, err)
+		}
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+
+		if response.StatusCode != tc.want {
+			t.Fatalf("%s: status %d, want %d (%s)", tc.host, response.StatusCode, tc.want, body)
+		}
+		if tc.body != "" && string(body) != tc.body {
+			t.Fatalf("%s: body %q, want %q", tc.host, body, tc.body)
+		}
+	}
+
+	// A connection to a published port is not a visitor, and the client is told so:
+	// the mark is what a client logs to separate the two ways a stream can arrive.
+	if request := agent.requestFor(t, "web"); request.Visitor {
+		t.Errorf("a stream on the published port arrived marked as a visitor: %+v", request)
+	}
+}
+
+// TestHTTPProxyTrafficIsRecorded covers the accounting of an http proxy: the
+// reverse proxy is the only path that does not go through one member's stream
+// handler, so its bytes have to be credited to the members explicitly. They are
+// what the dashboard and the bandwidth ledger read.
+func TestHTTPProxyTrafficIsRecorded(t *testing.T) {
+	service := startHTTPService(t, "accounted")
+
+	cfg := testConfig(t, false)
+	cfg.Server.HTTPPort = freePort(t)
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+
+	rs := startServer(t, cfg)
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"web": framedStreamHandler(service)})
+	agent.register(protocol.ProxySpec{
+		Name: "web", Type: protocol.ProxyTypeHTTP, LocalAddr: service,
+		Domains: []string{"accounted.example.com"},
+	})
+
+	group, err := rs.server.tunnels.Get("web")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+
+	base := fmt.Sprintf("http://127.0.0.1:%d/", cfg.Server.HTTPPort)
+	sent := "ask=1"
+	request, err := http.NewRequest(http.MethodPost, base, strings.NewReader(sent))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	request.Host = "accounted.example.com"
+
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status %d (%s)", response.StatusCode, body)
+	}
+
+	_, total, in, out := group.Totals()
+	if total != 1 {
+		t.Errorf("the group counted %d requests, want 1", total)
+	}
+	if in != int64(len(body)) {
+		t.Errorf("the group counted %d bytes in, want %d", in, len(body))
+	}
+	if out != int64(len(sent)) {
+		t.Errorf("the group counted %d bytes out, want %d", out, len(sent))
+	}
+
+	// The members carry the same numbers, which is where the ledger reads them.
+	summary := group.Summary()
+	if len(summary) != 1 {
+		t.Fatalf("the pool has %d members, want 1", len(summary))
+	}
+	if summary[0].BytesIn != in || summary[0].BytesOut != out || summary[0].Total != total {
+		t.Errorf("the member reports %d/%d over %d requests, the group %d/%d over %d",
+			summary[0].BytesIn, summary[0].BytesOut, summary[0].Total, in, out, total)
+	}
+}
+
+func TestHTTPVHostRefusesADomainAnotherTunnelOwns(t *testing.T) {
+	service := startHTTPService(t, "first")
+
+	cfg := testConfig(t, false)
+	cfg.Server.HTTPPort = freePort(t)
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	rs := startServer(t, cfg)
+
+	first := startAgent(t, rs.addr, false, map[string]dataHandler{"one": framedStreamHandler(service)})
+	first.register(protocol.ProxySpec{
+		Name: "one", Type: protocol.ProxyTypeHTTP, LocalAddr: service,
+		Domains: []string{"taken.example.com"},
+	})
+
+	second := startAgent(t, rs.addr, false, map[string]dataHandler{"two": framedStreamHandler(service)})
+	if err := second.client.register(protocol.ProxySpec{
+		Name: "two", Type: protocol.ProxyTypeHTTP, LocalAddr: service,
+		Domains: []string{"taken.example.com"},
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	if refusal := second.expectRefused("two"); !strings.Contains(refusal, "already published") {
+		t.Fatalf("unexpected refusal: %s", refusal)
+	}
+}
+
+func TestHTTPProxyNeedsTheSharedListener(t *testing.T) {
+	cfg := testConfig(t, false)
+	rs := startServer(t, cfg)
+
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{})
+	if err := agent.client.register(protocol.ProxySpec{
+		Name: "web", Type: protocol.ProxyTypeHTTP, LocalAddr: "127.0.0.1:1",
+		Domains: []string{"web.example.com"},
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	if refusal := agent.expectRefused("web"); !strings.Contains(refusal, "http_port") {
+		t.Fatalf("unexpected refusal: %s", refusal)
+	}
+}
+
+// --- visitor connections ------------------------------------------------------
+
+// visitorHandshake opens a visitor connection and returns it once the server has
+// accepted it.
+func visitorHandshake(t *testing.T, serverAddr, proxy, secret, kind string) (net.Conn, *protocol.Framer) {
+	t.Helper()
+
+	conn, err := net.DialTimeout("tcp", serverAddr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	framer := protocol.NewFramer(conn, nil, 0)
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	if err := framer.WriteJSON(protocol.TypeVisitorConnect, protocol.VisitorConnect{
+		Proxy: proxy, Secret: secret, Type: kind, AuthToken: testToken,
+	}); err != nil {
+		conn.Close()
+		t.Fatalf("send visitor-connect: %v", err)
+	}
+
+	var ack protocol.DataOpenAck
+	if err := framer.ReadJSON(protocol.TypeDataOpenAck, &ack); err != nil {
+		conn.Close()
+		t.Fatalf("read the ack: %v", err)
+	}
+	if !ack.OK {
+		conn.Close()
+		t.Fatalf("the server refused the visitor: %s", ack.Error)
+	}
+	_ = conn.SetDeadline(time.Time{})
+	return conn, framer
+}
+
+// visitorAck performs the visitor handshake and returns what the server answered, refusal
+// included. visitorHandshake fails the test instead, which is what a test that expects to be
+// served wants.
+func visitorAck(t *testing.T, serverAddr, proxy, secret, kind string) protocol.DataOpenAck {
+	t.Helper()
+
+	conn, err := net.DialTimeout("tcp", serverAddr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	framer := protocol.NewFramer(conn, nil, 0)
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	if err := framer.WriteJSON(protocol.TypeVisitorConnect, protocol.VisitorConnect{
+		Proxy: proxy, Secret: secret, Type: kind, AuthToken: testToken,
+	}); err != nil {
+		t.Fatalf("send visitor-connect: %v", err)
+	}
+	var ack protocol.DataOpenAck
+	if err := framer.ReadJSON(protocol.TypeDataOpenAck, &ack); err != nil {
+		t.Fatalf("read the ack: %v", err)
+	}
+	return ack
+}
+
+// A visitor's transport has to match the shape of the proxy it names. The server relays
+// datagram frames for an sudp visitor while the client — which decides by its own proxy type —
+// pipes raw bytes, so the framing bytes are written into the local service and its answer
+// comes back unparsable: measured with real binaries, a sudp visitor against an stcp proxy put
+// 5 bytes on the wire, the owner's local service received 11 bytes of frame header and
+// payload, and the visitor got nothing back at all. Refusing the pair says why instead.
+//
+// xtcp is a byte-stream visitor in spite of the name — the client handles it with the stream
+// path and a punch carries a byte stream — so it reaches stcp and xtcp proxies and is refused
+// for a datagram proxy, with or without a punch port (measured: silence either way).
+func TestAVisitorTransportMustMatchTheProxyShape(t *testing.T) {
+	echo := startEcho(t)
+	cfg := testConfig(t, false)
+	rs := startServer(t, cfg)
+
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{
+		"stream":    streamHandler(echo),
+		"datagrams": streamHandler(echo),
+	})
+	agent.register(protocol.ProxySpec{
+		Name: "stream", Type: protocol.ProxyTypeSTCP, LocalAddr: echo, SecretKey: "s3cret",
+	})
+	agent.register(protocol.ProxySpec{
+		Name: "datagrams", Type: protocol.ProxyTypeSUDP, LocalAddr: echo, SecretKey: "s3cret",
+	})
+
+	cases := []struct {
+		name       string
+		proxy      string
+		kind       string
+		wantOK     bool
+		wantDetail string
+	}{
+		{"a datagram visitor on a stream proxy", "stream", protocol.ProxyTypeSUDP, false,
+			"carries a byte stream, and a \"sudp\" visitor carries datagrams"},
+		{"a stream visitor on a datagram proxy", "datagrams", protocol.ProxyTypeSTCP, false,
+			"carries datagrams, and a \"stcp\" visitor carries a byte stream"},
+		{"xtcp on a stream proxy", "stream", protocol.ProxyTypeXTCP, true, ""},
+		{"a matching stream visitor", "stream", protocol.ProxyTypeSTCP, true, ""},
+		{"an xtcp visitor on a datagram proxy", "datagrams", protocol.ProxyTypeXTCP, false,
+			"carries datagrams, and a \"xtcp\" visitor carries a byte stream"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ack := visitorAck(t, rs.addr, tc.proxy, "s3cret", tc.kind)
+			if ack.OK != tc.wantOK {
+				t.Fatalf("ack.OK is %v (%q), want %v", ack.OK, ack.Error, tc.wantOK)
+			}
+			if tc.wantDetail != "" && !strings.Contains(ack.Error, tc.wantDetail) {
+				t.Fatalf("refusal %q does not contain %q", ack.Error, tc.wantDetail)
+			}
+		})
+	}
+}
+
+func TestSTCPRelayReachesThePrivateService(t *testing.T) {
+	echo := startEcho(t)
+	cfg := testConfig(t, false)
+	rs := startServer(t, cfg)
+
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"private": streamHandler(echo)})
+	agent.register(protocol.ProxySpec{
+		Name: "private", Type: protocol.ProxyTypeSTCP, LocalAddr: echo, SecretKey: "s3cret",
+	})
+
+	conn, framer := visitorHandshake(t, rs.addr, "private", "s3cret", protocol.ProxyTypeSTCP)
+	defer conn.Close()
+	_ = framer
+
+	payload := []byte("hello through a private tunnel")
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("echo returned %q, want %q", got, payload)
+	}
+
+	// The client is told how the stream reached it. The two paths are otherwise
+	// indistinguishable there: a visitor asking for the proxy by name and a connection
+	// to the published port carry the same proxy name and the same kind of stream id.
+	if request := agent.requestFor(t, "private"); !request.Visitor {
+		t.Errorf("a stream from a visitor arrived without the visitor mark: %+v", request)
+	}
+}
+
+func TestSTCPRefusesTheWrongSecret(t *testing.T) {
+	echo := startEcho(t)
+	cfg := testConfig(t, false)
+	rs := startServer(t, cfg)
+
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"private": streamHandler(echo)})
+	agent.register(protocol.ProxySpec{
+		Name: "private", Type: protocol.ProxyTypeSTCP, LocalAddr: echo, SecretKey: "s3cret",
+	})
+
+	conn, err := net.DialTimeout("tcp", rs.addr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	framer := protocol.NewFramer(conn, nil, 0)
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := framer.WriteJSON(protocol.TypeVisitorConnect, protocol.VisitorConnect{
+		Proxy: "private", Secret: "wrong", Type: protocol.ProxyTypeSTCP, AuthToken: testToken,
+	}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	var ack protocol.DataOpenAck
+	if err := framer.ReadJSON(protocol.TypeDataOpenAck, &ack); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if ack.OK {
+		t.Fatal("the server accepted the wrong secret")
+	}
+	if !strings.Contains(ack.Error, "secret") {
+		t.Fatalf("unexpected refusal: %s", ack.Error)
+	}
+}
+
+func TestSTCPRefusesTheWrongServerToken(t *testing.T) {
+	echo := startEcho(t)
+	cfg := testConfig(t, false)
+	rs := startServer(t, cfg)
+
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"private": streamHandler(echo)})
+	agent.register(protocol.ProxySpec{
+		Name: "private", Type: protocol.ProxyTypeSTCP, LocalAddr: echo, SecretKey: "s3cret",
+	})
+
+	conn, err := net.DialTimeout("tcp", rs.addr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	framer := protocol.NewFramer(conn, nil, 0)
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := framer.WriteJSON(protocol.TypeVisitorConnect, protocol.VisitorConnect{
+		Proxy: "private", Secret: "s3cret", Type: protocol.ProxyTypeSTCP, AuthToken: "not-the-token",
+	}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	var ack protocol.DataOpenAck
+	if err := framer.ReadJSON(protocol.TypeDataOpenAck, &ack); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if ack.OK {
+		t.Fatal("the server accepted a visitor with the wrong auth token")
+	}
+}
+
+func TestSUDPVisitorRelaysDatagrams(t *testing.T) {
+	echo := startUDPEcho(t)
+	cfg := testConfig(t, false)
+	rs := startServer(t, cfg)
+
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"private-udp": datagramHandler(echo)})
+	agent.register(protocol.ProxySpec{
+		Name: "private-udp", Type: protocol.ProxyTypeSUDP, LocalAddr: echo, SecretKey: "s3cret",
+	})
+
+	conn, framer := visitorHandshake(t, rs.addr, "private-udp", "s3cret", protocol.ProxyTypeSUDP)
+	defer conn.Close()
+
+	payload := []byte("a datagram through a private tunnel")
+	if err := framer.WriteFrame(&protocol.Message{Type: protocol.TypeUDPPacket, Payload: payload}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	msg, err := framer.ReadFrame()
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if msg.Type != protocol.TypeUDPPacket {
+		t.Fatalf("got %s, want a datagram", msg.Type)
+	}
+	if string(msg.Payload) != string(payload) {
+		t.Fatalf("echo returned %q, want %q", msg.Payload, payload)
+	}
+
+	// A sudp proxy moves datagrams the way a udp proxy's pump does, so the counter
+	// that says the datagram path is carrying them has to move for this path too:
+	// without it, a sudp proxy reports zero datagrams while bytes flow, and an
+	// operator watching the series reads that as a tunnel that is not working.
+	oneEachWay := int64(2)
+	// The counter moves in the relay goroutine, which may still be finishing
+	// the return leg when this line runs on a loaded machine, so the check
+	// polls briefly instead of reading once.
+	var got int64
+	for deadline := time.Now().Add(3 * time.Second); ; {
+		got = rs.server.metrics.udpDatagrams.Load()
+		if got >= oneEachWay || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got < oneEachWay {
+		t.Errorf("aethertunnel_udp_datagrams_total is %d after one datagram round trip, want at least %d", got, oneEachWay)
+	}
+}
+
+func TestPrivateProxyRefusesAPublicPort(t *testing.T) {
+	cfg := testConfig(t, false)
+	rs := startServer(t, cfg)
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{})
+
+	if err := agent.client.register(protocol.ProxySpec{
+		Name: "bad", Type: protocol.ProxyTypeSTCP, LocalAddr: "127.0.0.1:1",
+		SecretKey: "s3cret", RemotePort: freePort(t),
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	if refusal := agent.expectRefused("bad"); !strings.Contains(refusal, "must not open a public port") {
+		t.Fatalf("unexpected refusal: %s", refusal)
+	}
+}
+
+func TestPrivateProxyNeedsASecret(t *testing.T) {
+	cfg := testConfig(t, false)
+	rs := startServer(t, cfg)
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{})
+
+	if err := agent.client.register(protocol.ProxySpec{
+		Name: "bad", Type: protocol.ProxyTypeSTCP, LocalAddr: "127.0.0.1:1",
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	if refusal := agent.expectRefused("bad"); !strings.Contains(refusal, "secret_key") {
+		t.Fatalf("unexpected refusal: %s", refusal)
+	}
+}
+
+func TestPrivateProxyRefusesAnUnknownAuthMethod(t *testing.T) {
+	cfg := testConfig(t, false)
+	rs := startServer(t, cfg)
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{})
+
+	if err := agent.client.register(protocol.ProxySpec{
+		Name: "bad", Type: protocol.ProxyTypeSTCP, LocalAddr: "127.0.0.1:1",
+		SecretKey: "s3cret", AuthMethod: "whatever",
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	// The refusal has to be the method's, not the fallback's: an unknown value
+	// used to be answered by comparing the secret, which is the weakest check.
+	if refusal := agent.expectRefused("bad"); !strings.Contains(refusal, "auth_method") {
+		t.Fatalf("unexpected refusal: %s", refusal)
+	}
+}
+
+func TestVisitorRefusesAnUnknownProxy(t *testing.T) {
+	cfg := testConfig(t, false)
+	rs := startServer(t, cfg)
+
+	conn, err := net.DialTimeout("tcp", rs.addr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	framer := protocol.NewFramer(conn, nil, 0)
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := framer.WriteJSON(protocol.TypeVisitorConnect, protocol.VisitorConnect{
+		Proxy: "ghost", Secret: "s3cret", Type: protocol.ProxyTypeSTCP, AuthToken: testToken,
+	}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	var ack protocol.DataOpenAck
+	if err := framer.ReadJSON(protocol.TypeDataOpenAck, &ack); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if ack.OK {
+		t.Fatal("the server accepted a visitor for a proxy that does not exist")
+	}
+}
+
+// startCounterService runs a local service that reads until the peer half-closes and only
+// then answers with the number of bytes it read. It is the shape of HTTP/1.0, of several
+// database protocols and of anything that pipes into a filter: the reply cannot be produced
+// until the request has ended, and the request ends with a half-close.
+func startCounterService(t *testing.T) string {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				data, err := io.ReadAll(conn)
+				if err != nil {
+					return
+				}
+				_, _ = fmt.Fprintf(conn, "read %d bytes", len(data))
+			}()
+		}
+	}()
+	return listener.Addr().String()
+}
+
+// A half-close has to survive the whole relay: the visitor half-closes, and the reply the
+// local service produces *because* it saw the end of the request has to come back. Every hop
+// ends a direction with CloseWrite when the connection supports it and closes the whole
+// stream otherwise, and the stream is wrapped in cryptoStreamConn, which used to have no
+// CloseWrite: measured with real binaries, a 4 KiB request that half-closed came back empty
+// through both a public tcp port and an stcp visitor.
+func TestAHalfClosedStreamStillCarriesTheReply(t *testing.T) {
+	counter := startCounterService(t)
+	cfg := testConfig(t, false)
+	remotePort := freePort(t)
+	rs := startServer(t, cfg)
+
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"counter": streamHandler(counter)})
+	agent.register(protocol.ProxySpec{
+		Name: "counter", Type: protocol.ProxyTypeTCP, LocalAddr: counter, RemotePort: remotePort,
+	})
+	waitForListener(t, rs.server, "counter")
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(remotePort)), 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	tcp := conn.(*net.TCPConn)
+	_ = tcp.SetDeadline(time.Now().Add(10 * time.Second))
+
+	payload := bytes.Repeat([]byte("x"), 4096)
+	if _, err := tcp.Write(payload); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := tcp.CloseWrite(); err != nil {
+		t.Fatalf("half-close: %v", err)
+	}
+
+	reply, err := io.ReadAll(tcp)
+	if err != nil {
+		t.Fatalf("read the reply: %v", err)
+	}
+	if want := fmt.Sprintf("read %d bytes", len(payload)); string(reply) != want {
+		t.Fatalf("the reply after the half-close is %q, want %q", reply, want)
+	}
+}
+
+func TestVisitorRefusesAPublicProxy(t *testing.T) {
+	echo := startEcho(t)
+	cfg := testConfig(t, false)
+	rs := startServer(t, cfg)
+
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"public": streamHandler(echo)})
+	agent.register(protocol.ProxySpec{Name: "public", Type: protocol.ProxyTypeTCP, RemotePort: freePort(t)})
+
+	conn, err := net.DialTimeout("tcp", rs.addr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	framer := protocol.NewFramer(conn, nil, 0)
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := framer.WriteJSON(protocol.TypeVisitorConnect, protocol.VisitorConnect{
+		Proxy: "public", Secret: "s3cret", Type: protocol.ProxyTypeSTCP, AuthToken: testToken,
+	}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	var ack protocol.DataOpenAck
+	if err := framer.ReadJSON(protocol.TypeDataOpenAck, &ack); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if ack.OK {
+		t.Fatal("a visitor was allowed into a proxy that is not private")
+	}
+	if !strings.Contains(ack.Error, "not a private proxy") {
+		t.Fatalf("unexpected refusal: %s", ack.Error)
+	}
+}
+
+// --- xtcp ---------------------------------------------------------------------
+
+func TestXTCPFallsBackToTheRelayWhenNoPunchIsPossible(t *testing.T) {
+	echo := startEcho(t)
+	cfg := testConfig(t, false)
+	cfg.Server.P2PPort = freeUDPPort(t)
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+
+	rs := startServer(t, cfg)
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"p2p": streamHandler(echo)})
+	agent.register(protocol.ProxySpec{
+		Name: "p2p", Type: protocol.ProxyTypeXTCP, LocalAddr: echo, SecretKey: "s3cret",
+	})
+
+	conn, err := net.DialTimeout("tcp", rs.addr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	framer := protocol.NewFramer(conn, nil, 0)
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	if err := framer.WriteJSON(protocol.TypeVisitorConnect, protocol.VisitorConnect{
+		Proxy: "p2p", Secret: "s3cret", Type: protocol.ProxyTypeXTCP, AuthToken: testToken,
+	}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	var offer protocol.P2PPeer
+	if err := framer.ReadJSON(protocol.TypeP2PPeer, &offer); err != nil {
+		t.Fatalf("read the punch offer: %v", err)
+	}
+	if len(offer.Token) != protocol.PunchTokenLen {
+		t.Fatalf("the punch token is %d characters, want %d", len(offer.Token), protocol.PunchTokenLen)
+	}
+
+	// The test agent never punches, so the visitor asks for the relayed path.
+	if err := framer.WriteJSON(protocol.TypeP2PFallback, protocol.P2PFallback{Proxy: "p2p", Token: offer.Token}); err != nil {
+		t.Fatalf("ask for the relay: %v", err)
+	}
+	var ack protocol.DataOpenAck
+	if err := framer.ReadJSON(protocol.TypeDataOpenAck, &ack); err != nil {
+		t.Fatalf("read the ack: %v", err)
+	}
+	if !ack.OK {
+		t.Fatalf("the relayed path was refused: %s", ack.Error)
+	}
+
+	payload := []byte("relayed xtcp payload")
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("echo returned %q, want %q", got, payload)
+	}
+}
+
+func TestRendezvousExchangesBothAddresses(t *testing.T) {
+	cfg := testConfig(t, false)
+	cfg.Server.P2PPort = freeUDPPort(t)
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	rs := startServer(t, cfg)
+
+	echo := startEcho(t)
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"p2p": streamHandler(echo)})
+	agent.register(protocol.ProxySpec{
+		Name: "p2p", Type: protocol.ProxyTypeXTCP, LocalAddr: echo, SecretKey: "s3cret",
+	})
+
+	// Ask for a punch token over the control connection.
+	conn, err := net.DialTimeout("tcp", rs.addr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	framer := protocol.NewFramer(conn, nil, 0)
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	if err := framer.WriteJSON(protocol.TypeVisitorConnect, protocol.VisitorConnect{
+		Proxy: "p2p", Secret: "s3cret", Type: protocol.ProxyTypeXTCP, AuthToken: testToken,
+	}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	var offer protocol.P2PPeer
+	if err := framer.ReadJSON(protocol.TypeP2PPeer, &offer); err != nil {
+		t.Fatalf("read the punch offer: %v", err)
+	}
+
+	rendezvous := fmt.Sprintf("127.0.0.1:%d", cfg.Server.P2PPort)
+
+	visitor, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("visitor socket: %v", err)
+	}
+	defer visitor.Close()
+	owner, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("owner socket: %v", err)
+	}
+	defer owner.Close()
+
+	serverAddr, err := net.ResolveUDPAddr("udp", rendezvous)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	// Only the visitor reports; the rendezvous must stay silent until the owner
+	// does too, because it has no address to hand out yet.
+	if _, err := visitor.WriteTo(
+		protocol.EncodePunchRequest(protocol.PunchRoleVisitor, offer.Token), serverAddr); err != nil {
+		t.Fatalf("visitor request: %v", err)
+	}
+	_ = visitor.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	buf := make([]byte, 512)
+	if n, _, err := visitor.ReadFrom(buf); err == nil {
+		t.Fatalf("the rendezvous answered %d bytes before the owner reported", n)
+	}
+
+	if _, err := owner.WriteTo(
+		protocol.EncodePunchRequest(protocol.PunchRoleOwner, offer.Token), serverAddr); err != nil {
+		t.Fatalf("owner request: %v", err)
+	}
+
+	// Both retry, because either request may be the one that arrives second.
+	deadline := time.Now().Add(5 * time.Second)
+	visitorPeer, ownerPeer := "", ""
+	for time.Now().Before(deadline) && (visitorPeer == "" || ownerPeer == "") {
+		_, _ = visitor.WriteTo(protocol.EncodePunchRequest(protocol.PunchRoleVisitor, offer.Token), serverAddr)
+		_, _ = owner.WriteTo(protocol.EncodePunchRequest(protocol.PunchRoleOwner, offer.Token), serverAddr)
+
+		_ = visitor.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		if n, _, err := visitor.ReadFrom(buf); err == nil {
+			if _, peer, ok := protocol.DecodePunchResponse(buf[:n]); ok {
+				visitorPeer = peer
+			}
+		}
+		_ = owner.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		if n, _, err := owner.ReadFrom(buf); err == nil {
+			if _, peer, ok := protocol.DecodePunchResponse(buf[:n]); ok {
+				ownerPeer = peer
+			}
+		}
+	}
+
+	if visitorPeer != owner.LocalAddr().String() {
+		t.Fatalf("the visitor learned %q, want the owner's address %q", visitorPeer, owner.LocalAddr())
+	}
+	if ownerPeer != visitor.LocalAddr().String() {
+		t.Fatalf("the owner learned %q, want the visitor's address %q", ownerPeer, visitor.LocalAddr())
+	}
+}
+
+func TestRendezvousIgnoresUnknownTokens(t *testing.T) {
+	cfg := testConfig(t, false)
+	cfg.Server.P2PPort = freeUDPPort(t)
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	rs := startServer(t, cfg)
+	_ = rs
+
+	socket, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("socket: %v", err)
+	}
+	defer socket.Close()
+
+	serverAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("127.0.0.1:%d", cfg.Server.P2PPort))
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	// A made-up token, and a request with the wrong length, must both be ignored.
+	_, _ = socket.WriteTo(protocol.EncodePunchRequest(protocol.PunchRoleVisitor, strings.Repeat("a", protocol.PunchTokenLen)), serverAddr)
+	_, _ = socket.WriteTo([]byte("ATP1xshort"), serverAddr)
+	_, _ = socket.WriteTo([]byte("garbage"), serverAddr)
+
+	_ = socket.SetReadDeadline(time.Now().Add(400 * time.Millisecond))
+	buf := make([]byte, 512)
+	if n, _, err := socket.ReadFrom(buf); err == nil {
+		t.Fatalf("the rendezvous answered an unknown token with %d bytes", n)
+	}
+}
+
+func TestXTCPWithoutARendezvousUsesTheRelay(t *testing.T) {
+	echo := startEcho(t)
+	cfg := testConfig(t, false) // no p2p_port
+	rs := startServer(t, cfg)
+
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"p2p": streamHandler(echo)})
+	agent.register(protocol.ProxySpec{
+		Name: "p2p", Type: protocol.ProxyTypeXTCP, LocalAddr: echo, SecretKey: "s3cret",
+	})
+
+	conn, framer := visitorHandshake(t, rs.addr, "p2p", "s3cret", protocol.ProxyTypeXTCP)
+	defer conn.Close()
+	_ = framer
+
+	payload := []byte("relayed without a rendezvous")
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("echo returned %q, want %q", got, payload)
+	}
+}
+
+func freeUDPPort(t *testing.T) int {
+	t.Helper()
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve a udp port: %v", err)
+	}
+	defer conn.Close()
+	return conn.LocalAddr().(*net.UDPAddr).Port
+}
+
+// silence unused-import warnings in builds where a helper is not referenced.
+var _ = log.New
+var _ = context.Background
+var _ = crypto.AlgorithmNone

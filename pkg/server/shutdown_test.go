@@ -1,0 +1,349 @@
+package server
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/aethertunnel/aethertunnel/pkg/config"
+	"github.com/aethertunnel/aethertunnel/pkg/protocol"
+)
+
+// --- graceful shutdown ---------------------------------------------------------
+//
+// [server] graceful_shutdown_seconds used to be read by nothing: every signal cut
+// the transfers in flight on the spot. These tests hold a stream open across a
+// shutdown and check what the grace period guarantees: the stream finishes, an idle
+// server does not wait for it, the wait is bounded, and a visitor that arrives while
+// the server is winding down is refused instead of being left to time out.
+
+// holdStream opens one stream through the published port and keeps it open. The
+// returned connection carries the visitor side.
+func holdStream(t *testing.T, port int, echoAddr string) net.Conn {
+	t.Helper()
+
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	if _, err := conn.Write([]byte("held")); err != nil {
+		conn.Close()
+		t.Fatalf("write: %v", err)
+	}
+	answer := make([]byte, len("held"))
+	if _, err := io.ReadFull(conn, answer); err != nil {
+		conn.Close()
+		t.Fatalf("read: %v", err)
+	}
+	if string(answer) != "held" {
+		conn.Close()
+		t.Fatalf("the stream answered %q, want held", answer)
+	}
+	return conn
+}
+
+// startGracefulServer publishes one tcp proxy with the given grace period.
+func startGracefulServer(t *testing.T, graceSeconds int) (*runningServer, int, net.Conn) {
+	t.Helper()
+
+	echo := startEcho(t)
+	cfg := testConfig(t, false)
+	cfg.Server.GracefulShutdownSecs = graceSeconds
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	rs := startServer(t, cfg)
+
+	publicPort := freePort(t)
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"echo": streamHandler(echo)})
+	agent.register(protocol.ProxySpec{
+		Name: "echo", Type: protocol.ProxyTypeTCP, LocalAddr: echo, RemotePort: publicPort,
+	})
+	waitForListener(t, rs.server, "echo")
+
+	return rs, publicPort, nil
+}
+
+func TestShutdownLetsARunningStreamFinish(t *testing.T) {
+	rs, port, _ := startGracefulServer(t, 3)
+
+	visitor := holdStream(t, port, "")
+	defer visitor.Close()
+
+	done := make(chan time.Duration, 1)
+	go func() {
+		started := time.Now()
+		rs.server.Shutdown("graceful test")
+		done <- time.Since(started)
+	}()
+
+	// While the server winds down, the stream that is already running keeps working.
+	time.Sleep(300 * time.Millisecond)
+	if _, err := visitor.Write([]byte("still-open")); err != nil {
+		t.Fatalf("the visitor could not write during the grace period: %v", err)
+	}
+	answer := make([]byte, len("still-open"))
+	if _, err := io.ReadFull(visitor, answer); err != nil {
+		t.Fatalf("the stream stopped working during the grace period: %v", err)
+	}
+	if string(answer) != "still-open" {
+		t.Fatalf("the stream answered %q during the grace period", answer)
+	}
+
+	// Ending the stream releases the drain, so the shutdown does not sit out the
+	// rest of the grace period.
+	visitor.Close()
+	select {
+	case took := <-done:
+		if took > 2*time.Second {
+			t.Errorf("the shutdown took %s after the last stream ended, want it to stop waiting", took)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the shutdown did not return after the last stream ended")
+	}
+}
+
+func TestShutdownDoesNotWaitWithoutStreams(t *testing.T) {
+	rs, _, _ := startGracefulServer(t, 5)
+	_ = agentForIdleSession(t, rs)
+
+	started := time.Now()
+	rs.server.Shutdown("nothing in flight")
+	if took := time.Since(started); took > 1500*time.Millisecond {
+		t.Errorf("an idle server waited %s of its 5s grace period, want an immediate stop", took)
+	}
+}
+
+// agentForIdleSession registers a session with no traffic, which is what a fleet of
+// connected but idle clients looks like.
+func agentForIdleSession(t *testing.T, rs *runningServer) *testAgent {
+	t.Helper()
+
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{})
+	agent.register(protocol.ProxySpec{
+		Name: "idle", Type: protocol.ProxyTypeTCP, LocalAddr: "127.0.0.1:9", RemotePort: freePort(t),
+	})
+	waitForListener(t, rs.server, "idle")
+	return agent
+}
+
+func TestShutdownGivesUpAfterTheGracePeriod(t *testing.T) {
+	rs, port, _ := startGracefulServer(t, 1)
+
+	visitor := holdStream(t, port, "")
+	defer visitor.Close()
+	// Keep the stream busy for the whole test. An idle visitor stream ends on the
+	// agent's own data-connection timeout a couple of seconds in, so a read that
+	// ended in an error proved nothing — the test passed against a Shutdown that
+	// left the stream running. A visitor that keeps writing until the connection
+	// actually closes leaves Shutdown as the only thing that can end it.
+	stopWriting := make(chan struct{})
+	defer close(stopWriting)
+	go func() {
+		ticker := time.NewTicker(300 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopWriting:
+				return
+			case <-ticker.C:
+				if _, err := visitor.Write([]byte(".")); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	started := time.Now()
+	rs.server.Shutdown("a stream that never ends")
+	took := time.Since(started)
+
+	if took < 900*time.Millisecond {
+		t.Errorf("the shutdown returned after %s, before the 1s grace period was over", took)
+	}
+	if took > 4*time.Second {
+		t.Errorf("the shutdown waited %s for a 1s grace period", took)
+	}
+
+	// Giving up means the stream is disconnected. The read drains whatever the
+	// echo answered and then has to fail with a closed connection; a read that
+	// blocks until its own deadline is the connection still being open.
+	_ = visitor.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for {
+		if _, err := visitor.Read(make([]byte, 64)); err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Fatal("the visitor connection was still open after the grace period ran out")
+			}
+			return
+		}
+	}
+}
+
+func TestANewStreamIsRefusedWhileDraining(t *testing.T) {
+	rs, port, _ := startGracefulServer(t, 3)
+
+	visitor := holdStream(t, port, "")
+	defer visitor.Close()
+
+	done := make(chan struct{})
+	go func() {
+		rs.server.Shutdown("refuse new streams")
+		close(done)
+	}()
+	time.Sleep(300 * time.Millisecond)
+
+	// A visitor that arrives during the grace period is refused: its connection is
+	// closed instead of waiting for a data connection that would only be cut off.
+	late, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial during the drain: %v", err)
+	}
+	defer late.Close()
+	_ = late.SetDeadline(time.Now().Add(3 * time.Second))
+	if _, err := late.Write([]byte("too late")); err != nil {
+		t.Fatalf("write during the drain: %v", err)
+	}
+	if n, err := late.Read(make([]byte, 32)); err == nil {
+		t.Fatalf("a stream opened during the drain answered %d byte(s)", n)
+	}
+
+	if refused := rs.server.metrics.drainRefused.Load(); refused != 1 {
+		t.Errorf("the metric reports %d refused streams, want 1", refused)
+	}
+
+	visitor.Close()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the shutdown did not finish after the last stream ended")
+	}
+}
+
+// A session's teardown is what records client_disconnected and proxy_removed, and
+// that teardown runs in the connection handler after Shutdown has returned. The
+// audit log therefore has to stay open until the handlers are done: closing it
+// inside Shutdown dropped both records, and a dropped record leaves no trace in the
+// file it should be in — the log of a stopped server simply showed the sessions
+// still connected.
+func TestAGracefulShutdownRecordsTheSessionEnd(t *testing.T) {
+	echo := startEcho(t)
+	cfg := testConfig(t, false)
+	cfg.Server.GracefulShutdownSecs = 1
+	cfg.Audit.Enabled = true
+	cfg.Audit.Path = filepath.Join(t.TempDir(), "audit.jsonl")
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	rs := startServer(t, cfg)
+
+	publicPort := freePort(t)
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"echo": streamHandler(echo)})
+	agent.register(protocol.ProxySpec{
+		Name: "echo", Type: protocol.ProxyTypeTCP, LocalAddr: echo, RemotePort: publicPort,
+	})
+	waitForListener(t, rs.server, "echo")
+
+	rs.server.Shutdown("audit test")
+
+	// The teardown that writes these records runs in the connection handler, which
+	// Shutdown does not wait for, so the file is read once the records are there
+	// rather than once Shutdown returns.
+	deadline := time.Now().Add(5 * time.Second)
+	events := map[string]int{}
+	for {
+		events = countAuditEvents(t, cfg.Audit.Path)
+		if events[EventClientGone] > 0 && events[EventProxyRemoved] > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	for _, want := range []string{EventControlAccepted, EventProxyRegistered, EventClientGone, EventProxyRemoved} {
+		if events[want] == 0 {
+			t.Errorf("the audit log of a graceful shutdown has no %s record; it holds %v", want, events)
+		}
+	}
+	// The session's end is recorded once: the handler tears the session down and the
+	// removal is what writes the record, so a second call site must not add another.
+	if events[EventProxyRemoved] != 1 {
+		t.Errorf("the member was recorded as removed %d times, want once", events[EventProxyRemoved])
+	}
+	if events[EventClientGone] != 1 {
+		t.Errorf("the session end was recorded %d times, want once", events[EventClientGone])
+	}
+}
+
+// countAuditEvents counts the events in an audit log by name. A log that is not
+// there yet counts as no events, because the writer may not have created it.
+func countAuditEvents(t *testing.T, path string) map[string]int {
+	t.Helper()
+
+	events := map[string]int{}
+	records, err := readAuditEvents(t, path)
+	if err != nil {
+		return events
+	}
+	for _, event := range records {
+		events[event.Event]++
+	}
+	return events
+}
+
+// A client that leaves on its own is the other way a member is removed, and it takes
+// the other path through the teardown: the control handler unregisters the proxies
+// before the session closes. The record has to be written once there too, with the
+// reason that path carries.
+func TestTheAuditTrailRecordsAMemberThatLeavesOnItsOwn(t *testing.T) {
+	echo := startEcho(t)
+	cfg := testConfig(t, false)
+	cfg.Audit.Enabled = true
+	cfg.Audit.Path = filepath.Join(t.TempDir(), "audit.jsonl")
+	if err := cfg.Validate(config.RoleServer); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	rs := startServer(t, cfg)
+
+	agent := startAgent(t, rs.addr, false, map[string]dataHandler{"echo": streamHandler(echo)})
+	agent.register(protocol.ProxySpec{
+		Name: "echo", Type: protocol.ProxyTypeTCP, LocalAddr: echo, RemotePort: freePort(t),
+	})
+	waitForListener(t, rs.server, "echo")
+
+	agent.client.close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	removals := 0
+	for {
+		removals = countAuditEvents(t, cfg.Audit.Path)[EventProxyRemoved]
+		if removals > 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if removals != 1 {
+		t.Fatalf("the member that left was recorded as removed %d times, want once", removals)
+	}
+	records, err := readAuditEvents(t, cfg.Audit.Path)
+	if err != nil {
+		t.Fatalf("read the audit log: %v", err)
+	}
+	for _, event := range records {
+		if event.Event != EventProxyRemoved {
+			continue
+		}
+		if event.Detail != "client disconnected" {
+			t.Errorf("the removal is recorded as %q, want the reason that path carries", event.Detail)
+		}
+		if event.Proxy != "echo" {
+			t.Errorf("the removal names proxy %q, want echo", event.Proxy)
+		}
+	}
+}

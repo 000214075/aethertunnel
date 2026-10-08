@@ -1,0 +1,34 @@
+name: 功能建议 · Feature request
+description: 想要一项新的或缺失的能力 · A capability you miss
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提建议前请先看两份对照：[`docs/VS-FRP.md`](../blob/main/docs/VS-FRP.md) 记录与 frp
+        逐项对照的现状，[`docs/NOT-IN-THIS-VERSION.md`](../blob/main/docs/NOT-IN-THIS-VERSION.md)
+        记录有意不做的事。描述**场景**（你在什么环境里想完成什么）比描述实现方式更有用。
+
+        Before proposing, check [`docs/VS-FRP.md`](../blob/main/docs/VS-FRP.md) for what is
+        reproduced and [`docs/NOT-IN-THIS-VERSION.md`](../blob/main/docs/NOT-IN-THIS-VERSION.md)
+        for what is deliberately out of scope. A **scenario** — what you are trying to do,
+        where — is more useful than a proposed implementation.
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 场景 · Scenario
+      description: 什么环境、想完成什么、现在被什么挡住
+    validations:
+      required: true
+  - type: textarea
+    id: frp-behaviour
+    attributes:
+      label: frp 的对应行为 · What frp does here
+      description: 如果 frp 已有此能力，它的配置键与行为是什么（本仓库会对照复现或说明差异）
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 已确认 · Confirmed
+      options:
+        - label: 我查过 `docs/VS-FRP.md`，这不在已复现清单里
+        - label: 我查过 `docs/NOT-IN-THIS-VERSION.md`，这不在有意不做的清单里

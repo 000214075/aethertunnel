@@ -1,0 +1,274 @@
+# AetherTunnel server configuration — 1.0.0
+#
+# Every key in this file is understood by this version. Unknown keys are reported
+# on startup instead of being silently ignored, so a typo or a setting carried over
+# from an older release cannot pretend to work.
+#
+# Start with:  aethertunnel-server --config server.toml
+# Validate:    aethertunnel-server --config server.toml --check
+# Look up a published proxy:  aethertunnel-server --config server.toml --dht-lookup ssh
+# Verify a bandwidth ledger:  aethertunnel-server --verify-ledger ledger.jsonl --ledger-key <hex>
+# Prove one entry's inclusion:  aethertunnel-server --ledger-proof ledger.jsonl --proof-index 41
+#
+# The credentials below may also come from the environment, which is how a container
+# deployment keeps them out of a ConfigMap:
+#   AETHERTUNNEL_AUTH_TOKEN, AETHERTUNNEL_DASHBOARD_TOKEN, AETHERTUNNEL_ENCRYPTION_PASSPHRASE
+
+[server]
+bind_addr = "0.0.0.0"
+bind_port = 7001
+
+# Shared secret between the server and its clients. Use at least 16 random
+# characters; a weak or placeholder value produces a warning at startup.
+# Generate one with:  openssl rand -hex 32
+auth_token = "CHANGE-ME-use-at-least-16-random-characters"
+
+# Refuse new clients beyond this many concurrent sessions.
+max_connections = 512
+
+# Seconds. The handshake timeout bounds how long a connection may take to send its
+# first frame; the read timeout is the idle limit applied to a tunnelled stream;
+# the heartbeat interval is what clients are expected to send, and a client that
+# misses three of them is disconnected.
+handshake_timeout_seconds = 10
+read_timeout_seconds = 120
+heartbeat_seconds = 30
+
+# How long the server waits for a client to open the data stream for a visiting
+# connection.
+dial_timeout_seconds = 10
+
+# A stop signal (SIGINT, SIGTERM, or a console close on Windows) stops accepting
+# connections, gives the streams that are already running up to this many seconds to
+# finish, and only then disconnects the clients; a visitor that arrives meanwhile is
+# refused and counted. 0 selects the default of 5. Without it a restart cut every
+# transfer in flight.
+graceful_shutdown_seconds = 5
+
+# Shared listener for http and https proxies. A proxy of those types is reached
+# through this port and selected by the request's Host header, so it needs no port
+# of its own. 0 disables the listener for that scheme.
+http_port = 7080
+# The TLS listener needs a certificate and its key. Generate a self-signed pair with:
+#   openssl req -x509 -newkey rsa:2048 -days 365 -nodes \
+#     -keyout https.key -out https.crt -subj "/CN=tunnel.example.com"
+https_port = 0
+https_cert_file = ""
+https_key_file = ""
+
+# Lets an http proxy without explicit domains be reached at
+# <proxy-name>.<subdomain_host>.
+subdomain_host = ""
+
+# Whether a refusal sent to a client carries the reason in full. On — the default,
+# and frp's default for detailedErrorsToClient — a client that asks for a port that
+# is taken, or registers without the subdomain_host this server needs, is told
+# exactly that. Off, those refusals become one short sentence each, so a peer that
+# has not proven itself cannot read the server's setup from them. The server's log
+# and the audit log keep the reason either way.
+detailed_errors_to_client = true
+
+# UDP port used for xtcp hole punching. 0 disables it, and an xtcp proxy then falls
+# back to the relayed path.
+p2p_port = 7002
+
+# Which member of a proxy group serves the next visitor:
+#   "round-robin"  in turn
+#   "random"       uniformly at random
+#   "latency"      the member with the smallest measured response time
+#   "failover"     the first member until it stops being healthy
+#   "adaptive"     the lowest cost, where cost is the measured response time
+#                  multiplied by a penalty for consecutive failures
+#   "bandit"       a UCB1 multi-armed bandit: it learns online which member answers
+#                  fastest by rewarding each stream for its speed, and keeps sampling
+#                  the least-observed member so one that recovers is found again
+load_balance = "round-robin"
+
+# Access control, applied to every accepted connection. An empty allow list accepts
+# every address; an entry in the deny list always wins.
+allow_cidrs = []
+deny_cidrs = []
+
+# Per-source-address connection rate. 0 disables the limit.
+rate_limit_per_second = 20
+rate_limit_burst = 40
+
+# Automatic ban: after this many failed authentications from one address, every
+# attempt from it is refused before the handshake for ban_seconds, whatever
+# credential it carries. 0 disables it. A repeat offender's window doubles, up to
+# ban_max_seconds.
+ban_after_failures = 0
+ban_seconds = 300
+ban_max_seconds = 3600
+# Addresses that are never banned. A caller behind a load balancer, a health checker
+# or a monitoring host needs an entry here, because the ban follows the source
+# address and not the client that failed.
+ban_ignore_cidrs = []
+
+# What may be published under a name, and to whom. Clients choose what they publish;
+# an entry here is this server's own rule for that name and is enforced whatever a
+# registering client asks for. A name with no entry is not governed by a policy.
+# The rules are applied in this order: the visitor source must pass this entry's
+# allow_cidrs/deny_cidrs, and then the client's own lists for the proxy.
+# [[proxies]]
+# name = "ssh"
+# Type the name may be published as. Absent accepts any type. One of:
+#   tcp udp http https stcp sudp xtcp tcpmux socks5
+# type = "tcp"
+# The public port this name is published on. Absent (0) accepts whatever the client
+# asks for.
+# remote_port = 6022
+# Visitor sources that may use this name. Both default to empty, which refuses
+# nothing here and leaves the client's own lists in charge.
+# allow_cidrs = []
+# deny_cidrs = []
+
+[dashboard]
+enabled = true
+# Keep this on loopback unless you also set a token: the dashboard exposes client
+# addresses, tunnel names and traffic counters.
+bind_addr = "127.0.0.1"
+port = 7500
+# When set, /api/* requires "Authorization: Bearer <token>". /api/health stays open.
+token = ""
+
+# Prometheus /metrics. It is served on the dashboard listener, and on an address of
+# its own when port is set — that second form is how a deployment scrapes without
+# exposing the panel at all (dashboard.enabled can stay false). A separate token
+# lets a scraper authenticate without the dashboard credential.
+[metrics]
+enabled = true
+token = ""
+# bind_addr = "127.0.0.1"
+# port = 9100
+
+# Append-only JSONL record of accepted and refused connections, proxy registrations
+# and visitor exchanges. Rotates once the file exceeds max_bytes, keeping `keep`
+# generations beside it: path.1 is the one just rotated away, path.2 the one before.
+[audit]
+enabled = false
+path = "aethertunnel-audit.jsonl"
+max_bytes = 33554432
+keep = 1
+
+# Signed, hash-chained record of the bandwidth each client used. The chain is
+# published on GET /api/ledger together with the public key an auditor needs; the
+# signing key is generated on first use and never leaves this machine.
+[ledger]
+enabled = false
+path = "aethertunnel-ledger.jsonl"
+signing_key_file = "aethertunnel-ledger.key"
+
+# Kademlia DHT over UDP. The server publishes one record per proxy it accepts, so a
+# client can resolve a proxy name instead of being told which server serves it.
+[dht]
+enabled = false
+listen_addr = "0.0.0.0:7001"
+# Other DHT nodes to join. Empty makes this node a one-node table, which still
+# answers for the records it published itself.
+bootstrap = []
+# 40 hex characters. Empty selects a random identifier that changes on every start.
+node_id = ""
+# Key prefix, so two deployments can share one DHT.
+namespace = "aethertunnel"
+ttl_seconds = 3600
+announce_ttl_seconds = 90
+# Must be shorter than announce_ttl_seconds.
+republish_seconds = 30
+lookup_timeout_seconds = 5
+# The host a client is told to dial for a proxy published here. No port: the port is
+# the one that serves each proxy. Required when bind_addr is a wildcard address,
+# which it is by default, or the published address is not reachable from outside.
+advertise_host = ""
+# Ed25519 seed every announcement is signed with, generated on first use. Any node on
+# the DHT can write to a proxy's key, so without a signature a record only says that
+# some node claimed an address. Clients that set require_signed or trusted_keys
+# refuse unsigned records, so leave this set whenever a client will insist on
+# signatures. Read the public key with --dht-key or from GET /api/dht as signing_key.
+signing_key_file = "aethertunnel-dht.key"
+# Refuse an unsigned record when this server resolves a name itself, and optionally
+# believe only the keys listed in trusted_keys (hex). Both apply to the resolving
+# side, which for a server is --dht-lookup.
+require_signed = false
+trusted_keys = []
+
+# Layer-3 tunnel. Each client that asks is given an address from this subnet and its
+# IP packets are routed through the server.
+#
+# The device is real: Linux opens or creates a tun interface from /dev/net/tun,
+# Windows opens a Wintun adapter (the name is an arbitrary adapter name), macOS opens
+# a utun control socket (the name must be utunN), and Android gets its interface from
+# the App's VpnService. A platform the build has no implementation for refuses to start
+# and says what is missing. Routes are never changed by this program; add the route to
+# the subnet yourself, for example:
+#   ip route add 10.7.0.0/24 dev tun0
+[vpn]
+enabled = false
+# GET /api/vpn and the dashboard's layer-3 panel report the interface, the pool and
+# the packet counters once it is up.
+# Interface name. Empty asks the kernel for the next free one.
+device = "tun0"
+# The subnet clients are allocated from. The server keeps the first usable address.
+# This program does not touch the host's routing table; add the route yourself, for
+# example: ip route add 10.7.0.0/24 dev tun0
+address = "10.7.0.0/24"
+# Overrides the interface MTU. Zero uses the interface's own value.
+mtu = 0
+# Refuse a session that does not want a tunnel address.
+require = false
+
+# Padding hides exact frame lengths from an observer that counts bytes. It does not
+# make the traffic look like anything else; the disguise below does that.
+[obfuscation]
+enabled = false
+# Round every frame payload up to a multiple of this many bytes. 0 disables the
+# padding even when enabled is true.
+pad_to = 256
+jitter_millis = 0
+# "none" writes frames as they are. "tls-record" puts every write inside TLS 1.2
+# application-data records, which defeats a detector that reads only the first
+# bytes. It is not a TLS handshake, so a detector that models a session can still
+# tell the connection apart.
+# disguise = "tls-record"
+
+[identity]
+# Authenticate clients with an Ed25519 key instead of the shared token. Requires
+# identity.enabled on the client as well.
+enabled = false
+# Hex public keys accepted from clients. Empty accepts any key that signs correctly,
+# which proves possession but does not restrict who may connect.
+allowed_keys = []
+# Refuse a client that presents no valid identity.
+require_identity = false
+
+[transport]
+# TLS on the control port and on every data connection. This is the only way to get
+# certificate-based server authentication.
+enable_tls = false
+cert_file = ""
+key_file = ""
+
+[encryption]
+# Optional AEAD protection for control messages and tunnelled bytes. When enabled,
+# every client must use the same algorithm, salt and passphrase.
+enabled = false
+algorithm = "xchacha20-poly1305"   # or "aes-256-gcm"
+# Empty means "derive from auth_token", so you do not have to distribute a second
+# secret. Both ends must agree on this value.
+passphrase = ""
+salt = "aethertunnel"
+# Replace the passphrase-derived key with one agreed through X25519 together with
+# ML-KEM-768, and derive a separate key for every data connection. Requires enabled.
+post_quantum = false
+
+[log]
+# Where this server writes its own log. Empty keeps standard error, which is what
+# systemd, journald and container runtimes collect.
+to = ""
+# Keep this many days of rotated files. 0 leaves one file that only grows. A
+# positive value requires the file above: when the day's first line is written, a
+# file that holds nothing from today is moved aside to <to>.YYYY-MM-DD, and the
+# archives outside the window are deleted.
+max_days = 0
+# Drop the date and time from every line.
+disable_timestamp = false

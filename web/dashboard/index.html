@@ -1,0 +1,2475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="referrer" content="no-referrer">
+<title>AetherTunnel Dashboard</title>
+<!-- Inline empty icon: browsers must not request a favicon that is not served. -->
+<link rel="icon" href="data:,">
+<style>
+/* ---------- 1. Design tokens ---------- */
+:root {
+  --bg:            #0d1117;
+  --bg-soft:       #111721;
+  --panel:         #151c27;
+  --panel-2:       #1a2230;
+  --border:        #243041;
+  --border-strong: #33425a;
+  --text:          #e6edf3;
+  --muted:         #93a1b1;
+  --dim:           #7d8b9e;
+  --accent:        #4d9fff;
+  --accent-soft:   rgba(77, 159, 255, 0.14);
+  --ok:            #3fb950;
+  --warn:          #d29922;
+  --err:           #f85149;
+  --radius:        10px;
+  --radius-sm:     6px;
+  --gap:           16px;
+  --sidebar-w:     224px;
+  --topbar-h:      56px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+          "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+/* ---------- 2. Base ---------- */
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 var(--sans);
+  -webkit-text-size-adjust: 100%;
+}
+
+[hidden] { display: none !important; }
+
+h1, h2, h3 { margin: 0; font-weight: 600; }
+h1 { font-size: 15px; }
+h2 { font-size: 17px; }
+h3 { font-size: 13px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+/* A view-level panel title is an h2 for the document outline, not for a bigger
+   type size: it keeps the compact card-heading look of the panel it heads. */
+h2.view-title { font-size: 13px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+
+p { margin: 0; }
+
+a { color: var(--accent); }
+
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+.skip-link {
+  position: absolute; left: -9999px; top: 0; z-index: 60;
+  background: var(--accent); color: #04101f; padding: 8px 12px; border-radius: 0 0 var(--radius-sm) 0;
+}
+.skip-link:focus { left: 0; }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- 3. App shell ---------- */
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  grid-template-rows: var(--topbar-h) minmax(0, 1fr);
+  grid-template-areas:
+    "topbar topbar"
+    "sidebar main";
+  min-height: 100vh;
+}
+
+/* --- topbar --- */
+.topbar {
+  grid-area: topbar;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  background: var(--bg-soft);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 30;
+}
+
+.brand { display: flex; flex-direction: column; min-width: 0; }
+.brand-name { font-weight: 600; letter-spacing: .01em; }
+.brand-sub { color: var(--dim); font-size: 11px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.topbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+
+.icon-btn {
+  display: inline-flex; flex-direction: column; justify-content: center;
+  width: 36px; height: 36px; padding: 0 9px;
+  background: transparent; color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.icon-btn:hover { background: var(--panel-2); }
+.icon-btn .bar { display: block; height: 2px; background: currentColor; border-radius: 2px; }
+.icon-btn .bar + .bar { margin-top: 4px; }
+
+#menuToggle { display: none; }
+
+/* --- connection badge --- */
+.badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  font-size: 12px; white-space: nowrap;
+}
+.badge .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: none; }
+.badge.is-ok   { color: var(--ok);   border-color: rgba(63,185,80,.4); }
+.badge.is-ok   .dot { background: var(--ok); }
+.badge.is-warn { color: var(--warn); border-color: rgba(210,153,34,.4); }
+.badge.is-warn .dot { background: var(--warn); }
+.badge.is-err  { color: var(--err);  border-color: rgba(248,81,73,.4); }
+.badge.is-err  .dot { background: var(--err); }
+
+/* --- language select --- */
+.select {
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 5px 8px; font: inherit; font-size: 12px;
+}
+
+/* --- sidebar --- */
+.sidebar {
+  grid-area: sidebar;
+  background: var(--bg-soft);
+  border-right: 1px solid var(--border);
+  padding: 14px 10px;
+  display: flex; flex-direction: column; gap: 14px;
+  overflow-y: auto;
+}
+
+.nav-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.nav-item {
+  display: block; width: 100%; text-align: left;
+  padding: 9px 12px;
+  background: transparent; color: var(--muted);
+  border: 1px solid transparent; border-radius: var(--radius-sm);
+  font: inherit; font-size: 14px; cursor: pointer;
+}
+.nav-item:hover { background: var(--panel); color: var(--text); }
+.nav-item[aria-current="page"] {
+  background: var(--accent-soft); color: var(--text); border-color: rgba(77,159,255,.35);
+}
+
+.sidebar-foot { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
+.sidebar-note { color: var(--dim); font-size: 11px; line-height: 1.4; }
+
+.scrim { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 40; }
+
+/* --- main --- */
+.main {
+  grid-area: main;
+  padding: var(--gap);
+  display: flex; flex-direction: column; gap: var(--gap);
+  min-width: 0;
+}
+
+.view { display: flex; flex-direction: column; gap: var(--gap); }
+.count { color: var(--dim); font-size: 12px; }
+
+/* ---------- 4. Banners ---------- */
+.banner {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 12px; border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  font-size: 13px;
+}
+.banner-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.banner-btn {
+  flex: none; background: transparent; color: inherit; border: 1px solid currentColor;
+  border-radius: var(--radius-sm); padding: 2px 8px; font: inherit; font-size: 12px; cursor: pointer;
+  opacity: .8;
+}
+.banner-btn:hover { opacity: 1; }
+.banner.is-warn  { border-color: rgba(210,153,34,.5); color: var(--warn); background: rgba(210,153,34,.08); }
+.banner.is-error { border-color: rgba(248,81,73,.5);  color: var(--err);  background: rgba(248,81,73,.08); }
+
+/* ---------- 5. Panels, key/value, metrics, traffic ---------- */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  min-width: 0;
+}
+.panel-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.panel-head .spacer { margin-left: auto; }
+.panel-note { color: var(--dim); font-size: 12px; margin-top: 10px; }
+.kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px 18px; margin: 0; }
+.kv > div { min-width: 0; }
+.kv dt { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.kv dd { margin: 2px 0 0; font-family: var(--mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.kv dd.is-warn { color: var(--warn); }
+.kv dd.is-err { color: var(--err); }
+
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.metric {
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px 12px; min-width: 0;
+}
+.metric-label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.metric-value { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 22px; line-height: 1.25; overflow-wrap: anywhere; }
+
+.traffic-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+.traffic-cell { display: flex; flex-direction: column; gap: 6px; }
+.traffic-cell .metric-label { color: var(--muted); }
+.traffic-cell .metric-value { font-size: 20px; }
+.traffic-cell.in  .metric-value { color: var(--accent); }
+.traffic-cell.out .metric-value { color: var(--ok); }
+
+/* ---------- 6. Tables ---------- */
+.table-wrap { overflow-x: auto; }
+
+.table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.table th {
+  text-align: left; color: var(--dim); font-weight: 600;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+  padding: 8px 10px; border-bottom: 1px solid var(--border-strong); white-space: nowrap;
+}
+.table td {
+  padding: 8px 10px; border-bottom: 1px solid var(--border);
+  vertical-align: middle; white-space: nowrap;
+}
+.table tbody tr:hover { background: var(--panel-2); }
+.table .num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.table .id { font-family: var(--mono); }
+.table .wrap { white-space: normal; overflow-wrap: anywhere; }
+/* A pool's cell holds a list of backends, so it reads left to right instead of
+   right-aligned like a single number; the member lines sit one step down. keep-all
+   stops a CJK unit such as 毫秒 from being split between its two characters, and
+   break-word still lets an over-long identifier wrap. The wrapper keeps the whole
+   cell as one flex item on a narrow screen, where the cell itself is a flex row. */
+.table .member-body { flex: 1 1 auto; min-width: 0; }
+.table .member-pool { text-align: left; }
+.table .member-line {
+  font-size: 12px; color: var(--dim);
+  word-break: keep-all; overflow-wrap: break-word;
+}
+
+.empty {
+  color: var(--dim); font-size: 13px; font-style: normal;
+  padding: 14px; border: 1px dashed var(--border-strong); border-radius: var(--radius-sm); text-align: center;
+}
+
+/* ---------- 7. Buttons ---------- */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 7px 12px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong); background: var(--panel-2); color: var(--text);
+  font: inherit; font-size: 13px; cursor: pointer;
+}
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn-sm { padding: 4px 9px; font-size: 12px; }
+.btn-ghost { background: transparent; }
+.btn-danger { border-color: rgba(248,81,73,.55); color: var(--err); background: transparent; }
+.btn-danger:hover:not(:disabled) { background: rgba(248,81,73,.12); border-color: var(--err); }
+
+/* ---------- 8. Auth overlay ---------- */
+.overlay {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(5,8,13,.78);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.auth-card {
+  width: 100%; max-width: 380px;
+  background: var(--panel); border: 1px solid var(--border-strong);
+  border-radius: var(--radius); padding: 20px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.auth-card .hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.auth-card label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.field {
+  width: 100%; padding: 9px 10px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  font: inherit; font-family: var(--mono);
+}
+.auth-error { color: var(--err); font-size: 12px; }
+.auth-actions { display: flex; justify-content: flex-end; }
+
+/* ---------- 9. Responsive — phone first aid (360 px and up) ---------- */
+@media (max-width: 860px) {
+  .app {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "topbar"
+      "main";
+  }
+
+  #menuToggle { display: inline-flex; }
+
+  .sidebar {
+    position: fixed; top: var(--topbar-h); bottom: 0; left: 0; z-index: 45;
+    width: min(78vw, 280px);
+    transform: translateX(-100%);
+    transition: transform .18s ease-out;
+    border-right: 1px solid var(--border-strong);
+    box-shadow: 0 12px 32px rgba(0,0,0,.5);
+  }
+  .sidebar.is-open { transform: translateX(0); }
+
+  .main { padding: 12px; gap: 12px; }
+  .panel { padding: 12px; }
+  .metric-value { font-size: 19px; }
+}
+
+@media (max-width: 700px) {
+  .brand-sub { display: none; }
+
+  /* Tables become stacked cards so nothing is cut off at 360 px. */
+  .table-wrap { overflow-x: visible; }
+  .table thead { display: none; }
+  .table, .table tbody, .table tr, .table td { display: block; width: 100%; }
+  .table tr {
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--panel-2); margin-bottom: 10px; padding: 4px 0;
+  }
+  .table td {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+    border-bottom: none; white-space: normal; padding: 5px 12px;
+  }
+  .table td::before {
+    content: attr(data-label);
+    flex: none; color: var(--dim); font-size: 11px;
+    text-transform: uppercase; letter-spacing: .04em;
+  }
+  .table .num { text-align: right; }
+  .table .actions { justify-content: flex-end; }
+  .table .actions::before { content: ""; }
+}
+
+@media (max-width: 420px) {
+  .topbar { padding: 0 10px; gap: 8px; }
+  .main { padding: 10px; }
+  .metric-value { font-size: 18px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar { transition: none; }
+}
+</style>
+</head>
+<body>
+
+<a class="skip-link" href="#main" data-i18n="nav.skip">Skip to content</a>
+
+<div class="app" id="appShell">
+  <header class="topbar">
+    <button type="button" id="menuToggle" class="icon-btn" aria-expanded="false" aria-controls="sidebar"
+            data-i18n-label="nav.menu">
+      <span class="bar"></span><span class="bar"></span><span class="bar"></span>
+    </button>
+    <div class="brand">
+      <h1 class="sr-only" data-i18n="app.subtitle">TCP tunnel control panel</h1>
+      <span class="brand-name">AetherTunnel</span>
+      <span class="brand-sub" data-i18n="app.subtitle">TCP tunnel control panel</span>
+    </div>
+    <div class="topbar-right">
+      <span id="connState" class="badge is-warn" role="status" aria-live="polite"><span class="dot"></span><span id="connStateText">connecting</span></span>
+      <label class="sr-only" for="langSelect" data-i18n="lang.label">Language</label>
+      <select id="langSelect" class="select">
+        <option value="en">English</option>
+        <option value="zh">简体中文</option>
+      </select>
+    </div>
+  </header>
+
+  <nav id="sidebar" class="sidebar" data-i18n-label="nav.sections">
+    <ul class="nav-list">
+      <li><button type="button" class="nav-item" id="navOverview" data-view="overview" data-i18n="nav.overview" aria-current="page">Overview</button></li>
+      <li><button type="button" class="nav-item" id="navProxies"  data-view="proxies"  data-i18n="nav.proxies">Proxies</button></li>
+      <li><button type="button" class="nav-item" id="navClients"  data-view="clients"  data-i18n="nav.clients">Clients</button></li>
+      <li><button type="button" class="nav-item" id="navLedger"   data-view="ledger"   data-i18n="nav.ledger">Ledger</button></li>
+      <li><button type="button" class="nav-item" id="navDirectory" data-view="directory" data-i18n="nav.directory">Directory</button></li>
+      <li><button type="button" class="nav-item" id="navConfig"   data-view="config"   data-i18n="nav.config">Configuration</button></li>
+    </ul>
+    <div class="sidebar-foot">
+      <p class="sidebar-note" id="authStateNote">—</p>
+      <button type="button" id="signOutBtn" class="btn btn-ghost btn-sm" data-i18n="auth.signOut" hidden>Sign out</button>
+    </div>
+  </nav>
+
+  <div id="scrim" class="scrim" hidden></div>
+
+  <main id="main" class="main">
+    <div id="connBanner" class="banner is-warn" role="status" aria-live="polite" hidden>
+      <span class="banner-text" id="connBannerText"></span>
+    </div>
+
+    <div id="errorBanner" class="banner is-error" role="alert" hidden>
+      <span class="banner-text" id="errorBannerText"></span>
+      <button type="button" class="banner-btn" id="errorBannerDismiss" data-i18n="banner.dismiss">Dismiss</button>
+    </div>
+
+    <div id="auditBanner" class="banner is-error" role="alert" hidden>
+      <span class="banner-text" id="auditBannerText"></span>
+    </div>
+
+    <!-- ================= Overview ================= -->
+    <section class="view" id="view-overview">
+      <div class="panel">
+        <div class="panel-head">
+          <h2 class="view-title" data-i18n="status.title">Server status</h2>
+          <span class="count mono" id="lastUpdated"></span>
+        </div>
+        <dl class="kv">
+          <div><dt data-i18n="status.version">Version</dt><dd id="statusVersion">—</dd></div>
+          <div><dt data-i18n="status.protocol">Protocol</dt><dd id="statusProtocol">—</dd></div>
+          <div><dt data-i18n="status.uptime">Uptime</dt><dd id="statusUptime">—</dd></div>
+          <div><dt data-i18n="status.encryption">Encryption</dt><dd id="statusEncryption">—</dd></div>
+          <div><dt data-i18n="status.buildTime">Build time</dt><dd id="statusBuildTime">—</dd></div>
+          <div><dt data-i18n="status.commit">Git commit</dt><dd id="statusCommit">—</dd></div>
+          <div><dt data-i18n="status.startedAt">Started at</dt><dd id="statusStartedAt">—</dd></div>
+          <div><dt data-i18n="status.authRequired">Token required</dt><dd id="statusAuthRequired">—</dd></div>
+          <div><dt data-i18n="status.audit">Audit log</dt><dd id="statusAudit">—</dd></div>
+        </dl>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h3 data-i18n="metrics.title">Counters</h3></div>
+        <div class="metrics">
+          <div class="metric"><div class="metric-label" data-i18n="metrics.activeConn">Active connections</div><div class="metric-value" id="metricConnActive">—</div></div>
+          <div class="metric"><div class="metric-label" data-i18n="metrics.totalConn">Total connections</div><div class="metric-value" id="metricConnTotal">—</div></div>
+          <div class="metric"><div class="metric-label" data-i18n="metrics.authConn">Authenticated connections</div><div class="metric-value" id="metricConnAuth">—</div></div>
+          <div class="metric"><div class="metric-label" data-i18n="metrics.maxConn">Max connections</div><div class="metric-value" id="metricConnMax">—</div></div>
+          <div class="metric"><div class="metric-label" data-i18n="metrics.registeredProxies">Registered proxies</div><div class="metric-value" id="metricProxyRegistered">—</div></div>
+          <div class="metric"><div class="metric-label" data-i18n="metrics.activeStreams">Active streams</div><div class="metric-value" id="metricProxyStreams">—</div></div>
+          <div class="metric"><div class="metric-label" data-i18n="metrics.clients">Connected clients</div><div class="metric-value" id="metricClientCount">—</div></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h3 data-i18n="traffic.title">Traffic</h3></div>
+        <div class="traffic-grid">
+          <div class="traffic-cell in">
+            <span class="metric-label" data-i18n="traffic.in">Inbound</span>
+            <span class="metric-value" id="trafficIn">—</span>
+          </div>
+          <div class="traffic-cell out">
+            <span class="metric-label" data-i18n="traffic.out">Outbound</span>
+            <span class="metric-value" id="trafficOut">—</span>
+          </div>
+          <div class="traffic-cell">
+            <span class="metric-label" data-i18n="traffic.total">Total</span>
+            <span class="metric-value" id="trafficTotal">—</span>
+          </div>
+        </div>
+        <p class="panel-note" data-i18n="traffic.note">Counters are cumulative since the server started.</p>
+      </div>
+    </section>
+
+    <!-- ================= Proxies ================= -->
+    <section class="view" id="view-proxies" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          <h2 class="view-title" data-i18n="proxies.title">Proxies</h2>
+          <span class="count" id="proxiesCount"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="proxiesTable">
+            <thead>
+              <tr>
+                <th scope="col" data-i18n="proxies.col.name">Name</th>
+                <th scope="col" data-i18n="proxies.col.type">Type</th>
+                <th scope="col" data-i18n="proxies.col.localAddr">Local address</th>
+                <th scope="col" data-i18n="proxies.col.remotePort">Remote port</th>
+                <th scope="col" data-i18n="proxies.col.client">Client</th>
+                <th scope="col" data-i18n="proxies.col.members">Members</th>
+                <th scope="col" data-i18n="proxies.col.strategy">Load balancing</th>
+                <th scope="col" data-i18n="proxies.col.activeConns">Active conns</th>
+                <th scope="col" data-i18n="proxies.col.totalConns">Total conns</th>
+                <th scope="col" data-i18n="proxies.col.bytesIn">Bytes in</th>
+                <th scope="col" data-i18n="proxies.col.bytesOut">Bytes out</th>
+              </tr>
+            </thead>
+            <tbody id="proxiesBody"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="proxiesEmpty" hidden></p>
+      </div>
+    </section>
+
+    <!-- ================= Clients ================= -->
+    <section class="view" id="view-clients" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          <h2 class="view-title" data-i18n="clients.title">Clients</h2>
+          <span class="count" id="clientsCount"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="clientsTable">
+            <thead>
+              <tr>
+                <th scope="col" data-i18n="clients.col.id">Client ID</th>
+                <th scope="col" data-i18n="clients.col.remoteAddr">Remote address</th>
+                <th scope="col" data-i18n="clients.col.version">Client version</th>
+                <th scope="col" data-i18n="clients.col.connectedAt">Connected at</th>
+                <th scope="col" data-i18n="clients.col.lastHeartbeat">Last heartbeat</th>
+                <th scope="col" data-i18n="clients.col.encrypted">Encrypted</th>
+                <th scope="col" data-i18n="clients.col.proxies">Proxies</th>
+                <th scope="col" data-i18n="clients.col.activeStreams">Active streams</th>
+                <th scope="col" data-i18n="clients.col.totalStreams">Total streams</th>
+                <th scope="col" data-i18n="clients.col.bytesIn">Bytes in</th>
+                <th scope="col" data-i18n="clients.col.bytesOut">Bytes out</th>
+                <th scope="col" data-i18n="clients.col.actions">Action</th>
+              </tr>
+            </thead>
+            <tbody id="clientsBody"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="clientsEmpty" hidden></p>
+      </div>
+    </section>
+
+    <!-- ================= Ledger ================= -->
+    <section class="view" id="view-ledger" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          <h2 class="view-title" data-i18n="ledger.title">Bandwidth ledger</h2>
+          <span class="spacer"></span>
+          <button type="button" class="btn btn-sm" id="ledgerRefresh" data-i18n="ledger.refresh">Refresh</button>
+        </div>
+        <dl class="kv">
+          <div><dt data-i18n="ledger.state">State</dt><dd id="ledgerState">—</dd></div>
+          <div><dt data-i18n="ledger.path">File</dt><dd id="ledgerPath">—</dd></div>
+          <div><dt data-i18n="ledger.count">Entries in the chain</dt><dd id="ledgerCount">—</dd></div>
+          <div><dt data-i18n="ledger.head">Chain head</dt><dd id="ledgerHead">—</dd></div>
+          <div><dt data-i18n="ledger.unbilled">Not yet billed (live sessions)</dt><dd id="ledgerUnbilled">—</dd></div>
+          <div><dt data-i18n="ledger.publicKey">Verification key</dt><dd id="ledgerPublicKey">—</dd></div>
+        </dl>
+        <p class="panel-note" data-i18n="ledger.note">Each entry is Ed25519-signed and chained to the one before it, so the file verifies offline with the key above, without access to this server. Only the bytes this server carried are billed: an xtcp stream that punched a direct path never comes back through here, so it is in no entry.</p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h3 data-i18n="ledger.totalsTitle">Usage by client</h3></div>
+        <div class="table-wrap">
+          <table class="table" id="ledgerTotalsTable">
+            <thead>
+              <tr>
+                <th scope="col" data-i18n="ledger.col.client">Client</th>
+                <th scope="col" data-i18n="ledger.col.entries">Entries</th>
+                <th scope="col" data-i18n="ledger.col.bytesIn">Bytes in</th>
+                <th scope="col" data-i18n="ledger.col.bytesOut">Bytes out</th>
+              </tr>
+            </thead>
+            <tbody id="ledgerTotalsBody"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="ledgerTotalsEmpty" hidden></p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3 data-i18n="ledger.entriesTitle">Recent entries</h3>
+          <span class="count" id="ledgerShown"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="ledgerEntriesTable">
+            <thead>
+              <tr>
+                <th scope="col" data-i18n="ledger.col.index">Index</th>
+                <th scope="col" data-i18n="ledger.col.time">Time</th>
+                <th scope="col" data-i18n="ledger.col.client">Client</th>
+                <th scope="col" data-i18n="ledger.col.proxy">Proxy</th>
+                <th scope="col" data-i18n="ledger.col.bytesIn">Bytes in</th>
+                <th scope="col" data-i18n="ledger.col.bytesOut">Bytes out</th>
+                <th scope="col" data-i18n="ledger.col.hash">Hash</th>
+              </tr>
+            </thead>
+            <tbody id="ledgerEntriesBody"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="ledgerEntriesEmpty" hidden></p>
+      </div>
+    </section>
+
+    <!-- ================= Directory ================= -->
+    <section class="view" id="view-directory" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          <h2 class="view-title" data-i18n="dht.title">Decentralized directory</h2>
+          <span class="spacer"></span>
+          <button type="button" class="btn btn-sm" id="directoryRefresh" data-i18n="dht.refresh">Refresh</button>
+        </div>
+        <dl class="kv">
+          <div><dt data-i18n="dht.state">State</dt><dd id="dhtState">—</dd></div>
+          <div><dt data-i18n="dht.nodeId">Node ID</dt><dd id="dhtNodeId">—</dd></div>
+          <div><dt data-i18n="dht.addr">Bound address</dt><dd id="dhtAddr">—</dd></div>
+          <div><dt data-i18n="dht.namespace">Key namespace</dt><dd id="dhtNamespace">—</dd></div>
+          <div><dt data-i18n="dht.contacts">Peers in the routing table</dt><dd id="dhtContacts">—</dd></div>
+          <div><dt data-i18n="dht.advertiseAs">Advertises itself as</dt><dd id="dhtAdvertiseAs">—</dd></div>
+          <div><dt data-i18n="dht.key">Announcement key</dt><dd id="dhtKey">—</dd></div>
+        </dl>
+        <p class="panel-note" data-i18n="dht.note">A client can resolve these names instead of being told which server serves them. Announcements are signed with the key above when it is set; a reader configured with trusted_keys only accepts records signed by it.</p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3 data-i18n="dht.announcedTitle">Announced names</h3>
+          <span class="count" id="dhtAnnouncedCount"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="dhtAnnouncedTable">
+            <thead>
+              <tr>
+                <th scope="col" data-i18n="dht.col.name">Name</th>
+              </tr>
+            </thead>
+            <tbody id="dhtAnnouncedBody"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="dhtAnnouncedEmpty" hidden></p>
+      </div>
+    </section>
+
+    <!-- ================= Configuration ================= -->
+    <section class="view" id="view-config" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          <h2 class="view-title" data-i18n="config.title">Configuration (redacted)</h2>
+          <span class="spacer"></span>
+          <button type="button" class="btn btn-sm" id="configRefresh" data-i18n="config.refresh">Refresh</button>
+        </div>
+        <dl class="kv">
+          <div><dt data-i18n="config.bindAddr">Bind address</dt><dd id="cfgBindAddr">—</dd></div>
+          <div><dt data-i18n="config.bindPort">Bind port</dt><dd id="cfgBindPort">—</dd></div>
+          <div><dt data-i18n="config.maxConnections">Max connections</dt><dd id="cfgMaxConn">—</dd></div>
+          <div><dt data-i18n="config.enabled">Encryption enabled</dt><dd id="cfgEncEnabled">—</dd></div>
+          <div><dt data-i18n="config.algorithm">Algorithm</dt><dd id="cfgEncAlgorithm">—</dd></div>
+          <div><dt data-i18n="config.authRequired">Token required</dt><dd id="cfgAuthRequired">—</dd></div>
+          <div><dt data-i18n="config.proxies">Proxy policies</dt><dd id="cfgProxies">—</dd></div>
+        </dl>
+        <p class="panel-note" data-i18n="config.note">The API returns a redacted summary only — secrets and keys are never sent to the browser.</p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3 data-i18n="vpn.title">Layer-3 tunnel</h3>
+        </div>
+        <dl class="kv">
+          <div><dt data-i18n="vpn.state">State</dt><dd id="vpnState">—</dd></div>
+          <div><dt data-i18n="vpn.device">Interface</dt><dd id="vpnDevice">—</dd></div>
+          <div><dt data-i18n="vpn.serverAddress">Server address</dt><dd id="vpnServerAddress">—</dd></div>
+          <div><dt data-i18n="vpn.subnet">Subnet</dt><dd id="vpnSubnet">—</dd></div>
+          <div><dt data-i18n="vpn.mtu">MTU</dt><dd id="vpnMTU">—</dd></div>
+          <div><dt data-i18n="vpn.pool">Addresses handed out</dt><dd id="vpnPool">—</dd></div>
+          <div><dt data-i18n="vpn.peers">Peers</dt><dd id="vpnPeers">—</dd></div>
+          <div><dt data-i18n="vpn.fromDevice">Packets read from the interface</dt><dd id="vpnFromDevice">—</dd></div>
+          <div><dt data-i18n="vpn.toDevice">Packets delivered to the interface</dt><dd id="vpnToDevice">—</dd></div>
+          <div><dt data-i18n="vpn.dropped">Packets dropped or unroutable</dt><dd id="vpnDropped">—</dd></div>
+        </dl>
+        <p class="panel-note" data-i18n="vpn.note">These counters come from the tunnel inside this process. When the tunnel is disabled the table stays empty.</p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="overlay" id="authOverlay" hidden role="dialog" aria-modal="true" aria-labelledby="authTitle">
+  <form class="auth-card" id="authForm" autocomplete="on">
+    <h2 id="authTitle" data-i18n="auth.title">Dashboard token required</h2>
+    <p class="hint" data-i18n="auth.hint">This dashboard is protected. Enter the token configured on the server.</p>
+    <label for="authInput" data-i18n="auth.label">Token</label>
+    <input id="authInput" class="field" type="password" name="token" autocomplete="current-password"
+           spellcheck="false" data-i18n-placeholder="auth.placeholder">
+    <p class="auth-error" id="authError" hidden></p>
+    <div class="auth-actions">
+      <button type="submit" class="btn" id="authSubmit" data-i18n="auth.submit">Unlock</button>
+    </div>
+  </form>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ========================================================================
+     i18n — every key below must exist in both dictionaries; a parity check
+     runs at start-up and logs any mismatch to the console.
+     ======================================================================== */
+  var I18N = {
+    en: {
+      'app.subtitle': 'TCP tunnel control panel',
+      'nav.menu': 'Menu',
+      'nav.skip': 'Skip to content',
+      'nav.overview': 'Overview',
+      'nav.proxies': 'Proxies',
+      'nav.clients': 'Clients',
+      'nav.ledger': 'Ledger',
+      'nav.directory': 'Directory',
+      'nav.config': 'Configuration',
+      'lang.label': 'Language',
+      'nav.sections': 'Sections',
+      'state.connecting': 'connecting…',
+      'state.connected': 'connected',
+      'state.disconnected': 'disconnected — retrying',
+      'state.unauthorized': 'not authorised',
+      'conn.bannerDisconnected': 'Disconnected — retrying every {s}s. Last successful update: {ago}.',
+      'footer.lastUpdated': 'Last update: {ago}',
+      'footer.never': 'never',
+      'auth.title': 'Dashboard token required',
+      'auth.hint': 'This dashboard is protected. Paste the token configured on the server (dashboard.token). It is stored in this browser only.',
+      'auth.label': 'Token',
+      'auth.placeholder': 'paste token',
+      'auth.submit': 'Unlock',
+      'auth.signOut': 'Sign out',
+      'auth.errMissing': 'Enter a token first.',
+      'auth.errRejected': 'The server rejected that token (401). Check the value and try again.',
+      'auth.noteRequired': 'A dashboard token is required; requests are sent with your Bearer token.',
+      'auth.noteStored': 'Token stored in this browser.',
+      'auth.noteNotRequired': 'This server does not require a dashboard token.',
+      'auth.noteNoToken': 'No token stored — the API is not authorised.',
+      'banner.dismiss': 'Dismiss',
+      'err.status': 'Failed to load /api/status: {msg}',
+      'err.clients': 'Failed to load /api/clients: {msg}',
+      'err.proxies': 'Failed to load /api/proxies: {msg}',
+      'err.config': 'Failed to load /api/config: {msg}',
+      'err.ledger': 'Failed to load /api/ledger: {msg}',
+      'err.dht': 'Failed to load /api/dht: {msg}',
+      'err.disconnect': 'Failed to disconnect client {id}: {msg}',
+      'err.unauthorized': 'The API answered 401 — the dashboard token is missing or invalid.',
+      'err.timeout': 'No answer within {s} s — the server did not respond.',
+      'status.title': 'Server status',
+      'status.version': 'Version',
+      'status.protocol': 'Protocol',
+      'status.uptime': 'Uptime',
+      'status.encryption': 'Encryption',
+      'status.buildTime': 'Build time',
+      'status.commit': 'Git commit',
+      'status.startedAt': 'Started at',
+      'status.authRequired': 'Token required',
+      'status.audit': 'Audit log',
+      'audit.recording': 'recording',
+      'audit.recovered': '{n} write(s) recovered after reopening',
+      'audit.notWritable': 'cannot write — {n} record(s) lost',
+      'audit.notWritableNoLoss': 'cannot write',
+      'audit.lostThenRecovered': 'recording again — {n} record(s) lost',
+      'audit.banner': 'The audit log {path} could not be written {n} time(s), so the record has a gap. Last error: {msg}',
+      'metrics.title': 'Counters',
+      'metrics.activeConn': 'Active connections',
+      'metrics.totalConn': 'Total connections',
+      'metrics.authConn': 'Authenticated connections',
+      'metrics.maxConn': 'Max connections',
+      'metrics.registeredProxies': 'Registered proxies',
+      'metrics.activeStreams': 'Active streams',
+      'metrics.clients': 'Connected clients',
+      'traffic.title': 'Traffic',
+      'traffic.in': 'Inbound',
+      'traffic.out': 'Outbound',
+      'traffic.total': 'Total',
+      'traffic.note': 'Counters are cumulative since the server started.',
+      'proxies.title': 'Proxies',
+      'proxies.count': '{n} registered',
+      'proxies.col.name': 'Name',
+      'proxies.col.type': 'Type',
+      'proxies.col.localAddr': 'Local address',
+      'proxies.col.remotePort': 'Remote port',
+      'proxies.col.client': 'Client',
+      'proxies.col.members': 'Members',
+      'proxies.col.strategy': 'Load balancing',
+      'proxies.membersOne': '1 member ({healthy} healthy)',
+      'proxies.members': '{n} members ({healthy} healthy)',
+      'proxies.latencyMs': '{n}\u00a0ms',
+      'proxies.memberLine': '{client} — {latency}, {failures} failures in a row',
+      'proxies.col.activeConns': 'Active conns',
+      'proxies.col.totalConns': 'Total conns',
+      'proxies.col.bytesIn': 'Bytes in',
+      'proxies.col.bytesOut': 'Bytes out',
+      'proxies.empty': 'no proxies registered',
+      'clients.title': 'Clients',
+      'clients.count': '{n} connected',
+      'clients.col.id': 'Client ID',
+      'clients.col.remoteAddr': 'Remote address',
+      'clients.col.version': 'Client version',
+      'clients.col.connectedAt': 'Connected at',
+      'clients.col.lastHeartbeat': 'Last heartbeat',
+      'clients.col.encrypted': 'Encrypted',
+      'clients.col.proxies': 'Proxies',
+      'clients.col.activeStreams': 'Active streams',
+      'clients.col.totalStreams': 'Total streams',
+      'clients.col.bytesIn': 'Bytes in',
+      'clients.col.bytesOut': 'Bytes out',
+      'clients.col.actions': 'Action',
+      'clients.empty': 'no clients connected',
+      'clients.confirm': 'Disconnect client {id}? Its active streams will be closed.',
+      'clients.disconnect': 'Disconnect',
+      'clients.disconnectLabel': 'Disconnect client {id}',
+      'clients.heartbeatEvery': 'every {n}s',
+      'common.loadFailed': 'could not load data: {msg}',
+      'common.yes': 'yes',
+      'common.no': 'no',
+      'common.na': '—',
+      'config.title': 'Configuration (redacted)',
+      'config.bindAddr': 'Bind address',
+      'config.bindPort': 'Bind port',
+      'config.maxConnections': 'Max connections',
+      'config.enabled': 'Encryption enabled',
+      'config.algorithm': 'Algorithm',
+      'config.authRequired': 'Token required',
+      'config.proxies': 'Proxy policies',
+      'config.refresh': 'Refresh',
+      'config.note': 'The API returns a redacted summary only — secrets and keys are never sent to the browser.',
+      'vpn.title': 'Layer-3 tunnel',
+      'vpn.state': 'State',
+      'vpn.device': 'Interface',
+      'vpn.serverAddress': 'Server address',
+      'vpn.subnet': 'Subnet',
+      'vpn.mtu': 'MTU',
+      'vpn.pool': 'Addresses handed out',
+      'vpn.peers': 'Peers',
+      'vpn.fromDevice': 'Packets read from the interface',
+      'vpn.toDevice': 'Packets delivered to the interface',
+      'vpn.dropped': 'Packets dropped or unroutable',
+      'vpn.note': 'These counters come from the tunnel inside this process. When the tunnel is disabled the table stays empty.',
+      'ledger.title': 'Bandwidth ledger',
+      'ledger.refresh': 'Refresh',
+      'ledger.state': 'State',
+      'ledger.path': 'File',
+      'ledger.count': 'Entries in the chain',
+      'ledger.head': 'Chain head',
+      'ledger.unbilled': 'Not yet billed (live sessions)',
+      'ledger.publicKey': 'Verification key',
+      'ledger.note': 'Each entry is Ed25519-signed and chained to the one before it, so the file verifies offline with the key above, without access to this server. Only the bytes this server carried are billed: an xtcp stream that punched a direct path never comes back through here, so it is in no entry.',
+      'ledger.off': 'The ledger is off ([ledger] enabled = false): no usage is recorded.',
+      'ledger.empty': 'No entries yet — one is written for each proxy a client published when that session ends.',
+      'ledger.noUsage': 'No billed usage yet.',
+      'ledger.totalsTitle': 'Usage by client',
+      'ledger.entriesTitle': 'Recent entries',
+      'ledger.shown': '{n} of {total} shown',
+      'ledger.col.client': 'Client',
+      'ledger.col.entries': 'Entries',
+      'ledger.col.bytesIn': 'Bytes in',
+      'ledger.col.bytesOut': 'Bytes out',
+      'ledger.col.index': 'Index',
+      'ledger.col.time': 'Time',
+      'ledger.col.proxy': 'Proxy',
+      'ledger.col.hash': 'Hash',
+      'dht.title': 'Decentralized directory',
+      'dht.refresh': 'Refresh',
+      'dht.state': 'State',
+      'dht.nodeId': 'Node ID',
+      'dht.addr': 'Bound address',
+      'dht.namespace': 'Key namespace',
+      'dht.contacts': 'Peers in the routing table',
+      'dht.advertiseAs': 'Advertises itself as',
+      'dht.key': 'Announcement signing key',
+      'dht.unsigned': 'unsigned',
+      'dht.note': 'A client can resolve these names instead of being told which server serves them. When a signing key is set every announcement is signed with it, and a reader configured with trusted_keys accepts nothing else.',
+      'dht.off': 'The directory is off ([dht] enabled = false): no name is announced, and lookups are not served.',
+      'dht.none': 'No name is announced yet — a proxy is announced when its first client registers it.',
+      'dht.announcedTitle': 'Announced names',
+      'dht.count': '{n} announced',
+      'dht.col.name': 'Name',
+      'rel.justNow': 'just now',
+      'rel.seconds': '{n}s ago',
+      'rel.minutes': '{n}m ago',
+      'rel.hours': '{n}h ago',
+      'rel.days': '{n}d ago',
+      'unit.d': 'd',
+      'unit.h': 'h',
+      'unit.m': 'm',
+      'unit.s': 's'
+    },
+    zh: {
+      'app.subtitle': 'TCP 隧道控制面板',
+      'nav.menu': '菜单',
+      'nav.skip': '跳到主要内容',
+      'nav.overview': '概览',
+      'nav.proxies': '代理',
+      'nav.clients': '客户端',
+      'nav.ledger': '账本',
+      'nav.directory': '目录',
+      'nav.config': '配置',
+      'lang.label': '语言',
+      'nav.sections': '栏目',
+      'state.connecting': '连接中…',
+      'state.connected': '已连接',
+      'state.disconnected': '连接断开 — 正在重试',
+      'state.unauthorized': '未授权',
+      'conn.bannerDisconnected': '连接断开 — 每 {s} 秒重试一次。上次成功更新：{ago}。',
+      'footer.lastUpdated': '上次更新：{ago}',
+      'footer.never': '从未',
+      'auth.title': '需要控制台令牌',
+      'auth.hint': '此控制台已启用访问保护。请粘贴服务端配置的令牌（dashboard.token）。令牌只保存在当前浏览器中。',
+      'auth.label': '令牌',
+      'auth.placeholder': '粘贴令牌',
+      'auth.submit': '解锁',
+      'auth.signOut': '退出登录',
+      'auth.errMissing': '请先输入令牌。',
+      'auth.errRejected': '服务端拒绝了该令牌（401）。请检查后重试。',
+      'auth.noteRequired': '此服务端需要控制台令牌，请求会携带你的 Bearer 令牌。',
+      'auth.noteStored': '令牌已保存在此浏览器中。',
+      'auth.noteNotRequired': '此服务端不需要控制台令牌。',
+      'auth.noteNoToken': '尚未保存令牌 — API 未授权。',
+      'banner.dismiss': '关闭',
+      'err.status': '加载 /api/status 失败：{msg}',
+      'err.clients': '加载 /api/clients 失败：{msg}',
+      'err.proxies': '加载 /api/proxies 失败：{msg}',
+      'err.config': '加载 /api/config 失败：{msg}',
+      'err.ledger': '加载 /api/ledger 失败：{msg}',
+      'err.dht': '加载 /api/dht 失败：{msg}',
+      'err.disconnect': '断开客户端 {id} 失败：{msg}',
+      'err.unauthorized': 'API 返回 401 — 控制台令牌缺失或无效。',
+      'err.timeout': '{s} 秒内没有响应 —— 服务端没有应答。',
+      'status.title': '服务端状态',
+      'status.version': '版本',
+      'status.protocol': '协议',
+      'status.uptime': '运行时长',
+      'status.encryption': '加密',
+      'status.buildTime': '构建时间',
+      'status.commit': 'Git 提交',
+      'status.startedAt': '启动时间',
+      'status.authRequired': '需要令牌',
+      'status.audit': '审计日志',
+      'audit.recording': '正常写入',
+      'audit.recovered': '重开后补写 {n} 次',
+      'audit.notWritable': '无法写入 — 已丢 {n} 条',
+      'audit.notWritableNoLoss': '无法写入',
+      'audit.lostThenRecovered': '已恢复写入 — 期间丢 {n} 条',
+      'audit.banner': '审计日志 {path} 有 {n} 条记录没能写入，记录已经不完整。最后一次错误：{msg}',
+      'metrics.title': '计数',
+      'metrics.activeConn': '活动连接',
+      'metrics.totalConn': '累计连接',
+      'metrics.authConn': '通过握手的连接',
+      'metrics.maxConn': '最大连接数',
+      'metrics.registeredProxies': '已注册代理',
+      'metrics.activeStreams': '活动流',
+      'metrics.clients': '已连接客户端',
+      'traffic.title': '流量',
+      'traffic.in': '入站',
+      'traffic.out': '出站',
+      'traffic.total': '合计',
+      'traffic.note': '计数为服务端启动以来的累计值。',
+      'proxies.title': '代理',
+      'proxies.count': '已注册 {n} 个',
+      'proxies.col.name': '名称',
+      'proxies.col.type': '类型',
+      'proxies.col.localAddr': '本地地址',
+      'proxies.col.remotePort': '远端端口',
+      'proxies.col.client': '客户端',
+      'proxies.col.members': '成员',
+      'proxies.col.strategy': '负载均衡',
+      'proxies.membersOne': '1 个成员（{healthy} 个可用）',
+      'proxies.members': '{n} 个成员（{healthy} 个可用）',
+      'proxies.latencyMs': '{n}\u00a0毫秒',
+      'proxies.memberLine': '{client} — {latency}，连续失败 {failures} 次',
+      'proxies.col.activeConns': '活动连接',
+      'proxies.col.totalConns': '累计连接',
+      'proxies.col.bytesIn': '入站字节',
+      'proxies.col.bytesOut': '出站字节',
+      'proxies.empty': '暂无已注册的代理',
+      'clients.title': '客户端',
+      'clients.count': '已连接 {n} 个',
+      'clients.col.id': '客户端 ID',
+      'clients.col.remoteAddr': '远端地址',
+      'clients.col.version': '客户端版本',
+      'clients.col.connectedAt': '连接时间',
+      'clients.col.lastHeartbeat': '最近心跳',
+      'clients.col.encrypted': '加密',
+      'clients.col.proxies': '代理',
+      'clients.col.activeStreams': '活动流',
+      'clients.col.totalStreams': '累计流',
+      'clients.col.bytesIn': '入站字节',
+      'clients.col.bytesOut': '出站字节',
+      'clients.col.actions': '操作',
+      'clients.empty': '当前没有已连接的客户端',
+      'clients.confirm': '确认断开客户端 {id}？其上的活动流将被关闭。',
+      'clients.disconnect': '断开',
+      'clients.disconnectLabel': '断开客户端 {id}',
+      'clients.heartbeatEvery': '每 {n} 秒',
+      'common.loadFailed': '无法加载数据：{msg}',
+      'common.yes': '是',
+      'common.no': '否',
+      'common.na': '—',
+      'config.title': '配置（已脱敏）',
+      'config.bindAddr': '监听地址',
+      'config.bindPort': '监听端口',
+      'config.maxConnections': '最大连接数',
+      'config.enabled': '已启用加密',
+      'config.algorithm': '加密算法',
+      'config.authRequired': '需要令牌',
+      'config.proxies': '代理策略',
+      'config.refresh': '刷新',
+      'config.note': 'API 只返回脱敏摘要 —— 密钥等敏感信息不会发送到浏览器。',
+      'vpn.title': '三层隧道',
+      'vpn.state': '状态',
+      'vpn.device': '接口',
+      'vpn.serverAddress': '服务端地址',
+      'vpn.subnet': '子网',
+      'vpn.mtu': 'MTU',
+      'vpn.pool': '已分配地址',
+      'vpn.peers': '对端数',
+      'vpn.fromDevice': '从接口读到的包',
+      'vpn.toDevice': '送入接口的包',
+      'vpn.dropped': '丢弃或无法路由的包',
+      'vpn.note': '这些计数来自本进程内的隧道。隧道未启用时表格保持为空。',
+      'ledger.title': '带宽账本',
+      'ledger.refresh': '刷新',
+      'ledger.state': '状态',
+      'ledger.path': '文件',
+      'ledger.count': '链上的条目数',
+      'ledger.head': '链头',
+      'ledger.unbilled': '尚未入账（活动会话）',
+      'ledger.publicKey': '校验公钥',
+      'ledger.note': '每条记录都用 Ed25519 签名并与前一条串成哈希链，因此只凭上面的公钥就能离线校验这个文件，不需要访问本服务器。账只记服务端搬过的字节：xtcp 打洞后走直连的那条流不再回到这里，因此不在任何一条记录里。',
+      'ledger.off': '账本未启用（[ledger] enabled = false）：没有记录任何用量。',
+      'ledger.empty': '还没有记录——每个客户端已发布的代理会在该会话结束时各写入一条。',
+      'ledger.noUsage': '还没有已入账的用量。',
+      'ledger.totalsTitle': '按客户端汇总',
+      'ledger.entriesTitle': '最近的记录',
+      'ledger.shown': '显示 {n} / {total}',
+      'ledger.col.client': '客户端',
+      'ledger.col.entries': '条目数',
+      'ledger.col.bytesIn': '入站字节',
+      'ledger.col.bytesOut': '出站字节',
+      'ledger.col.index': '序号',
+      'ledger.col.time': '时间',
+      'ledger.col.proxy': '代理',
+      'ledger.col.hash': '哈希',
+      'dht.title': '去中心化目录',
+      'dht.refresh': '刷新',
+      'dht.state': '状态',
+      'dht.nodeId': '节点标识',
+      'dht.addr': '监听地址',
+      'dht.namespace': '键的命名空间',
+      'dht.contacts': '路由表中的节点数',
+      'dht.advertiseAs': '对外通告的主机名',
+      'dht.key': '通告签名公钥',
+      'dht.unsigned': '未签名',
+      'dht.note': '客户端可以用这些名字找到服务器，而不必先被告知是哪台。设置了签名公钥时每条通告都用它签名，配置了 trusted_keys 的读取方只接受这种记录。',
+      'dht.off': '目录未启用（[dht] enabled = false）：不通告任何名字，也不响应查询。',
+      'dht.none': '还没有通告任何名字——某个代理的第一个客户端注册它时才会通告。',
+      'dht.announcedTitle': '已通告的名字',
+      'dht.count': '已通告 {n} 个',
+      'dht.col.name': '名字',
+      'rel.justNow': '刚刚',
+      'rel.seconds': '{n} 秒前',
+      'rel.minutes': '{n} 分钟前',
+      'rel.hours': '{n} 小时前',
+      'rel.days': '{n} 天前',
+      'unit.d': '天',
+      'unit.h': '小时',
+      'unit.m': '分',
+      'unit.s': '秒'
+    }
+  };
+
+  var POLL_MS = 2000;
+  var TOKEN_KEY = 'aethertunnel.dashboard.token';
+  var LANG_KEY = 'aethertunnel.dashboard.lang';
+
+  /* ---------- State — everything rendered comes from here, and here it comes from the API. ---------- */
+  var state = {
+    lang: 'en',
+    token: null,
+    view: 'overview',
+    connected: false,
+    unauthorized: false,
+    lastStatus: null,
+    lastClients: null,
+    lastProxies: null,
+    lastClientsError: null, // kept so a language switch re-renders the failure, not stale rows
+    lastProxiesError: null,
+    lastLedger: null,
+    lastDirectory: null,
+    lastConfig: null,   // redrawn on a language switch, like the other payloads
+    // The on-demand views' load failures are kept like the poll's, so a language
+    // switch redraws the failure text and a stale payload is never repainted
+    // as current data.
+    lastLedgerError: null,
+    lastDirectoryError: null,
+    lastConfigError: null,
+    lastError: null,    // {key, params, owner} of the banner on screen, so it can be redrawn
+    // Client ids with a disconnect request in flight. The rows are rebuilt on
+    // every poll, so the disabled state has to live outside the button: without
+    // it a rebuild offered the same client a second time, and a second click
+    // answered "no such client" because the first had already disconnected it.
+    disconnecting: {},
+    lastSuccessAt: 0,   // browser clock, used only to age-stamp our own fetches
+    uptimeBaseSeconds: null,
+    uptimeBaseAt: 0,    // performance.now() when uptimeBaseSeconds arrived
+    // Bumped whenever the credential changes (unlock, sign-out, rejected
+    // token): a 401 from a request that started under an older generation
+    // must not re-lock a UI the user just unlocked.
+    tokenGen: 0,
+    // One poll at a time, and only the newest may paint. A slow or hung
+    // server otherwise had every 2 s tick start three more fetches, and a
+    // poll that finished after a newer one repainted the older snapshot —
+    // a stale "connected" over a disconnect, an old client list over a new.
+    pollInFlight: false,
+    // A poll that landed on a busy one: remembered and re-run when the in-flight
+    // poll settles, because the answer being painted may predate the action
+    // that asked for the refresh.
+    pollPending: false,
+    pollSeq: 0
+  };
+
+  /* ---------- Small helpers ---------- */
+  function el(id) { return document.getElementById(id); }
+
+  function t(key, params) {
+    var dict = I18N[state.lang] || I18N.en;
+    var s = Object.prototype.hasOwnProperty.call(dict, key) ? dict[key]
+          : (Object.prototype.hasOwnProperty.call(I18N.en, key) ? I18N.en[key] : key);
+    if (params) {
+      Object.keys(params).forEach(function (k) {
+        s = s.split('{' + k + '}').join(String(params[k]));
+      });
+    }
+    return s;
+  }
+
+  function checkDictionaries() {
+    var en = Object.keys(I18N.en), zh = Object.keys(I18N.zh);
+    var missingZh = en.filter(function (k) { return !Object.prototype.hasOwnProperty.call(I18N.zh, k); });
+    var missingEn = zh.filter(function (k) { return !Object.prototype.hasOwnProperty.call(I18N.en, k); });
+    if (missingZh.length || missingEn.length) {
+      console.warn('[i18n] dictionary mismatch', { missingInZh: missingZh, missingInEn: missingEn });
+    }
+  }
+
+  function setText(node, value) {
+    if (node) node.textContent = (value === null || value === undefined || value === '') ? t('common.na') : String(value);
+  }
+
+  function clearNode(node) {
+    if (!node) return;
+    while (node.firstChild) node.removeChild(node.firstChild);
+  }
+
+  function makeCell(text, labelKey, className) {
+    var td = document.createElement('td');
+    td.textContent = (text === null || text === undefined || text === '') ? t('common.na') : String(text);
+    if (labelKey) td.setAttribute('data-label', t(labelKey));
+    if (className) td.className = className;
+    return td;
+  }
+
+  function fmtInt(v) {
+    if (v === null || v === undefined || v === '' || isNaN(Number(v))) return t('common.na');
+    return Number(v).toLocaleString(state.lang === 'zh' ? 'zh-CN' : 'en-US');
+  }
+
+  function fmtBytes(v) {
+    if (v === null || v === undefined || v === '' || isNaN(Number(v))) return t('common.na');
+    var n = Number(v);
+    var neg = n < 0;
+    n = Math.abs(n);
+    var units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    var i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    var shown = i === 0 ? String(Math.round(n)) : n.toFixed(n < 10 ? 2 : 1);
+    return (neg ? '-' : '') + shown + ' ' + units[i];
+  }
+
+  // membersLabel describes a proxy's pool: how many clients registered it, and how
+  // many of them can still provide a stream. A proxy published by one client has
+  // one entry in the list the API returns.
+  function membersLabel(proxy) {
+    var members = (proxy && proxy.members) ? proxy.members : [];
+    var known = Number(proxy && proxy.member_count);
+    var total = !isNaN(known) && known > 0 ? known : members.length;
+    if (!total) return t('common.na');
+    var healthy = 0;
+    members.forEach(function (member) {
+      if (member && member.healthy) healthy++;
+    });
+    return total === 1
+      ? t('proxies.membersOne', { healthy: fmtInt(healthy) })
+      : t('proxies.members', { n: fmtInt(total), healthy: fmtInt(healthy) });
+  }
+
+  // membersCell is the pool column. Its first line is the aggregate label; a pool
+  // of more than one member gets one line per member below it, carrying the two
+  // numbers [server].load_balance acts on. Without them the choice of "latency",
+  // "failover" or "adaptive" cannot be read off the table: a member that was
+  // passed over looks the same as one that was never measured.
+  function membersCell(proxy) {
+    var td = document.createElement('td');
+    td.className = 'num wrap';
+    td.setAttribute('data-label', t('proxies.col.members'));
+
+    // One wrapper holds the whole cell: on a narrow screen the cell lays its
+    // children out as flex items, so without it the aggregate line and the member
+    // lines would sit side by side instead of stacked.
+    var body = document.createElement('div');
+    body.className = 'member-body';
+
+    var aggregate = document.createElement('div');
+    aggregate.className = 'member-total';
+    aggregate.textContent = membersLabel(proxy);
+    body.appendChild(aggregate);
+
+    var members = (proxy && proxy.members) ? proxy.members : [];
+    if (members.length < 2) {
+      td.appendChild(body);
+      return td;
+    }
+
+    td.classList.add('member-pool');
+    members.forEach(function (member) {
+      var line = document.createElement('div');
+      line.className = 'member-line';
+      line.textContent = memberLine(proxy, member);
+      body.appendChild(line);
+    });
+    td.appendChild(body);
+    return td;
+  }
+
+  // memberLine is one pool member: which client publishes it, how long it took last
+  // time, and how many connections it has failed in a row. The client is the
+  // identifier because a pool's members usually forward to the same local address;
+  // the address is shown only when it differs from the one in the row's own column.
+  function memberLine(proxy, member) {
+    var m = member || {};
+    var who = (m.client_id === null || m.client_id === undefined || m.client_id === '')
+      ? t('common.na') : String(m.client_id);
+    var addr = (m.local_addr === null || m.local_addr === undefined) ? '' : String(m.local_addr);
+    if (addr && addr !== ((proxy && proxy.local_addr) || '')) who += ' (' + addr + ')';
+
+    // The server leaves latency_ms at zero until the member has answered once, so a
+    // zero means "not measured" rather than an instant reply: printing "0.0 ms"
+    // would claim a measurement that never happened.
+    var latency = Number(m.latency_ms) > 0 ? fmtMillis(m.latency_ms) : t('common.na');
+    return t('proxies.memberLine', {
+      client: who,
+      latency: latency,
+      failures: fmtInt(m.consecutive_failures)
+    });
+  }
+
+  function fmtMillis(v) {
+    if (v === null || v === undefined || v === '' || isNaN(Number(v))) return t('common.na');
+    var n = Number(v);
+    return t('proxies.latencyMs', { n: n < 10 ? n.toFixed(1) : String(Math.round(n)) });
+  }
+
+  function fmtDuration(seconds) {
+    if (seconds === null || seconds === undefined || isNaN(Number(seconds))) return t('common.na');
+    var s = Math.max(0, Math.floor(Number(seconds)));
+    var d = Math.floor(s / 86400);
+    var h = Math.floor((s % 86400) / 3600);
+    var m = Math.floor((s % 3600) / 60);
+    var sec = s % 60;
+    var parts = [];
+    if (d > 0) parts.push(d + t('unit.d'));
+    if (d > 0 || h > 0) parts.push(h + t('unit.h'));
+    if (d > 0 || h > 0 || m > 0) parts.push(m + t('unit.m'));
+    parts.push(sec + t('unit.s'));
+    return parts.join(' ');
+  }
+
+  /* Timestamps come from the API as RFC3339 strings or as numbers (seconds or
+     milliseconds since the epoch). Anything unparseable is shown verbatim. */
+  function parseTimestamp(v) {
+    if (v === null || v === undefined || v === '') return null;
+    if (typeof v === 'number') {
+      if (!isFinite(v)) return null;
+      return new Date(v < 1e12 ? v * 1000 : v);
+    }
+    if (typeof v === 'string') {
+      var s = v.trim();
+      if (/^-?\d+(\.\d+)?$/.test(s)) {
+        var n = Number(s);
+        return new Date(n < 1e12 ? n * 1000 : n);
+      }
+      var parsed = new Date(s);
+      if (!isNaN(parsed.getTime())) return parsed;
+    }
+    return null;
+  }
+
+  /* Age of a server-supplied instant. The browser clock only supplies "now";
+     the instant itself always comes from the API response. */
+  function fmtRelative(value) {
+    var d = parseTimestamp(value);
+    if (!d) return (value === null || value === undefined || value === '') ? t('common.na') : String(value);
+    var diff = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+    if (diff < 5) return t('rel.justNow');
+    if (diff < 60) return t('rel.seconds', { n: diff });
+    if (diff < 3600) return t('rel.minutes', { n: Math.floor(diff / 60) });
+    if (diff < 86400) return t('rel.hours', { n: Math.floor(diff / 3600) });
+    return t('rel.days', { n: Math.floor(diff / 86400) });
+  }
+
+  function fmtAbsolute(value) {
+    var d = parseTimestamp(value);
+    if (!d) return (value === null || value === undefined || value === '') ? t('common.na') : String(value);
+    return d.toLocaleString(state.lang === 'zh' ? 'zh-CN' : 'en-US');
+  }
+
+  /* ---------- API access ---------- */
+  function authHeaders() {
+    return state.token ? { 'Authorization': 'Bearer ' + state.token } : {};
+  }
+
+  /* Never throws: returns {data} | {error, network} | {unauthorized}. */
+  // A request that never answers must not pile up: without this a peer that
+  // drops packets leaves every fetch pending forever, and each poll adds three.
+  var REQUEST_TIMEOUT_MS = 10000;
+
+  function request(path, options) {
+    var opts = options || {};
+    // The generation at issue time: a 401 that answers a request made under
+    // an older credential must not re-lock a panel the user just unlocked.
+    var gen = state.tokenGen;
+    var headers = authHeaders();
+    if (opts.method && opts.method !== 'GET') headers['Content-Type'] = 'application/json';
+    var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var timer = controller ? setTimeout(function () { controller.abort(); }, REQUEST_TIMEOUT_MS) : null;
+    function done(result) {
+      if (timer !== null) { clearTimeout(timer); timer = null; }
+      return result;
+    }
+    return fetch(path, {
+      method: opts.method || 'GET',
+      headers: headers,
+      cache: 'no-store',
+      credentials: 'same-origin',
+      signal: controller ? controller.signal : undefined
+    }).then(function (res) {
+      return res.text().then(function (text) {
+        var body = null;
+        if (text) { try { body = JSON.parse(text); } catch (e) { body = null; } }
+        if (res.status === 401) return { unauthorized: true, staleAuth: gen !== state.tokenGen, status: 401 };
+        if (!res.ok) {
+          var msg = (body && body.error) ? String(body.error) : ('HTTP ' + res.status);
+          return { error: msg, status: res.status };
+        }
+        if (body === null) return { error: 'invalid JSON from ' + path, status: res.status };
+        return { data: body, status: res.status };
+      });
+    }).catch(function (err) {
+      if (err && err.name === 'AbortError') {
+        return { error: t('err.timeout', { s: REQUEST_TIMEOUT_MS / 1000 }), network: true };
+      }
+      return { error: (err && err.message) ? err.message : String(err), network: true };
+    }).then(done);
+  }
+
+  /* ---------- Error banner + connection state ---------- */
+  // The key and its parameters are kept rather than the sentence they produced: the
+  // banner stays on screen across a language switch, and a failure that is not on the
+  // polling path — loading the configuration — would otherwise keep the old language
+  // until the next attempt. hideError() clears it again.
+  //
+  // owner says who put the banner up. Without it the two-second poll's recovery
+  // cleared whatever was on screen, so a failure from a one-shot action — a
+  // refused disconnect, a load the operator asked for — was hidden by the next
+  // successful poll before it could be read, or announced by role="alert".
+  function showError(key, params, owner) {
+    var banner = el('errorBanner');
+    if (!banner) return;
+    state.lastError = { key: key, params: params || null, owner: owner || 'poll' };
+    setText(el('errorBannerText'), t(key, params));
+    banner.hidden = false;
+  }
+
+  // hideError clears the banner. Called with an owner it clears only that
+  // owner's banner, so the poll's recovery cannot wipe a failed action's
+  // message; an action's own success clears it, and Dismiss (no owner) clears
+  // whatever is on screen.
+  function hideError(owner) {
+    if (owner && state.lastError && state.lastError.owner !== owner) return;
+    state.lastError = null;
+    var banner = el('errorBanner');
+    if (banner) banner.hidden = true;
+  }
+
+  function setConnState(kind, text) {
+    var badge = el('connState');
+    var label = el('connStateText');
+    if (badge) {
+      badge.className = 'badge ' + (kind === 'ok' ? 'is-ok' : kind === 'err' ? 'is-err' : kind === 'warn' ? 'is-warn' : '');
+    }
+    if (label) label.textContent = text;
+  }
+
+  function setConnected(ok, reason) {
+    state.connected = ok;
+    if (ok) {
+      state.lastSuccessAt = Date.now();
+      setConnState('ok', t('state.connected'));
+    } else {
+      setConnState('err', reason === 'unauthorized' ? t('state.unauthorized') : t('state.disconnected'));
+    }
+    renderConnBanner();
+  }
+
+  // renderConnBanner draws the "disconnected — retrying" strip from the state, so the
+  // language switch can redraw it without touching lastSuccessAt the way a successful
+  // fetch does.
+  function renderConnBanner() {
+    var banner = el('connBanner');
+    if (!banner) return;
+    if (state.connected) {
+      banner.hidden = true;
+      return;
+    }
+    if (!state.lastError && !state.lastSuccessAt) {
+      // Nothing has succeeded or failed yet — the first poll is still in
+      // flight — so there is no outage to announce.
+      banner.hidden = true;
+      return;
+    }
+    setText(el('connBannerText'), t('conn.bannerDisconnected', {
+      s: POLL_MS / 1000,
+      ago: state.lastSuccessAt ? fmtRelative(new Date(state.lastSuccessAt).toISOString()) : t('footer.never')
+    }));
+    banner.hidden = false;
+  }
+
+  function renderLastUpdated() {
+    var node = el('lastUpdated');
+    if (!node) return;
+    node.textContent = state.lastSuccessAt
+      ? t('footer.lastUpdated', { ago: fmtRelative(new Date(state.lastSuccessAt).toISOString()) })
+      : t('footer.lastUpdated', { ago: t('footer.never') });
+  }
+
+  /* ---------- Auth ---------- */
+  function setUnauthorized(isUnauthorized) {
+    state.unauthorized = isUnauthorized;
+    var overlay = el('authOverlay');
+    if (overlay) overlay.hidden = !isUnauthorized;
+    // The page behind the modal is not interactable while the API refuses
+    // requests (the code below says so itself), so mark it inert: keyboard
+    // users must not tab into controls hidden behind the scrim.
+    var shell = el('appShell');
+    if (shell) {
+      if (isUnauthorized) shell.setAttribute('inert', '');
+      else shell.removeAttribute('inert');
+    }
+    var note = el('authStateNote');
+    var signOut = el('signOutBtn');
+    if (signOut) signOut.hidden = !state.token;
+
+    if (note) {
+      if (isUnauthorized) {
+        note.textContent = state.token ? t('auth.errRejected') : t('auth.noteNoToken');
+      } else if (state.lastStatus && state.lastStatus.auth_required) {
+        note.textContent = state.token ? t('auth.noteStored') : t('auth.noteRequired');
+      } else if (state.lastStatus) {
+        note.textContent = t('auth.noteNotRequired');
+      } else {
+        note.textContent = t('common.na');
+      }
+    }
+
+    if (isUnauthorized) {
+      // Nothing on screen can be trusted while the API refuses our requests.
+      state.lastStatus = null;
+      state.lastClients = null;
+      state.lastProxies = null;
+      state.uptimeBaseSeconds = null;
+      // The on-demand views keep their payloads in state between visits, and
+      // a language switch re-renders from them — leaving them populated here
+      // would show the old credential's ledger, directory and configuration
+      // as current after re-authentication, until a manual refresh.
+      state.lastLedger = null;
+      state.lastDirectory = null;
+      state.lastConfig = null;
+      state.lastLedgerError = null;
+      state.lastDirectoryError = null;
+      state.lastConfigError = null;
+      // A failed poll's error is cleared with the payloads: it would otherwise
+      // come back on the next language switch, before the first poll after
+      // re-authentication repainted those views.
+      state.lastClientsError = null;
+      state.lastProxiesError = null;
+      renderStatus(null);
+      renderClients(null, null);
+      renderProxies(null, null);
+      renderLedger(null, null);
+      renderDirectory(null, null);
+      renderConfig(null, null);
+      var input = el('authInput');
+      if (input) { try { input.focus(); } catch (e) {} }
+      var err = el('authError');
+      // Do not clobber an explicit "token rejected" message from a submit.
+      // The same distinction the sidebar note makes applies here: a browser
+      // holding a token that the server refuses needs "rejected", not the
+      // claim that no token was ever saved.
+      if (err && err.hidden) { err.textContent = state.token ? t('auth.errRejected') : t('auth.noteNoToken'); err.hidden = false; }
+    }
+  }
+
+  function handleUnauthorized() {
+    setConnected(false, 'unauthorized');
+    setUnauthorized(true);
+    showError('err.unauthorized', null, 'poll');
+  }
+
+  function submitToken(value) {
+    var token = (value || '').trim();
+    var err = el('authError');
+    if (!token) {
+      if (err) { err.textContent = t('auth.errMissing'); err.hidden = false; }
+      return;
+    }
+    state.token = token;
+    try { localStorage.setItem(TOKEN_KEY, token); } catch (e) {}
+    if (err) err.hidden = true;
+    var submit = el('authSubmit');
+    if (submit) submit.disabled = true;
+    // Probe with the new token before declaring success.
+    request('/api/status').then(function (res) {
+      if (submit) submit.disabled = false;
+      if (res.unauthorized && !res.staleAuth) {
+        // A stale refusal — the token was replaced or signed out while this
+        // probe was in flight — must not wipe the credential the newer
+        // generation chose. Every other request path makes the same check;
+        // this one used to be the exception that logged the user out.
+        state.token = null;
+        try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
+        if (err) { err.textContent = t('auth.errRejected'); err.hidden = false; }
+        setUnauthorized(true);
+        return;
+      }
+      if (res.error) {
+        // The probe never reached the API, so the token is unverified:
+        // unlocking here would present a credential the server has not
+        // accepted, and the localStorage copy above was written before the
+        // answer either. Stay in the modal and let the user retry.
+        if (err) { err.textContent = t('common.loadFailed', { msg: res.error }); err.hidden = false; }
+        return;
+      }
+      setUnauthorized(false);
+      hideError();
+      state.tokenGen++;
+      if (res.data) applyStatus(res.data);
+      poll();
+    });
+  }
+
+  function signOut() {
+    state.token = null;
+    state.tokenGen++;
+    try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
+    var note = el('authStateNote');
+    if (note) note.textContent = t('auth.noteRequired');
+    var signOutBtn = el('signOutBtn');
+    if (signOutBtn) signOutBtn.hidden = true;
+    poll();
+  }
+
+  /* ---------- Rendering — API payloads only ---------- */
+  function renderStatus(status) {
+    var s = status || {};
+    var conns = s.connections || {};
+    var proxies = s.proxies || {};
+    var traffic = s.traffic || {};
+
+    setText(el('statusVersion'), s.version);
+    setText(el('statusProtocol'), s.protocol !== undefined ? 'v' + s.protocol : null);
+    setText(el('statusEncryption'), s.encryption);
+    setText(el('statusBuildTime'), s.build_time ? fmtAbsolute(s.build_time) : null);
+    setText(el('statusCommit'), s.git_commit);
+    setText(el('statusStartedAt'), s.started_at ? fmtAbsolute(s.started_at) : null);
+    setText(el('statusAuthRequired'), s.auth_required === undefined ? null : (s.auth_required ? t('common.yes') : t('common.no')));
+    renderAudit(s.audit);
+
+    setText(el('metricConnActive'), s.connections ? fmtInt(conns.active) : null);
+    setText(el('metricConnTotal'), s.connections ? fmtInt(conns.total) : null);
+    setText(el('metricConnAuth'), s.connections ? fmtInt(conns.authenticated) : null);
+    setText(el('metricConnMax'), s.connections ? fmtInt(conns.max) : null);
+    setText(el('metricProxyRegistered'), s.proxies ? fmtInt(proxies.registered) : null);
+    setText(el('metricProxyStreams'), s.proxies ? fmtInt(proxies.active_streams) : null);
+
+    var hasTraffic = traffic && (traffic.bytes_in !== undefined || traffic.bytes_out !== undefined);
+    setText(el('trafficIn'), hasTraffic ? fmtBytes(traffic.bytes_in) : null);
+    setText(el('trafficOut'), hasTraffic ? fmtBytes(traffic.bytes_out) : null);
+    setText(el('trafficTotal'), hasTraffic ? fmtBytes(Number(traffic.bytes_in || 0) + Number(traffic.bytes_out || 0)) : null);
+
+    if (typeof s.uptime_seconds === 'number') {
+      state.uptimeBaseSeconds = s.uptime_seconds;
+      state.uptimeBaseAt = (window.performance && performance.now) ? performance.now() : 0;
+    } else {
+      state.uptimeBaseSeconds = null;
+    }
+    renderUptime();
+  }
+
+  /* The audit log is the one part of the server whose failure leaves no trace of its
+     own: a log that stopped recording looks exactly like a quiet server. It therefore
+     gets a row of its own and, while it cannot be written, a banner that stays up until
+     the server reports the path writable again.
+     A lost record is a permanent fact — the trail has a hole — so the row keeps a
+     warning after the log recovers, and the counters reset only when the server
+     restarts. */
+  function renderAudit(audit) {
+    var node = el('statusAudit');
+    var banner = el('auditBanner');
+    if (!audit || audit.enabled !== true) {
+      if (node) { node.className = ''; setText(node, audit ? t('common.no') : null); node.title = ''; }
+      if (banner) banner.hidden = true;
+      return;
+    }
+
+    var lost = Number(audit.records_lost || 0);
+    var recovered = Number(audit.recovered || 0);
+    var writable = audit.writable === true;
+
+    if (node) {
+      if (!writable) {
+        node.className = 'is-err';
+        node.textContent = lost > 0
+          ? t('audit.notWritable', { n: fmtInt(lost) })
+          : t('audit.notWritableNoLoss');
+      } else if (lost > 0) {
+        node.className = 'is-warn';
+        node.textContent = t('audit.lostThenRecovered', { n: fmtInt(lost) });
+      } else if (recovered > 0) {
+        node.className = 'is-warn';
+        node.textContent = t('audit.recovered', { n: fmtInt(recovered) });
+      } else {
+        node.className = '';
+        node.textContent = t('audit.recording');
+      }
+      node.title = audit.path || '';
+    }
+
+    if (!banner) return;
+    if (!writable) {
+      setText(el('auditBannerText'), t('audit.banner', {
+        n: fmtInt(lost),
+        path: audit.path || '',
+        msg: audit.last_error || '',
+      }));
+      banner.hidden = false;
+    } else {
+      banner.hidden = true;
+    }
+  }
+
+  /* Uptime is the server value; between polls we add only the locally measured
+     elapsed time since that value arrived, and we stop when disconnected. */
+  function renderUptime() {
+    var node = el('statusUptime');
+    if (!node) return;
+    if (state.uptimeBaseSeconds === null) { node.textContent = t('common.na'); return; }
+    var extra = 0;
+    if (state.connected && window.performance && performance.now) {
+      extra = Math.max(0, (performance.now() - state.uptimeBaseAt) / 1000);
+    }
+    node.textContent = fmtDuration(state.uptimeBaseSeconds + extra);
+  }
+
+  // focusKeyIn returns the data-key of the row that holds the keyboard focus, so a
+  // rebuild can hand the focus back to the control it replaced. The tables are
+  // rebuilt wholesale on every poll, and a focused button that is removed takes
+  // the focus to <body> with it.
+  function focusKeyIn(body) {
+    var active = document.activeElement;
+    if (!active || !body || !body.contains(active)) return '';
+    var row = active;
+    while (row && row !== body) {
+      if (row.getAttribute && row.getAttribute('data-key')) return row.getAttribute('data-key');
+      row = row.parentNode;
+    }
+    return '';
+  }
+
+  // restoreRowFocus puts the focus back on the first button of the row whose key it
+  // was on, if that row is still there.
+  function restoreRowFocus(body, key) {
+    if (!key || !body) return;
+    var rows = body.querySelectorAll('tr[data-key]');
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].getAttribute('data-key') !== key) continue;
+      var button = rows[i].querySelector('button');
+      if (button) { try { button.focus(); } catch (e) {} }
+      return;
+    }
+  }
+
+  function renderProxies(payload, errorMessage) {
+    var body = el('proxiesBody');
+    var table = el('proxiesTable');
+    var empty = el('proxiesEmpty');
+    var count = el('proxiesCount');
+    if (!body) return;
+    var focused = focusKeyIn(body);
+
+    clearNode(body);
+
+    if (errorMessage) {
+      if (table) table.hidden = true;
+      if (empty) { empty.hidden = false; empty.textContent = t('common.loadFailed', { msg: errorMessage }); }
+      if (count) count.textContent = '';
+      return;
+    }
+
+    if (!payload) {
+      // No payload and no error: we simply have not loaded anything yet.
+      if (table) table.hidden = true;
+      if (empty) { empty.hidden = false; empty.textContent = t('common.na'); }
+      if (count) count.textContent = '';
+      return;
+    }
+
+    var list = (payload.proxies) ? payload.proxies : [];
+    if (count) count.textContent = t('proxies.count', { n: fmtInt(list.length) });
+
+    if (!list.length) {
+      if (table) table.hidden = true;
+      if (empty) { empty.hidden = false; empty.textContent = t('proxies.empty'); }
+      return;
+    }
+
+    if (table) table.hidden = false;
+    if (empty) empty.hidden = true;
+
+    list.forEach(function (p) {
+      var proxy = p || {};
+      var tr = document.createElement('tr');
+      tr.setAttribute('data-key', (proxy.name === null || proxy.name === undefined) ? '' : String(proxy.name));
+      tr.appendChild(makeCell(proxy.name, 'proxies.col.name', 'id'));
+      tr.appendChild(makeCell(proxy.type, 'proxies.col.type'));
+      tr.appendChild(makeCell(proxy.local_addr, 'proxies.col.localAddr', 'id'));
+      tr.appendChild(makeCell(proxy.remote_port, 'proxies.col.remotePort', 'num'));
+      tr.appendChild(makeCell(proxy.client_id, 'proxies.col.client', 'id'));
+      tr.appendChild(membersCell(proxy));
+      tr.appendChild(makeCell(proxy.load_balance || proxy.group, 'proxies.col.strategy', 'id'));
+      tr.appendChild(makeCell(fmtInt(proxy.active_connections), 'proxies.col.activeConns', 'num'));
+      tr.appendChild(makeCell(fmtInt(proxy.total_connections), 'proxies.col.totalConns', 'num'));
+      tr.appendChild(makeCell(fmtBytes(proxy.bytes_in), 'proxies.col.bytesIn', 'num'));
+      tr.appendChild(makeCell(fmtBytes(proxy.bytes_out), 'proxies.col.bytesOut', 'num'));
+      body.appendChild(tr);
+    });
+    restoreRowFocus(body, focused);
+  }
+
+  function renderClients(payload, errorMessage) {
+    var body = el('clientsBody');
+    var table = el('clientsTable');
+    var empty = el('clientsEmpty');
+    var count = el('clientsCount');
+    if (!body) return;
+    var focused = focusKeyIn(body);
+
+    clearNode(body);
+
+    if (errorMessage) {
+      if (table) table.hidden = true;
+      if (empty) { empty.hidden = false; empty.textContent = t('common.loadFailed', { msg: errorMessage }); }
+      if (count) count.textContent = '';
+      // The overview cell states the same fact as this table, so a stale count
+      // left there would contradict the failure on screen.
+      var failed = el('metricClientCount');
+      if (failed) failed.textContent = t('common.na');
+      return;
+    }
+
+    if (!payload) {
+      // No payload and no error: nothing has been loaded yet — do not claim 0.
+      if (table) table.hidden = true;
+      if (empty) { empty.hidden = false; empty.textContent = t('common.na'); }
+      if (count) count.textContent = '';
+      var unknown = el('metricClientCount');
+      if (unknown) unknown.textContent = t('common.na');
+      return;
+    }
+
+    var list = (payload.clients) ? payload.clients : [];
+    if (count) count.textContent = t('clients.count', { n: fmtInt(list.length) });
+    var metric = el('metricClientCount');
+    if (metric) metric.textContent = fmtInt(list.length);
+
+    if (!list.length) {
+      if (table) table.hidden = true;
+      if (empty) { empty.hidden = false; empty.textContent = t('clients.empty'); }
+      return;
+    }
+
+    if (table) table.hidden = false;
+    if (empty) empty.hidden = true;
+
+    list.forEach(function (c) {
+      var client = c || {};
+      var id = (client.id === null || client.id === undefined) ? '' : String(client.id);
+      var tr = document.createElement('tr');
+      tr.setAttribute('data-key', id);
+
+      tr.appendChild(makeCell(id, 'clients.col.id', 'id wrap'));
+      tr.appendChild(makeCell(client.remote_addr, 'clients.col.remoteAddr', 'id'));
+      tr.appendChild(makeCell(client.client_version, 'clients.col.version', 'id'));
+      tr.appendChild(withTitle(makeCell(fmtRelative(client.connected_at), 'clients.col.connectedAt'), fmtAbsolute(client.connected_at)));
+
+      var hb = fmtRelative(client.last_heartbeat);
+      if (client.heartbeat_seconds !== undefined && client.heartbeat_seconds !== null) {
+        hb += ' (' + t('clients.heartbeatEvery', { n: fmtInt(client.heartbeat_seconds) }) + ')';
+      }
+      tr.appendChild(withTitle(makeCell(hb, 'clients.col.lastHeartbeat'), fmtAbsolute(client.last_heartbeat)));
+
+      tr.appendChild(makeCell(client.encrypted === undefined ? null : (client.encrypted ? t('common.yes') : t('common.no')),
+                              'clients.col.encrypted'));
+      tr.appendChild(makeCell((client.proxies && client.proxies.length) ? client.proxies.join(', ') : null,
+                              'clients.col.proxies', 'wrap'));
+      tr.appendChild(makeCell(fmtInt(client.active_streams), 'clients.col.activeStreams', 'num'));
+      tr.appendChild(makeCell(fmtInt(client.total_streams), 'clients.col.totalStreams', 'num'));
+      tr.appendChild(makeCell(fmtBytes(client.bytes_in), 'clients.col.bytesIn', 'num'));
+      tr.appendChild(makeCell(fmtBytes(client.bytes_out), 'clients.col.bytesOut', 'num'));
+
+      var actions = document.createElement('td');
+      actions.className = 'actions';
+      actions.setAttribute('data-label', t('clients.col.actions'));
+      if (id) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn-danger btn-sm';
+        btn.textContent = t('clients.disconnect');
+        // The visible label is the same on every row, so the accessible name
+        // has to carry the client id for a screen reader to tell them apart.
+        btn.setAttribute('aria-label', t('clients.disconnectLabel', { id: id }));
+        if (state.disconnecting[id]) btn.disabled = true;
+        btn.addEventListener('click', function () { disconnectClient(id, btn); });
+        actions.appendChild(btn);
+      } else {
+        actions.textContent = t('common.na');
+      }
+      tr.appendChild(actions);
+
+      body.appendChild(tr);
+    });
+    restoreRowFocus(body, focused);
+  }
+
+  function withTitle(cell, titleText) {
+    if (titleText && titleText !== t('common.na')) cell.setAttribute('title', titleText);
+    return cell;
+  }
+
+  var VPN_FIELDS = ['vpnState', 'vpnDevice', 'vpnServerAddress', 'vpnSubnet', 'vpnMTU',
+    'vpnPool', 'vpnPeers', 'vpnFromDevice', 'vpnToDevice', 'vpnDropped'];
+
+  function renderVPN(vpn) {
+    vpn = vpn || {};
+    setText(el('vpnState'), vpn.enabled ? t('common.yes') : t('common.no'));
+    if (!vpn.enabled) {
+      ['vpnDevice', 'vpnServerAddress', 'vpnSubnet', 'vpnMTU', 'vpnPool', 'vpnPeers',
+        'vpnFromDevice', 'vpnToDevice', 'vpnDropped'].forEach(function (id) { setText(el(id), null); });
+      return;
+    }
+    setText(el('vpnDevice'), vpn.device);
+    setText(el('vpnServerAddress'), vpn.server_address);
+    setText(el('vpnSubnet'), vpn.subnet);
+    setText(el('vpnMTU'), vpn.mtu);
+    setText(el('vpnPool'), vpn.addresses_used + ' / ' + vpn.pool_size);
+    setText(el('vpnPeers'), vpn.peers);
+    var packets = vpn.packets || {};
+    setText(el('vpnFromDevice'), packets.from_device);
+    setText(el('vpnToDevice'), packets.to_device);
+    // Both the packets that could not be routed and the ones that were dropped
+    // leave the operator with the same question, so they are shown together.
+    var lost = (packets.unroutable || 0) + (packets.dropped || 0);
+    setText(el('vpnDropped'), lost);
+  }
+
+  function renderConfig(payload, errorMessage) {
+    if (errorMessage) {
+      // The failure text paints here on every redraw, a language switch
+      // included; the banner belongs to the load path, which must not be
+      // stolen by a redraw.
+      ['cfgBindAddr', 'cfgBindPort', 'cfgMaxConn', 'cfgEncEnabled', 'cfgEncAlgorithm', 'cfgAuthRequired', 'cfgProxies']
+        .concat(VPN_FIELDS)
+        .forEach(function (id) { setText(el(id), null); });
+      return;
+    }
+    var cfg = payload || {};
+    var server = cfg.server || {};
+    var enc = cfg.encryption || {};
+    var dash = cfg.dashboard || {};
+
+    setText(el('cfgBindAddr'), server.bind_addr);
+    setText(el('cfgBindPort'), server.bind_port);
+    setText(el('cfgMaxConn'), server.max_connections);
+    setText(el('cfgEncEnabled'), enc.enabled === undefined ? null : (enc.enabled ? t('common.yes') : t('common.no')));
+    setText(el('cfgEncAlgorithm'), enc.algorithm);
+    setText(el('cfgAuthRequired'), dash.auth_required === undefined ? null : (dash.auth_required ? t('common.yes') : t('common.no')));
+    // The count of proxies this server publishes for its own clients, which is not the
+    // same as the registered count on the overview: those belong to connected clients.
+    setText(el('cfgProxies'), cfg.proxies_configured === undefined ? null : fmtInt(cfg.proxies_configured));
+    renderVPN(cfg.vpn);
+  }
+
+  /* ---------- Bandwidth ledger ---------- */
+  // A hex digest shown in a table is abbreviated; the full value stays in the cell's
+  // title, because a hash that cannot be read is not much use to an auditor.
+  function shortHex(value) {
+    var text = (value === null || value === undefined) ? '' : String(value);
+    if (!text) return t('common.na');
+    return text.length <= 20 ? text : text.slice(0, 12) + '…' + text.slice(-6);
+  }
+
+  function loadLedger() {
+    var btn = el('ledgerRefresh');
+    if (btn) btn.disabled = true;
+    return request('/api/ledger').then(function (res) {
+      if (btn) btn.disabled = false;
+      // A 401 carries no payload to fall back on: a stale one — the credential
+      // changed while this was in flight — must not wipe what the newer one
+      // loaded, and only a fresh one locks the panel.
+      if (res.unauthorized) { if (!res.staleAuth) handleUnauthorized(); return; }
+      if (res.error) {
+        state.lastLedgerError = res.error;
+        showError('err.ledger', { msg: res.error }, 'ledger');
+        renderLedger(null, res.error);
+        return;
+      }
+      hideError('ledger');
+      state.lastLedger = res.data;
+      state.lastLedgerError = null;
+      renderLedger(res.data, null);
+    });
+  }
+
+  /* The ledger is read on demand (opening the view, or Refresh) instead of on the
+     two-second poll: it is a file, and its numbers move only when a session ends. A
+     ledger that is off answers {"enabled": false}, which is a state of its own — the
+     rows then say so rather than showing zeroes that would read as "nothing was used". */
+  function renderLedger(payload, errorMessage) {
+    var fields = ['ledgerState', 'ledgerPath', 'ledgerCount', 'ledgerHead', 'ledgerUnbilled', 'ledgerPublicKey'];
+    var totalsBody = el('ledgerTotalsBody'), totalsTable = el('ledgerTotalsTable'), totalsEmpty = el('ledgerTotalsEmpty');
+    var entriesBody = el('ledgerEntriesBody'), entriesTable = el('ledgerEntriesTable'), entriesEmpty = el('ledgerEntriesEmpty');
+    var shown = el('ledgerShown');
+
+    if (totalsBody) clearNode(totalsBody);
+    if (entriesBody) clearNode(entriesBody);
+    if (shown) shown.textContent = '';
+
+    // empty() clears everything and leaves the two tables with one explanation each.
+    function empty(totalsText, entriesText) {
+      fields.forEach(function (id) {
+        var node = el(id);
+        setText(node, null);
+        if (node) node.title = '';
+      });
+      if (totalsTable) totalsTable.hidden = true;
+      if (entriesTable) entriesTable.hidden = true;
+      if (totalsEmpty) { totalsEmpty.hidden = false; totalsEmpty.textContent = totalsText; }
+      if (entriesEmpty) { entriesEmpty.hidden = false; entriesEmpty.textContent = entriesText; }
+    }
+
+    if (errorMessage) {
+      // The failure text paints here on every redraw, a language switch
+      // included; the banner belongs to the load path, which must not be
+      // stolen by a redraw.
+      var failed = t('common.loadFailed', { msg: errorMessage });
+      empty(failed, failed);
+      return;
+    }
+    if (!payload) { empty(t('common.na'), t('common.na')); return; }
+
+    if (payload.enabled !== true) {
+      empty(t('ledger.off'), t('ledger.off'));
+      setText(el('ledgerState'), t('common.no'));
+      setText(el('ledgerPath'), payload.path);
+      return;
+    }
+
+    setText(el('ledgerState'), t('common.yes'));
+    setText(el('ledgerPath'), payload.path);
+    setText(el('ledgerCount'), fmtInt(payload.count));
+    var head = el('ledgerHead');
+    setText(head, shortHex(payload.head));
+    if (head) head.title = payload.head || '';
+
+    // Live sessions are not in the chain yet: their bytes become entries when the
+    // session ends, so this is the part of the total the file does not account for.
+    var live = payload.unbilled_live || {};
+    var unbilled = 0;
+    Object.keys(live).forEach(function (id) { unbilled += Number(live[id]) || 0; });
+    setText(el('ledgerUnbilled'), fmtBytes(unbilled));
+
+    var key = el('ledgerPublicKey');
+    setText(key, payload.public_key);
+    if (key) key.title = payload.public_key || '';
+
+    var totals = payload.totals || {};
+    var ids = Object.keys(totals).sort();
+    if (ids.length) {
+      if (totalsTable) totalsTable.hidden = false;
+      if (totalsEmpty) totalsEmpty.hidden = true;
+      ids.forEach(function (id) {
+        var sum = totals[id] || {};
+        var tr = document.createElement('tr');
+        tr.appendChild(makeCell(id, 'ledger.col.client', 'id'));
+        tr.appendChild(makeCell(fmtInt(sum.entries), 'ledger.col.entries', 'num'));
+        tr.appendChild(makeCell(fmtBytes(sum.bytes_in), 'ledger.col.bytesIn', 'num'));
+        tr.appendChild(makeCell(fmtBytes(sum.bytes_out), 'ledger.col.bytesOut', 'num'));
+        totalsBody.appendChild(tr);
+      });
+    } else {
+      if (totalsTable) totalsTable.hidden = true;
+      if (totalsEmpty) { totalsEmpty.hidden = false; totalsEmpty.textContent = t('ledger.noUsage'); }
+    }
+
+    var entries = payload.entries || [];
+    if (shown) {
+      shown.textContent = t('ledger.shown', {
+        n: fmtInt(payload.returned === undefined ? entries.length : payload.returned),
+        total: fmtInt(payload.count)
+      });
+    }
+    if (entries.length) {
+      if (entriesTable) entriesTable.hidden = false;
+      if (entriesEmpty) entriesEmpty.hidden = true;
+      entries.forEach(function (e) {
+        var entry = e || {};
+        var tr = document.createElement('tr');
+        tr.appendChild(makeCell(fmtInt(entry.index), 'ledger.col.index', 'num'));
+        tr.appendChild(makeCell(entry.time ? fmtAbsolute(entry.time) : null, 'ledger.col.time'));
+        tr.appendChild(makeCell(entry.client_id, 'ledger.col.client', 'id'));
+        tr.appendChild(makeCell(entry.proxy, 'ledger.col.proxy', 'id'));
+        tr.appendChild(makeCell(fmtBytes(entry.bytes_in), 'ledger.col.bytesIn', 'num'));
+        tr.appendChild(makeCell(fmtBytes(entry.bytes_out), 'ledger.col.bytesOut', 'num'));
+        var hash = makeCell(shortHex(entry.hash), 'ledger.col.hash', 'id');
+        hash.title = entry.hash || '';
+        tr.appendChild(hash);
+        entriesBody.appendChild(tr);
+      });
+    } else {
+      if (entriesTable) entriesTable.hidden = true;
+      if (entriesEmpty) { entriesEmpty.hidden = false; entriesEmpty.textContent = t('ledger.empty'); }
+    }
+  }
+
+  /* ---------- Decentralized directory ---------- */
+  function loadDirectory() {
+    var btn = el('directoryRefresh');
+    if (btn) btn.disabled = true;
+    return request('/api/dht').then(function (res) {
+      if (btn) btn.disabled = false;
+      // A 401 carries no payload to fall back on: a stale one — the credential
+      // changed while this was in flight — must not wipe what the newer one
+      // loaded, and only a fresh one locks the panel.
+      if (res.unauthorized) { if (!res.staleAuth) handleUnauthorized(); return; }
+      if (res.error) {
+        state.lastDirectoryError = res.error;
+        showError('err.dht', { msg: res.error }, 'directory');
+        renderDirectory(null, res.error);
+        return;
+      }
+      hideError('directory');
+      state.lastDirectory = res.data;
+      state.lastDirectoryError = null;
+      renderDirectory(res.data, null);
+    });
+  }
+
+  /* The directory is read on demand like the ledger, and for the same reason: nothing
+     in it changes between two polls unless a client registers or leaves. With the DHT
+     off the API answers {"enabled": false}, which is a state of its own — the view says
+     so instead of drawing an empty node. */
+  function renderDirectory(payload, errorMessage) {
+    var fields = ['dhtState', 'dhtNodeId', 'dhtAddr', 'dhtNamespace', 'dhtContacts', 'dhtAdvertiseAs', 'dhtKey'];
+    var body = el('dhtAnnouncedBody'), table = el('dhtAnnouncedTable'), empty = el('dhtAnnouncedEmpty');
+    var count = el('dhtAnnouncedCount');
+
+    if (body) clearNode(body);
+    if (count) count.textContent = '';
+
+    function say(totalsText) {
+      fields.forEach(function (id) {
+        var node = el(id);
+        setText(node, null);
+        if (node) node.title = '';
+      });
+      if (table) table.hidden = true;
+      if (empty) { empty.hidden = false; empty.textContent = totalsText; }
+    }
+
+    if (errorMessage) {
+      // The failure text paints here on every redraw, a language switch
+      // included; the banner belongs to the load path, which must not be
+      // stolen by a redraw.
+      say(t('common.loadFailed', { msg: errorMessage }));
+      return;
+    }
+    if (!payload) { say(t('common.na')); return; }
+
+    if (payload.enabled !== true) {
+      say(t('dht.off'));
+      setText(el('dhtState'), t('common.no'));
+      return;
+    }
+
+    setText(el('dhtState'), t('common.yes'));
+    var id = el('dhtNodeId');
+    setText(id, shortHex(payload.node_id));
+    if (id) id.title = payload.node_id || '';
+    setText(el('dhtAddr'), payload.addr);
+    setText(el('dhtNamespace'), payload.namespace);
+    setText(el('dhtContacts'), payload.contacts === undefined ? null : fmtInt(payload.contacts));
+    setText(el('dhtAdvertiseAs'), payload.advertise_as);
+    var key = el('dhtKey');
+    // An empty key is a fact about this node rather than a missing value: its records
+    // are published unsigned, and a reader that requires a signature ignores them.
+    var signed = payload.signing_key ? payload.signing_key : t('dht.unsigned');
+    setText(key, signed);
+    if (key) key.title = payload.signing_key || '';
+
+    var names = payload.announced || [];
+    if (count) count.textContent = names.length ? t('dht.count', { n: fmtInt(names.length) }) : '';
+    if (!names.length) {
+      if (table) table.hidden = true;
+      if (empty) { empty.hidden = false; empty.textContent = t('dht.none'); }
+      return;
+    }
+
+    if (table) table.hidden = false;
+    if (empty) empty.hidden = true;
+    names.forEach(function (name) {
+      var tr = document.createElement('tr');
+      tr.appendChild(makeCell(name, 'dht.col.name', 'id'));
+      body.appendChild(tr);
+    });
+  }
+
+  function disconnectClient(id, button) {
+    if (!window.confirm(t('clients.confirm', { id: id }))) return;
+    // Recorded in state, not only on this button: the next poll replaces the
+    // button, and the replacement has to stay disabled too.
+    state.disconnecting[id] = true;
+    if (button) button.disabled = true;
+    request('/api/clients/' + encodeURIComponent(id), { method: 'DELETE' }).then(function (res) {
+      delete state.disconnecting[id];
+      if (button) button.disabled = false;
+      // A 401 carries no payload to fall back on: a stale one — the credential
+      // changed while this was in flight — must not wipe what the newer one
+      // loaded, and only a fresh one locks the panel.
+      if (res.unauthorized) { if (!res.staleAuth) handleUnauthorized(); return; }
+      if (res.error) { showError('err.disconnect', { id: id, msg: res.error }, 'disconnect'); return; }
+      hideError('disconnect');
+      poll();
+    });
+  }
+
+  /* ---------- Navigation ---------- */
+  var VIEWS = ['overview', 'proxies', 'clients', 'ledger', 'directory', 'config'];
+
+  function setView(name) {
+    if (VIEWS.indexOf(name) === -1) name = 'overview';
+    state.view = name;
+    VIEWS.forEach(function (v) {
+      var section = el('view-' + v);
+      if (section) section.hidden = (v !== name);
+      var nav = el('nav' + v.charAt(0).toUpperCase() + v.slice(1));
+      if (nav) {
+        if (v === name) nav.setAttribute('aria-current', 'page');
+        else nav.removeAttribute('aria-current');
+      }
+    });
+    if (name === 'config') loadConfig();
+    if (name === 'ledger') loadLedger();
+    if (name === 'directory') loadDirectory();
+    closeSidebar();
+  }
+
+  function isMobileNav() {
+    return window.matchMedia('(max-width: 860px)').matches;
+  }
+
+  function openSidebar() {
+    var sidebar = el('sidebar'), scrim = el('scrim'), toggle = el('menuToggle');
+    if (sidebar) {
+      // The drawer is a real overlay again, so its nav is focusable.
+      sidebar.removeAttribute('inert');
+      sidebar.classList.add('is-open');
+    }
+    if (scrim) scrim.hidden = false;
+    if (toggle) toggle.setAttribute('aria-expanded', 'true');
+    var first = el('navOverview');
+    if (first) { try { first.focus(); } catch (e) {} }
+  }
+
+  function closeSidebar() {
+    var sidebar = el('sidebar'), scrim = el('scrim'), toggle = el('menuToggle');
+    // Whether the focus was inside the drawer decides whether it should come
+    // back to the button that opened it.
+    var wasInside = !!(sidebar && document.activeElement && sidebar.contains(document.activeElement));
+    if (sidebar) sidebar.classList.remove('is-open');
+    if (scrim) scrim.hidden = true;
+    if (toggle) toggle.setAttribute('aria-expanded', 'false');
+    if (sidebar) {
+      // Below the breakpoint the drawer is only moved off screen, so without
+      // inert the tab order still walks through its buttons, all of them out of
+      // view. The desktop layout keeps the sidebar in the page, so it is only
+      // taken out of the tab order while it really is off canvas.
+      if (isMobileNav()) sidebar.setAttribute('inert', '');
+      else sidebar.removeAttribute('inert');
+    }
+    if (wasInside && toggle) { try { toggle.focus(); } catch (e) {} }
+  }
+
+  function toggleSidebar() {
+    var sidebar = el('sidebar');
+    if (sidebar && sidebar.classList.contains('is-open')) closeSidebar();
+    else openSidebar();
+  }
+
+  /* ---------- i18n application ---------- */
+  function applyI18n() {
+    document.documentElement.lang = (state.lang === 'zh') ? 'zh-CN' : 'en';
+    var nodes = document.querySelectorAll('[data-i18n]');
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].textContent = t(nodes[i].getAttribute('data-i18n'));
+    }
+    var labels = document.querySelectorAll('[data-i18n-label]');
+    for (var j = 0; j < labels.length; j++) {
+      labels[j].setAttribute('aria-label', t(labels[j].getAttribute('data-i18n-label')));
+    }
+    var holders = document.querySelectorAll('[data-i18n-placeholder]');
+    for (var k = 0; k < holders.length; k++) {
+      holders[k].setAttribute('placeholder', t(holders[k].getAttribute('data-i18n-placeholder')));
+    }
+  }
+
+  /* ---------- Polling ---------- */
+  function applyStatus(data) {
+    state.lastStatus = data;
+    // The new uptime value must be in state before renderStatus() draws it.
+    renderStatus(data);
+    renderLastUpdated();
+  }
+
+  function poll() {
+    // One at a time: the interval keeps firing while a slow server answers, and
+    // an explicit poll after an action overlaps it too. A poll landing on a busy
+    // one is remembered, not dropped: the in-flight poll's answer may predate
+    // the action that asked for the refresh.
+    if (state.pollInFlight) {
+      state.pollPending = true;
+      return Promise.resolve();
+    }
+    state.pollInFlight = true;
+    var gen = state.tokenGen;
+    var seq = ++state.pollSeq;
+    function settle() {
+      state.pollInFlight = false;
+      if (state.pollPending) {
+        state.pollPending = false;
+        poll();
+      }
+    }
+    return Promise.all([
+      request('/api/status'),
+      request('/api/clients'),
+      request('/api/proxies')
+    ]).then(function (results) {
+      var statusRes = results[0], clientsRes = results[1], proxiesRes = results[2];
+
+      // A credential that changed while these were in flight has already
+      // decided the UI's state; a stale response — 401 or 200 — must not
+      // re-lock the panel or repaint rows the fresh credential cleared. The
+      // same for a poll a newer one has replaced.
+      if (gen !== state.tokenGen || seq !== state.pollSeq) return;
+
+      if (statusRes.unauthorized || clientsRes.unauthorized || proxiesRes.unauthorized) {
+        handleUnauthorized();
+        return;
+      }
+
+      if (statusRes.error) {
+        setConnected(false);
+        showError('err.status', { msg: statusRes.error }, 'poll');
+      } else {
+        setConnected(true);
+        applyStatus(statusRes.data);
+        setUnauthorized(false);
+        // Recovery clears the banner the failed poll put up; without this a
+        // red error stays on screen after the server is back. Only the poll's
+        // own banner: a failed action's message is not the poll's to clear.
+        hideError('poll');
+      }
+
+      renderLastUpdated();
+
+      if (clientsRes.error) {
+        state.lastClientsError = clientsRes.error;
+        renderClients(null, clientsRes.error);
+        showError('err.clients', { msg: clientsRes.error }, 'poll');
+      } else {
+        state.lastClients = clientsRes.data;
+        state.lastClientsError = null;
+        renderClients(clientsRes.data, null);
+      }
+
+      if (proxiesRes.error) {
+        state.lastProxiesError = proxiesRes.error;
+        renderProxies(null, proxiesRes.error);
+        showError('err.proxies', { msg: proxiesRes.error }, 'poll');
+      } else {
+        state.lastProxies = proxiesRes.data;
+        state.lastProxiesError = null;
+        renderProxies(proxiesRes.data, null);
+      }
+    }).then(settle, settle);
+  }
+
+  function loadConfig() {
+    var btn = el('configRefresh');
+    if (btn) btn.disabled = true;
+    return request('/api/config').then(function (res) {
+      if (btn) btn.disabled = false;
+      // A 401 carries no payload to fall back on: a stale one — the credential
+      // changed while this was in flight — must not wipe what the newer one
+      // loaded, and only a fresh one locks the panel.
+      if (res.unauthorized) { if (!res.staleAuth) handleUnauthorized(); return; }
+      if (res.error) {
+        state.lastConfigError = res.error;
+        showError('err.config', { msg: res.error }, 'config');
+        renderConfig(null, res.error);
+        return;
+      }
+      hideError('config');
+      state.lastConfig = res.data;
+      state.lastConfigError = null;
+      renderConfig(res.data, null);
+    });
+  }
+
+  /* ---------- Wiring ---------- */
+  function loadStoredState() {
+    try {
+      var storedToken = localStorage.getItem(TOKEN_KEY);
+      if (storedToken) state.token = storedToken;
+      var storedLang = localStorage.getItem(LANG_KEY);
+      if (storedLang && I18N[storedLang]) state.lang = storedLang;
+    } catch (e) { /* storage may be blocked; the dashboard still works */ }
+  }
+
+  function init() {
+    checkDictionaries();
+    loadStoredState();
+
+    var langSelect = el('langSelect');
+    if (langSelect) {
+      langSelect.value = state.lang;
+      langSelect.addEventListener('change', function () {
+        state.lang = I18N[langSelect.value] ? langSelect.value : 'en';
+        try { localStorage.setItem(LANG_KEY, state.lang); } catch (e) {}
+        applyI18n();
+        renderStatus(state.lastStatus);
+        renderClients(state.lastClients, state.lastClientsError);
+        renderProxies(state.lastProxies, state.lastProxiesError);
+        // A load failure is redrawn with its view: the renderers prefer the
+        // error they are handed, so a failed load stays a failure in the new
+        // language and never falls back to a stale payload's numbers.
+        if (state.lastLedger || state.lastLedgerError) renderLedger(state.lastLedger, state.lastLedgerError);
+        if (state.lastDirectory || state.lastDirectoryError) renderDirectory(state.lastDirectory, state.lastDirectoryError);
+        // The configuration view draws yes/no through t(), so its values have to be
+        // redrawn too: the labels follow on their own (data-i18n), the values do not.
+        if (state.lastConfig || state.lastConfigError) renderConfig(state.lastConfig, state.lastConfigError);
+        renderLastUpdated();
+        setUnauthorized(state.unauthorized);
+        if (state.connected) {
+          setConnState('ok', t('state.connected'));
+        } else if (state.unauthorized) {
+          setConnState('err', t('state.unauthorized'));
+        } else if (state.lastError || state.lastSuccessAt) {
+          setConnState('err', t('state.disconnected'));
+        } else {
+          // The first poll is still in flight, which is what init drew:
+          // nothing has succeeded or failed yet, so neither connected nor
+          // disconnected is true.
+          setConnState('warn', t('state.connecting'));
+        }
+        // Both banners are sentences, so they are redrawn from what they were built
+        // from rather than left in the language they were drawn in.
+        renderConnBanner();
+        if (state.lastError) setText(el('errorBannerText'), t(state.lastError.key, state.lastError.params));
+      });
+    }
+
+    var toggle = el('menuToggle');
+    if (toggle) toggle.addEventListener('click', toggleSidebar);
+    var scrim = el('scrim');
+    if (scrim) scrim.addEventListener('click', closeSidebar);
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape') closeSidebar();
+    });
+    window.addEventListener('resize', function () {
+      // Both directions. On the way out the sidebar goes back into the page, and
+      // on the way in the closed drawer has to leave the tab order: until now
+      // only the load path happened to call closeSidebar, so a window narrowed
+      // while the panel was open kept its off-screen navigation focusable.
+      var sidebar = el('sidebar');
+      if (!isMobileNav()) closeSidebar();
+      else if (sidebar && !sidebar.classList.contains('is-open')) closeSidebar();
+    });
+
+    VIEWS.forEach(function (v) {
+      var nav = el('nav' + v.charAt(0).toUpperCase() + v.slice(1));
+      if (nav) nav.addEventListener('click', function () { setView(v); });
+    });
+
+    var dismiss = el('errorBannerDismiss');
+    if (dismiss) dismiss.addEventListener('click', function () { hideError(); });
+
+    var form = el('authForm');
+    if (form) form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      submitToken(el('authInput') ? el('authInput').value : '');
+    });
+
+    var signOutBtn = el('signOutBtn');
+    if (signOutBtn) signOutBtn.addEventListener('click', signOut);
+
+    var cfgBtn = el('configRefresh');
+    if (cfgBtn) cfgBtn.addEventListener('click', loadConfig);
+
+    var ledgerBtn = el('ledgerRefresh');
+    if (ledgerBtn) ledgerBtn.addEventListener('click', loadLedger);
+
+    var dirBtn = el('directoryRefresh');
+    if (dirBtn) dirBtn.addEventListener('click', loadDirectory);
+
+    setView('overview');
+    applyI18n();
+    setConnState('warn', t('state.connecting'));
+    if (!state.token) setUnauthorized(false);
+    renderLastUpdated();
+
+    poll();
+    // Do not hammer the API while the tab is hidden (see visibilitychange
+    // below); refresh on return.
+    setInterval(function () { if (!document.hidden) poll(); }, POLL_MS);
+    setInterval(renderUptime, 1000);
+    setInterval(renderLastUpdated, 1000);
+
+    // Do not hammer the API while the tab is hidden; refresh on return.
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) poll();
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
+</body>
+</html>

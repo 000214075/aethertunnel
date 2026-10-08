@@ -1,0 +1,296 @@
+name: Release
+
+# Triggered by pushing a version tag, e.g.:
+#   git tag v1.0.0 && git push origin v1.0.0
+#
+# The v1 setup had two workflows (one on `release: created`, one on
+# `release: published`) that both uploaded the same asset names to the same
+# release, so the second one always failed with a 422, and it also used the
+# archived actions/upload-release-asset@v1 with wrong download-artifact paths.
+# Here a single job builds the matrix, verifies it, and creates the release with
+# the `gh` CLI that is already on the runner.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'tag to release (must already exist)'
+        required: true
+
+permissions:
+  contents: write
+  # The release job reads the mobile-app workflow run (gh run list/download),
+  # which needs the Actions API beyond the default contents scope.
+  actions: read
+
+jobs:
+  # The end-to-end operations script runs against the tagged source before anything is
+  # published. It starts a server, an owner client and visitor clients as real
+  # processes, drives every proxy type and the optional security layers, and checks the
+  # operational surface a release is judged on: the probes, the metrics, the audit log
+  # and its failure handling. A failed run means no release is created.
+  operations:
+    name: operations (windows)
+    runs-on: windows-latest
+    steps:
+      # The tag being released, not the ref that triggered the run: a dispatch on
+      # the default branch would otherwise gate the release on the branch tip
+      # while the release job builds the tag.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: the operations script passes end to end
+        shell: pwsh
+        run: ./scripts/smoke-test.ps1
+
+  release:
+    needs: operations
+    runs-on: ubuntu-latest
+    steps:
+      # Check out the tag being released, not the ref that triggered the run: a
+      # workflow_dispatch on the default branch would otherwise build the branch tip
+      # and publish it under the tag named in the input.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: tests must pass before a release
+        run: go test ./... -count=1 -timeout 180s
+
+      - name: resolve the tag to release
+        run: |
+          echo "REL_TAG=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_ENV"
+          # The commit the workspace is actually at, which the mobile gate matches on
+          # rather than github.sha (the dispatched ref, which need not be the tag).
+          echo "REL_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: cross-compile the matrix
+        run: |
+          bash scripts/build-release.sh "$REL_TAG"
+
+      - name: verify every artifact is a real binary of the right format
+        run: |
+          set -e
+          check() {
+            file --brief "$1" | grep -qi "$2" || { echo "$1 is not $2"; exit 1; }
+          }
+          check dist/aethertunnel-server-linux-amd64           'ELF 64-bit'
+          check dist/aethertunnel-server-linux-arm64           'ELF 64-bit'
+          check dist/aethertunnel-client-linux-amd64           'ELF 64-bit'
+          check dist/aethertunnel-client-linux-arm64           'ELF 64-bit'
+          check dist/aethertunnel-server-darwin-amd64          'Mach-O'
+          check dist/aethertunnel-server-darwin-arm64          'Mach-O'
+          check dist/aethertunnel-client-darwin-amd64          'Mach-O'
+          check dist/aethertunnel-client-darwin-arm64          'Mach-O'
+          check dist/aethertunnel-server-windows-amd64.exe     'PE32+'
+          check dist/aethertunnel-server-windows-arm64.exe     'PE32+'
+          check dist/aethertunnel-client-windows-amd64.exe     'PE32+'
+          check dist/aethertunnel-client-windows-arm64.exe     'PE32+'
+          echo "all 12 artifacts look correct"
+
+      - name: record the version the binaries report
+        run: |
+          ./dist/aethertunnel-server-linux-amd64 --version
+          ./dist/aethertunnel-client-linux-amd64 --version
+
+      - name: create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$REL_TAG"
+          # The release notes are the current release's own notes, kept in the
+          # repository as docs/RELEASE-NOTES.md.
+          test -s docs/RELEASE-NOTES.md
+
+          # The Android artifacts are built by the mobile-app workflow's run on
+          # this same commit. Waiting for them BEFORE the release exists is
+          # what makes the header's promise true: a failed or missing mobile
+          # run fails this job with no release published at all, instead of
+          # publishing one that permanently misses its Android assets (with
+          # the verify jobs skipped behind it).
+          row=""
+          run_id=""
+          # Match on the commit, not just the tag: an older mobile run for the
+          # same tag name would otherwise satisfy the wait and its artifacts are
+          # not this release's.
+          for _ in $(seq 1 120); do
+            row=$(gh run list --workflow=mobile-app.yml --commit "$REL_COMMIT" --limit 3 \
+              --json databaseId,status,conclusion \
+              -q '.[0] | "\(.databaseId) \(.status)/\(.conclusion // "pending")"' \
+              2>/dev/null || echo none)
+            case "$row" in
+              *"completed/success"*) run_id=${row%% *}; break ;;
+              *"completed/"*) echo "the mobile-app run did not go green: $row"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          [ -n "$run_id" ] || { echo "no mobile-app run for this commit ever finished: $row"; exit 1; }
+          gh run download "$run_id" -n app-debug-apk -D dist/mobile
+          gh run download "$run_id" -n mobile-aar -D dist/mobile
+
+          # Idempotent: a re-run after a partial failure finds the release already
+          # there, and the assets must be the ones this run built.
+          gh release delete "$tag" --yes 2>/dev/null || true
+          gh release create "$tag" \
+            --title "AetherTunnel $tag" \
+            --notes-file docs/RELEASE-NOTES.md \
+            dist/aethertunnel-* dist/SHA256SUMS \
+            dist/mobile/aethertunnel-mobile-android.aar \
+            dist/mobile/aethertunnel-app-android-arm64-debug.apk \
+            server.toml.example client.toml.example
+          echo "released $tag"
+          names=$(gh release view "$tag" --json assets -q '.assets[].name')
+          echo "$names" | grep -F aethertunnel-mobile-android.aar
+          echo "$names" | grep -F aethertunnel-app-android-arm64-debug.apk
+          echo "the release holds $(echo "$names" | grep -c .) assets"
+
+  # Checks the release page itself, from a network that can download it: every
+  # published file against SHA256SUMS, the version the published binaries report, the
+  # example configurations shipped beside them, and then the whole operations script
+  # against the two published Windows binaries. A red job here means the release page
+  # does not hold what was built and tested, which is the one thing the jobs above
+  # cannot show.
+  verify:
+    name: verify the published artifacts
+    needs: release
+    runs-on: windows-latest
+    steps:
+      # The tag whose artifacts are verified, not the ref that triggered the run:
+      # the scripts and configuration that judge them have to be the tagged ones.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: resolve the tag to verify
+        shell: bash
+        run: echo "REL_TAG=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_ENV"
+
+      - name: download the release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path published | Out-Null
+          # $env:REL_TAG: the tag arrives through GITHUB_ENV, and a bare $REL_TAG is
+          # an undefined PowerShell variable that interpolates to "" — the command
+          # then runs as `gh release download ""`, which fails before any check.
+          gh release download "$env:REL_TAG" --dir published
+          Get-ChildItem published | Select-Object Name, Length | Format-Table -AutoSize
+
+      - name: every published file matches SHA256SUMS
+        shell: pwsh
+        run: |
+          $checked = 0
+          $listed = @{}
+          foreach ($line in Get-Content published/SHA256SUMS) {
+            if ($line.Trim() -eq '') { continue }
+            $parts = $line -split '\s+'
+            $want = $parts[0].ToLower()
+            # The sums name their entries as ./<file>.
+            $name = $parts[1] -replace '^\./', ''
+            $path = "published/$name"
+            if (-not (Test-Path $path)) { Write-Error "$name is listed in SHA256SUMS but was not uploaded"; exit 1 }
+            $got = (Get-FileHash $path -Algorithm SHA256).Hash.ToLower()
+            if ($got -ne $want) { Write-Error "$name does not match the hash published for it"; exit 1 }
+            $listed[$name] = $true
+            $checked++
+          }
+          # The other direction for the binaries: a server or client asset uploaded
+          # without an entry would otherwise be published unchecked, which is what
+          # this step is supposed to prevent. The mobile artifacts and the example
+          # configurations are published beside the sums deliberately unsummed, so
+          # only the binaries are required to appear.
+          foreach ($file in Get-ChildItem published -File | Where-Object { $_.Name -match '^aethertunnel-(server|client)-' }) {
+            if (-not $listed.ContainsKey($file.Name)) { Write-Error "$($file.Name) was uploaded without an entry in SHA256SUMS"; exit 1 }
+          }
+          Write-Host "$checked published files match SHA256SUMS"
+
+      - name: the published binaries report the released version
+        shell: pwsh
+        run: |
+          $tag = "$env:REL_TAG"
+          foreach ($name in @('aethertunnel-server-windows-amd64.exe', 'aethertunnel-client-windows-amd64.exe')) {
+            $out = & "./published/$name" --version
+            Write-Host $out
+            if ($out -notmatch [regex]::Escape($tag)) { Write-Error "$name does not report $tag"; exit 1 }
+          }
+
+      - name: the published binaries accept the example configurations
+        shell: pwsh
+        run: |
+          & ./published/aethertunnel-server-windows-amd64.exe --config published/server.toml.example --check
+          if ($LASTEXITCODE -ne 0) { Write-Error "the published server refused its example configuration"; exit 1 }
+          & ./published/aethertunnel-client-windows-amd64.exe --config published/client.toml.example --check
+          if ($LASTEXITCODE -ne 0) { Write-Error "the published client refused its example configuration"; exit 1 }
+
+      - name: the operations script passes against the published binaries
+        shell: pwsh
+        run: |
+          ./scripts/smoke-test.ps1 `
+            -ServerExe ./published/aethertunnel-server-windows-amd64.exe `
+            -ClientExe ./published/aethertunnel-client-windows-amd64.exe
+
+  # The same idea for the Linux artifacts, on a Linux kernel: the checks that cannot be
+  # made on Windows live here, above all the audit log being renamed away underneath a
+  # running server, which Windows refuses to do to an open file.
+  verify-linux:
+    name: verify the published linux artifacts
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      # As in the verify job: the tagged source, so the helper and the suite that
+      # judge the published binaries are the ones the tag carries.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      # The functional suite builds the smoketest helper from this checkout, so the
+      # toolchain has to be here as well as the published binaries.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: resolve the tag to verify
+        run: echo "REL_TAG=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_ENV"
+
+      - name: download the release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p published
+          gh release download "$REL_TAG" --dir published \
+            --pattern 'aethertunnel-*-linux-amd64' --pattern 'SHA256SUMS'
+          chmod +x published/aethertunnel-*-linux-amd64
+          ls -l published
+
+      - name: run the published linux binaries
+        run: bash scripts/verify-release-linux.sh "$PWD/published" "$REL_TAG"
+
+      # verify-release-linux.sh proves the probes, the audit log and the shutdown
+      # behaviour of a published server. This adds the paths that carry data, run
+      # against the published binaries rather than the ones built in CI.
+      - name: the published linux binaries carry data
+        run: |
+          bash scripts/functional-linux.sh \
+            "$PWD/published/aethertunnel-server-linux-amd64" \
+            "$PWD/published/aethertunnel-client-linux-amd64"
